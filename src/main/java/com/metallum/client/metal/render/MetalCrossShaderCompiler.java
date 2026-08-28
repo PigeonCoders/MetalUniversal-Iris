@@ -171,7 +171,7 @@ public final class MetalCrossShaderCompiler {
             String vertexEntryPoint = extractEntryPoint(vertexMsl.source(), VERTEX_ENTRY_PATTERN, "main0");
             String fragmentEntryPoint = extractEntryPoint(fragmentMsl.source(), FRAGMENT_ENTRY_PATTERN, "main0");
             List<MetalCompiledRenderPipeline.ResourceBinding> resources = buildResourceBindings(
-                    layoutEntries, storageResources, vertexMsl, fragmentMsl
+                    layoutEntries, storageResources, vertexMsl, fragmentMsl, null
             );
             return new MetalCompiledRenderPipeline(
                     device,
@@ -292,7 +292,7 @@ public final class MetalCrossShaderCompiler {
         final String vertexEntryPoint = extractEntryPoint(vertexMsl.source(), VERTEX_ENTRY_PATTERN, "main0");
         final String fragmentEntryPoint = extractEntryPoint(fragmentMsl.source(), FRAGMENT_ENTRY_PATTERN, "main0");
         final List<MetalCompiledRenderPipeline.ResourceBinding> resources = buildResourceBindings(
-                entries, storageResources, vertexMsl, fragmentMsl
+                entries, storageResources, vertexMsl, fragmentMsl, shaderpackResourceBindings(entries)
         );
 
         return new MetalCompiledRenderPipeline(
@@ -894,12 +894,13 @@ public final class MetalCrossShaderCompiler {
             final List<VulkanBindGroupLayout.Entry> entries,
             final List<RasterStorageResource> storageResources,
             final MslShader vertexMsl,
-            final MslShader fragmentMsl
+            final MslShader fragmentMsl,
+            final @Nullable Map<String, Integer> bindingIndexes
     ) {
         List<MetalCompiledRenderPipeline.ResourceBinding> resources = new ArrayList<>(
                 entries.size() + storageResources.size() + 1
         );
-        Map<String, Integer> bindingIndexes = shaderpackResourceBindings(entries);
+        int nextEntryIndex = 0;
         for (VulkanBindGroupLayout.Entry entry : entries) {
             MetalCompiledRenderPipeline.ResourceKind kind = switch (entry.type()) {
                 case UNIFORM_BUFFER -> MetalCompiledRenderPipeline.ResourceKind.UNIFORM_BUFFER;
@@ -907,10 +908,13 @@ public final class MetalCrossShaderCompiler {
                 case TEXEL_BUFFER -> MetalCompiledRenderPipeline.ResourceKind.TEXEL_BUFFER;
             };
             GpuFormat texelFormat = entry.type() == VulkanBindGroupLayout.VulkanBindGroupEntryType.TEXEL_BUFFER ? entry.texelBufferFormat() : null;
+            int bindingIndex = bindingIndexes == null
+                    ? nextEntryIndex++
+                    : bindingIndexes.get(entry.name());
             resources.add(new MetalCompiledRenderPipeline.ResourceBinding(
                     kind,
                     entry.name(),
-                    bindingIndexes.get(entry.name()),
+                    bindingIndex,
                     stageMask(entry.name(), vertexMsl, fragmentMsl),
                     texelFormat
             ));
