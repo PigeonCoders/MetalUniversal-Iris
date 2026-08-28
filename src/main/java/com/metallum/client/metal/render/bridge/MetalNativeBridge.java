@@ -20,6 +20,17 @@ public final class MetalNativeBridge {
     private static final String MACOS_RESOURCE_PATH = "/natives/macos/libmetallum.dylib";
     private static final String IOS_RESOURCE_PATH = "/natives/ios/libmetallum.dylib";
     private static final String IOS_GLSLANG_RESOURCE_PATH = "/natives/ios/libglslang.dylib";
+    /**
+     * Dependency-first ordering for the iOS glslang bundle. glslang builds
+     * {@code glslang_default_resource()} into the separate
+     * {@code libglslang-default-resource-limits.dylib}; the primary dylib does
+     * not re-export it, so the sibling must be loaded before
+     * {@code GlslangBridge} resolves symbols.
+     */
+    private static final String[] IOS_GLSLANG_RESOURCES = {
+            "/natives/ios/libglslang-default-resource-limits.dylib",
+            IOS_GLSLANG_RESOURCE_PATH,
+    };
     private static final ValueLayout.OfInt INT = ValueLayout.JAVA_INT;
     private static final ValueLayout.OfLong LONG = ValueLayout.JAVA_LONG;
     private static final ValueLayout.OfFloat FLOAT = ValueLayout.JAVA_FLOAT;
@@ -197,41 +208,73 @@ public final class MetalNativeBridge {
     }
 
     /**
-     * 从 jar 中抽取 {@code /natives/ios/libglslang.dylib} 到可写目录并
+     * 从 jar 中抽取 {@code /natives/ios/} 下的 glslang 依赖 dylib 到可写目录并
      * {@code System.load} 加载（与 {@link #configureBundledSpvcLibrary} 相同的
      * 可写目录迭代策略），使 {@link GlslangBridge} 的
-     * {@link SymbolLookup#loaderLookup()} 能找到 {@code glslang_*} 符号。
+     * {@link SymbolLookup#loaderLookup()} 能找到 {@code glslang_*} 与
+     * {@code glslang_default_resource} 符号。
+     *
+     * <p>依赖优先、主库最后：{@code glslang_default_resource()} 由
+     * {@code libglslang-default-resource-limits.dylib} 导出，而不是主
+     * {@code libglslang.dylib}，所以必须把两个 dylib 都加载进进程。
      */
     private static void configureBundledGlslangLibrary() throws IOException {
-        try (InputStream stream = MetalNativeBridge.class.getResourceAsStream(IOS_GLSLANG_RESOURCE_PATH)) {
-            if (stream == null) {
-                return;
-            }
-            Path tempLib = null;
-            IOException lastError = null;
-            for (String dirProperty : new String[]{"pojav.launcher.home", "POJAV_HOME", "user.home", "java.io.tmpdir"}) {
-                String dir = System.getProperty(dirProperty);
-                if (dir == null || dir.isBlank()) continue;
-                Path dirPath = Path.of(dir);
-                if (!Files.isDirectory(dirPath)) continue;
+        for (String resourcePath : IOS_GLSLANG_RESOURCES) {
+            boolean primary = resourcePath.equals(IOS_GLSLANG_RESOURCE_PATH);
+            try (InputStream stream = MetalNativeBridge.class.getResourceAsStream(resourcePath)) {
+                if (stream == null) {
+                    if (primary) {
+                        // Best-effort, mirroring the pre-dependency behavior:
+                        // GlslangBridge's own lookup surfaces the failure.
+                        return;
+                    }
+                    continue; // sibling not bundled in this build
+                }
+                Path tempLib = null;
+                IOException lastError = null;
+                for (String dirProperty : new String[]{"pojav.launcher.home", "POJAV_HOME", "user.home", "java.io.tmpdir"}) {
+                    String dir = System.getProperty(dirProperty);
+                    if (dir == null || dir.isBlank()) continue;
+                    Path dirPath = Path.of(dir);
+                    if (!Files.isDirectory(dirPath)) continue;
+                    try {
+                        tempLib = dirPath.resolve(localIosGlslangName(resourcePath));
+                        Files.copy(stream, tempLib, StandardCopyOption.REPLACE_EXISTING);
+                        break;
+                    } catch (IOException e) {
+                        lastError = e;
+                        tempLib = null;
+                    }
+                }
+                if (tempLib == null) {
+                    if (lastError != null) throw lastError;
+                    throw new IOException("No writable directory available for " + resourcePath + " extraction");
+                }
+                tempLib.toFile().deleteOnExit();
                 try {
-                    tempLib = dirPath.resolve("libglslang_metallum.dylib");
-                    Files.copy(stream, tempLib, StandardCopyOption.REPLACE_EXISTING);
-                    break;
-                } catch (IOException e) {
-                    lastError = e;
-                    tempLib = null;
+                    // System.load via Amethyst's hooked dlopen so the glslang_*
+                    // symbols are available to SymbolLookup.loaderLookup() used
+                    // by GlslangBridge.
+                    System.load(tempLib.toString());
+                } catch (UnsatisfiedLinkError e) {
+                    if (primary) {
+                        throw e;
+                    }
+                    // A failed dependency means glslang_default_resource stays
+                    // missing; continue loading the primary dylib so the
+                    // GlslangBridge symbol lookup reports the same clear error.
                 }
             }
-            if (tempLib == null) {
-                if (lastError != null) throw lastError;
-                throw new IOException("No writable directory available for libglslang.dylib extraction");
-            }
-            tempLib.toFile().deleteOnExit();
-            // System.load via Amethyst's hooked dlopen so the glslang_* symbols
-            // are available to SymbolLookup.loaderLookup() used by GlslangBridge.
-            System.load(tempLib.toString());
         }
+    }
+
+    private static String localIosGlslangName(final String resourcePath) {
+        String fileName = resourcePath.substring(resourcePath.lastIndexOf('/') + 1);
+        int extension = fileName.lastIndexOf('.');
+        if (extension == -1) {
+            return fileName + "_metallum";
+        }
+        return fileName.substring(0, extension) + "_metallum" + fileName.substring(extension);
     }
 
     static {
