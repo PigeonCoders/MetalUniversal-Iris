@@ -21,6 +21,9 @@ import net.irisshaders.iris.shaderpack.programs.ComputeSource;
 import net.irisshaders.iris.shaderpack.programs.ProgramSet;
 import net.irisshaders.iris.shaderpack.programs.ProgramSource;
 import net.irisshaders.iris.shaderpack.texture.TextureStage;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.texture.AbstractTexture;
+import net.minecraft.client.renderer.texture.TextureAtlas;
 import net.minecraft.resources.Identifier;
 import org.joml.Vector4fc;
 import org.jspecify.annotations.Nullable;
@@ -860,6 +863,12 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             standard = centerDepthSampler == null ? null : centerDepthSampler.binding();
         } else if (name.equals("noisetex")) {
             standard = resources.noiseTexture().binding();
+        } else if (name.equals("normals")) {
+            standard = resources.pbrNormals();
+        } else if (name.equals("specular")) {
+            standard = resources.pbrSpecular();
+        } else if (name.equals("gtexture") || name.equals("texture") || name.equals("tex")) {
+            standard = vanillaBlockAtlas();
         } else if (name.equals("depthtex0")) {
             standard = new MetalRenderPass.TextureViewAndSampler(targets.mainDepthView(), targets.depthSampler());
         } else if (name.equals("depthtex1")) {
@@ -912,6 +921,20 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         MetalRenderPass.TextureViewAndSampler override = resources.customTextures()
                 .resolve(stage, name);
         return override == null ? standard : override;
+    }
+
+    /** Borrows the vanilla block atlas for Iris's {@code gtexture} sampler alias. */
+    private MetalRenderPass.@Nullable TextureViewAndSampler vanillaBlockAtlas() {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft == null) {
+            return null;
+        }
+        try {
+            AbstractTexture atlas = minecraft.getTextureManager().getTexture(TextureAtlas.LOCATION_BLOCKS);
+            return new MetalRenderPass.TextureViewAndSampler(atlas.getTextureView(), atlas.getSampler());
+        } catch (RuntimeException ignored) {
+            return null;
+        }
     }
 
     private @Nullable GpuTextureView storageImageBinding(
