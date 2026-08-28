@@ -867,6 +867,12 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             standard = resources.pbrNormals();
         } else if (name.equals("specular")) {
             standard = resources.pbrSpecular();
+        } else if (name.equals("vxDepthTexTrans") || name.equals("vxDepthTexOpaque")
+                || name.equals("dhDepthTex0") || name.equals("dhDepthTex1")) {
+            // Optional Voxy / Distant Horizons depth inputs. Their declarations
+            // still reach the compiled pipeline; without those mods GL leaves
+            // them at defaults, so bind a neutral 1x1 color texture.
+            standard = resources.pbrSpecular();
         } else if (name.equals("gtexture") || name.equals("texture") || name.equals("tex")) {
             standard = vanillaBlockAtlas();
         } else if (name.equals("depthtex0")) {
