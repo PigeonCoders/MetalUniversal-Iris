@@ -30,10 +30,10 @@ final class IrisMetalWorldResources implements AutoCloseable {
     private static final int USAGE = GpuTexture.USAGE_TEXTURE_BINDING
             | GpuTexture.USAGE_COPY_DST
             | GpuTexture.USAGE_COPY_SRC;
-    /** Iris PBRType.NORMAL.getDefaultValue() = 0x7F7FFFFF. */
-    private static final int PBR_NORMAL_DEFAULT_ARGB = 0x7F7FFFFF;
+    /** Iris PBRType.NORMAL.getDefaultValue() = 0x7F7FFFFF (RRGGBBAA). */
+    private static final int PBR_NORMAL_DEFAULT_RGBA = 0x7F7FFFFF;
     /** Iris PBRType.SPECULAR.getDefaultValue() = 0x00000000. */
-    private static final int PBR_SPECULAR_DEFAULT_ARGB = 0x00000000;
+    private static final int PBR_SPECULAR_DEFAULT_RGBA = 0x00000000;
 
     private final MetalDevice device;
     private final int generation;
@@ -167,10 +167,10 @@ final class IrisMetalWorldResources implements AutoCloseable {
             newCustomTextures.prewarmAll();
             newNoiseTexture = new IrisMetalNoiseTexture(device, noiseResolution, customNoise);
             newPbrNormals = DefaultPbrTexture.create(
-                    device, PBR_NORMAL_DEFAULT_ARGB, "metallum:iris_pbr/normals"
+                    device, PBR_NORMAL_DEFAULT_RGBA, "metallum:iris_pbr/normals"
             );
             newPbrSpecular = DefaultPbrTexture.create(
-                    device, PBR_SPECULAR_DEFAULT_ARGB, "metallum:iris_pbr/specular"
+                    device, PBR_SPECULAR_DEFAULT_RGBA, "metallum:iris_pbr/specular"
             );
             if (computePack != null) {
                 newComputeResources = new IrisMetalComputeResources(device, computePack, width, height);
@@ -396,7 +396,7 @@ final class IrisMetalWorldResources implements AutoCloseable {
 
         private static DefaultPbrTexture create(
                 final MetalDevice device,
-                final int argb,
+                final int rgba,
                 final String label
         ) {
             MetalGpuTexture texture = null;
@@ -422,10 +422,12 @@ final class IrisMetalWorldResources implements AutoCloseable {
                         1,
                         OptionalDouble.of(0.0)
                 );
-                byte red = (byte) ((argb >> 16) & 0xFF);
-                byte green = (byte) ((argb >> 8) & 0xFF);
-                byte blue = (byte) (argb & 0xFF);
-                byte alpha = (byte) ((argb >> 24) & 0xFF);
+                // Iris NativeImageBackedSingleColorTexture packs its int as
+                // RR GG BB AA; PBRType defaults use the same layout.
+                byte red = (byte) ((rgba >> 24) & 0xFF);
+                byte green = (byte) ((rgba >> 16) & 0xFF);
+                byte blue = (byte) ((rgba >> 8) & 0xFF);
+                byte alpha = (byte) (rgba & 0xFF);
                 ByteBuffer pixels = ByteBuffer
                         .allocateDirect(4)
                         .order(ByteOrder.nativeOrder())
