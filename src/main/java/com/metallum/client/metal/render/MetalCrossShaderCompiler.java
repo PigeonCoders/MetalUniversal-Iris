@@ -1803,11 +1803,18 @@ public final class MetalCrossShaderCompiler {
                     int binding = Spvc.spvc_compiler_get_decoration(
                             compiler, resource.id(), Spv.SpvDecorationBinding
                     );
-                    if (Spvc.spvc_compiler_msl_is_resource_used(
+                    boolean used = Spvc.spvc_compiler_msl_is_resource_used(
                             compiler, executionModel, 0, binding
-                    )) {
+                    );
+                    System.err.println("[used-debug] model=" + executionModel
+                            + " type=" + resourceType + " name=" + resource.nameString()
+                            + " binding=" + binding + " used=" + used);
+                    if (used) {
                         out.add(resource.nameString());
                     }
+                } else {
+                    System.err.println("[used-debug] type=" + resourceType
+                            + " name=" + resource.nameString() + " has NO binding decoration");
                 }
             }
         }
