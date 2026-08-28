@@ -8,8 +8,13 @@ run-name: ${{ github.ref_name }}
 on:
   workflow_dispatch:
   push:
+    branches:
+      - '**'
     tags:
       - 'v*'
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -87,6 +92,7 @@ jobs:
           echo "main_jar=${MAIN_JAR}" >> "$GITHUB_OUTPUT"
 
       - name: publish to Modrinth
+        if: github.repository_owner == 'EternityQwQ'
         uses: cloudnode-pro/modrinth-publish@v2
         with:
           token: ${{ secrets.MODRINTH_TOKEN }}
