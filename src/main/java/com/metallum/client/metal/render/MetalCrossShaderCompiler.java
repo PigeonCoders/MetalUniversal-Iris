@@ -47,6 +47,7 @@ public final class MetalCrossShaderCompiler {
     private static final int MSL_VERSION_4_0 = 0x040000;
     private static final Pattern VERTEX_ENTRY_PATTERN = Pattern.compile("\\bvertex\\s+\\w+\\s+(\\w+)\\s*\\(");
     private static final Pattern FRAGMENT_ENTRY_PATTERN = Pattern.compile("\\bfragment\\s+\\w+\\s+(\\w+)\\s*\\(");
+    private static final Pattern RESOURCE_ARGUMENT = Pattern.compile("\\b(\\w+)\\s*\\[\\[(?:buffer|texture|sampler)\\(");
     private static final Pattern EXPLICIT_FRAGMENT_OUTPUT_PATTERN = Pattern.compile(
             "\\blayout\\s*\\(\\s*location\\s*=\\s*(\\d+)[^)]*\\)\\s*"
                     + "(?:(?:flat|smooth|noperspective|centroid|sample|invariant|precise)\\s+)*"
@@ -431,8 +432,6 @@ public final class MetalCrossShaderCompiler {
         final List<VulkanBindGroupLayout.Entry> entries =
                 filterUsedShaderpackEntries(reflectedEntries, usedVertex, usedFragment);
         final Map<String, Integer> resourceBindings = shaderpackResourceBindings(entries);
-        System.err.println("[used-debug] vertex=" + usedVertex + " fragment=" + usedFragment
-                + " entries=" + entries + " map=" + resourceBindings);
         final int pushConstantBinding = entries.size();
         final MslShader vertexMsl = spirvToMsl(
                 spirvWordsToByteBuffer(vertexSpvWords), pushConstantBinding,
@@ -1783,57 +1782,12 @@ public final class MetalCrossShaderCompiler {
      * binding budget and MSL fails with "sampler attribute parameter is out of
      * bounds".
      */
-    private static void collectUsedResourceNames(
-            final MemoryStack stack,
-            final long compiler,
-            final long resources,
-            final Set<String> out
-    ) throws ShaderCompileException {
-        int executionModel = Spvc.spvc_compiler_get_execution_model(compiler);
-        int[] resourceTypes = {
-                Spvc.SPVC_RESOURCE_TYPE_UNIFORM_BUFFER,
-                Spvc.SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
-                Spvc.SPVC_RESOURCE_TYPE_SEPARATE_IMAGE,
-                Spvc.SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS
-        };
-        PointerBuffer pList = stack.mallocPointer(1);
-        PointerBuffer pCount = stack.mallocPointer(1);
-        for (int resourceType : resourceTypes) {
-            checkSpvc(
-                    Spvc.spvc_resources_get_resource_list_for_type(
-                            resources, resourceType, pList, pCount
-                    ),
-                    "spvc_resources_get_resource_list_for_type(used resources)"
-            );
-            int count = (int) pCount.get(0);
-            if (count == 0) {
-                continue;
-            }
-            SpvcReflectedResource.Buffer list = SpvcReflectedResource.create(pList.get(0), count);
-            for (int index = 0; index < count; index++) {
-                SpvcReflectedResource resource = list.get(index);
-                if (!Spvc.spvc_compiler_has_decoration(
-                        compiler, resource.id(), Spv.SpvDecorationBinding
-                )) {
-                    continue;
-                }
-                int binding = Spvc.spvc_compiler_get_decoration(
-                        compiler, resource.id(), Spv.SpvDecorationBinding
-                );
-                if (Spvc.spvc_compiler_msl_is_resource_used(
-                        compiler, executionModel, 0, binding
-                )) {
-                    out.add(resource.nameString());
-                }
-            }
-        }
-    }
-
     /**
      * Dry-runs MSL codegen once with the provisional (unfiltered) binding plan
-     * so {@code spvc_compiler_msl_is_resource_used} has populated its usage map.
-     * Only after {@code spvc_compiler_compile} does SPIRV-Cross know which
-     * set/binding pairs actually reach the generated MSL.
+     * and derives the used resource set from the emitted function signature.
+     * SPIRV-Cross only populates its own usage map for bindings registered
+     * explicitly through {@code add_msl_resource_binding}, which this backend
+     * does not use.
      */
     private static Set<String> usedShaderpackResources(
             final ByteBuffer spirvBytes,
@@ -1871,19 +1825,31 @@ public final class MetalCrossShaderCompiler {
 
                 final PointerBuffer pSource = stack.mallocPointer(1);
                 checkSpvc(Spvc.spvc_compiler_compile(compiler, pSource), "spvc_compiler_compile(usage analysis)");
-
-                final PointerBuffer pResources = stack.mallocPointer(1);
-                checkSpvc(Spvc.spvc_compiler_create_shader_resources(compiler, pResources), "spvc_compiler_create_shader_resources(usage analysis)");
-                final long resources = pResources.get(0);
-                final Set<String> used = new HashSet<>();
-                collectUsedResourceNames(stack, compiler, resources, used);
-                System.err.println("[used-debug] prepass model=" + Spvc.spvc_compiler_get_execution_model(compiler)
-                        + " used=" + used);
-                return used;
+                return resourceArgumentNames(MemoryUtil.memUTF8(pSource.get(0)));
             } finally {
                 Spvc.spvc_context_destroy(context);
             }
         }
+    }
+
+    /**
+     * Collects resource variable names that actually appear in generated MSL
+     * function parameters. SPIRV-Cross's {@code is_msl_resource_binding_used}
+     * only works for bindings added explicitly via
+     * {@code add_msl_resource_binding}, so usage is derived from the emitted
+     * source instead.
+     */
+    private static Set<String> resourceArgumentNames(final String msl) {
+        Set<String> names = new HashSet<>();
+        Matcher matcher = RESOURCE_ARGUMENT.matcher(msl);
+        while (matcher.find()) {
+            String name = matcher.group(1);
+            names.add(name);
+            if (name.endsWith("Smplr")) {
+                names.add(name.substring(0, name.length() - "Smplr".length()));
+            }
+        }
+        return names;
     }
 
     private static List<VulkanBindGroupLayout.Entry> filterUsedShaderpackEntries(
