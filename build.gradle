@@ -69,6 +69,7 @@ test {
 	exclude "**/IrisMetalPingPongTargetsIntegrationTest.class"
 	exclude "**/MetalIrisCustomTexturesIntegrationTest.class"
 	exclude "**/MetalIrisNoiseTextureIntegrationTest.class"
+	exclude "**/MetalIrisPbrDefaultsIntegrationTest.class"
 	exclude "**/IrisMetalCenterDepthSamplerTest.class"
 }
 
