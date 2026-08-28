@@ -1430,7 +1430,7 @@ public final class MetalCrossShaderCompiler {
                 explicitFragmentOutputLocations,
                 Map.of(),
                 null,
-                false
+                MetalIrisDepthConvention.conventionalDepthActive()
         );
     }
 

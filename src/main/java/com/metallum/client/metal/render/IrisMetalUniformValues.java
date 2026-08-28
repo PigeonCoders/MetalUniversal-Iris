@@ -498,7 +498,7 @@ final class IrisMetalUniformValues implements AutoCloseable {
                 ? readMat4(dynamicTransforms, "DynamicTransforms").invert()
                 : null;
         Matrix4f projectionInverse = needsProjection
-                ? MetalIrisDepthConvention.packProjection(readMat4(projection, "Projection")).invert()
+                ? MetalIrisDepthConvention.projectionInverse(readMat4(projection, "Projection"))
                 : null;
         Matrix3f normalMatrix = modelViewInverse == null
                 ? null
@@ -703,7 +703,7 @@ final class IrisMetalUniformValues implements AutoCloseable {
         ClientLevel level = minecraft.level;
 
         Matrix4f modelView = new Matrix4f(state.getGbufferModelView());
-        Matrix4f projection = MetalIrisDepthConvention.packProjection(state.getGbufferProjection());
+        Matrix4f projection = MetalIrisDepthConvention.projection(state.getGbufferProjection());
         warnIfUnfilled(modelView, projection);
 
         Matrix4f modelViewInverse = new Matrix4f(modelView).invert();
@@ -986,11 +986,7 @@ final class IrisMetalUniformValues implements AutoCloseable {
                 Vector4i vector = customObject(member, value, Vector4i.class);
                 putIVec4(out, at, vector.x, vector.y, vector.z, vector.w);
             }
-            case "mat4" -> putMat4(
-                    out,
-                    at,
-                    packProjectionUniform(member.name(), customObject(member, value, Matrix4fc.class))
-            );
+            case "mat4" -> putMat4(out, at, customObject(member, value, Matrix4fc.class));
             default -> throw new IllegalStateException(
                     "Iris uniform graph produced unsupported GLSL type '" + member.type()
                             + "' for '" + member.name() + "'"
@@ -1259,16 +1255,6 @@ final class IrisMetalUniformValues implements AutoCloseable {
         } catch (RuntimeException ignored) {
             return new Vector2i(0, 0);
         }
-    }
-
-    private static Matrix4fc packProjectionUniform(final String name, final Matrix4fc value) {
-        return switch (name) {
-            case "gbufferProjection", "gbufferPreviousProjection", "iris_ProjectionMatrix" ->
-                    MetalIrisDepthConvention.packProjection(value);
-            case "gbufferProjectionInverse", "iris_ProjectionMatrixInverse" ->
-                    MetalIrisDepthConvention.packProjectionInverse(value);
-            default -> value;
-        };
     }
 
     private static <T> T customObject(

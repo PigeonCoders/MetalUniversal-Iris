@@ -20,9 +20,12 @@ import java.util.regex.Pattern;
  * SPIRV-Cross fixup_clipspace formula {@code z' = (z + w) * 0.5} is applied to
  * the emitted MSL text exactly where the Y-flip line was emitted.
  *
- * <p>Only the shaderpack path enables this: Iris passes shaderpacks a
- * GL-convention [-w, w] projection, while Blaze3D vanilla shaders already emit
- * Metal's zero-to-one convention.
+ * <p>The shaderpack path always enables this because Iris passes shaderpacks
+ * a GL-convention [-w, w] projection. Vanilla Blaze3D shaders enable it only
+ * while Iris is active ({@link MetalIrisDepthConvention#conventionalDepthActive()}):
+ * Iris's UndoReverseZ mixins rewrite Blaze3D's projection to GL convention
+ * whenever a pack is loaded, but otherwise vanilla already emits Metal's
+ * zero-to-one convention.
  */
 @Environment(EnvType.CLIENT)
 final class MetalMslClipSpace {

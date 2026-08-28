@@ -340,7 +340,13 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         }
 
         GpuTextureView depthTexture = depthAttachment == null ? null : depthAttachment.textureView();
-        OptionalDouble depthClear = depthAttachment == null ? OptionalDouble.empty() : depthAttachment.clearValue();
+        OptionalDouble depthClear = depthAttachment == null
+                ? OptionalDouble.empty()
+                : depthAttachment.clearValue().isPresent()
+                ? OptionalDouble.of(MetalIrisDepthConvention.conventionalClearDepth(
+                        depthAttachment.clearValue().getAsDouble()
+                ))
+                : OptionalDouble.empty();
         if (depthAttachment != null) {
             if (depthTexture.isClosed()) {
                 throw new IllegalStateException("Depth texture is closed");
@@ -448,7 +454,7 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         MetalGpuTexture color = (MetalGpuTexture) colorTexture;
         MetalGpuTexture depth = (MetalGpuTexture) depthTexture;
         pendingColorClears.put(color, new Vector4f(clearColor));
-        pendingDepthClears.put(depth, clearDepth);
+        pendingDepthClears.put(depth, MetalIrisDepthConvention.conventionalClearDepth(clearDepth));
     }
 
     @Override
@@ -465,9 +471,10 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         MetalGpuTexture color = (MetalGpuTexture) colorTexture;
         MetalGpuTexture depth = (MetalGpuTexture) depthTexture;
         Vector4fc clearColorCopy = new Vector4f(clearColor);
+        double conventionalClearDepth = MetalIrisDepthConvention.conventionalClearDepth(clearDepth);
         if (isFullTextureRegion(color, depth, regionX, regionY, regionWidth, regionHeight)) {
             pendingColorClears.put(color, clearColorCopy);
-            pendingDepthClears.put(depth, clearDepth);
+            pendingDepthClears.put(depth, conventionalClearDepth);
             return;
         }
         color.markContentsDirty();
@@ -481,7 +488,7 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
                 clearColorCopy.z(),
                 clearColorCopy.w(),
                 depth.nativeHandle(),
-                clearDepth,
+                conventionalClearDepth,
                 regionX,
                 regionY,
                 regionWidth,
@@ -492,7 +499,10 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
 
     @Override
     public void clearDepthTexture(final @NonNull GpuTexture depthTexture, final double clearDepth) {
-        pendingDepthClears.put((MetalGpuTexture) depthTexture, clearDepth);
+        pendingDepthClears.put(
+                (MetalGpuTexture) depthTexture,
+                MetalIrisDepthConvention.conventionalClearDepth(clearDepth)
+        );
     }
 
     @Override

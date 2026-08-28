@@ -597,15 +597,16 @@ final class MetalRenderPass implements RenderPassBackend {
             enc.setRenderPipelineState(pipelineHandle);
             pipelineDirty = false;
 
-            MemorySegment depthState = compiledPipeline.getDepthStencilState();
+            boolean conventionalDepth = MetalIrisDepthConvention.conventionalDepthActive();
+            MemorySegment depthState = compiledPipeline.getDepthStencilState(conventionalDepth);
             if (MetalNativeBridge.isNullHandle(depthState)) {
                 throw new IllegalStateException("Native depth state is unavailable");
             }
             enc.setDepthStencilState(depthState);
             if (hasAttachment && compiledPipeline.hasDepthStencilState()) {
                 enc.setDepthBias(
-                        compiledPipeline.depthBiasConstant(),
-                        compiledPipeline.depthBiasScaleFactor(),
+                        compiledPipeline.depthBiasConstant(conventionalDepth),
+                        compiledPipeline.depthBiasScaleFactor(conventionalDepth),
                         0.0f
                 );
             } else {
