@@ -3,10 +3,12 @@ package com.metallum.client.metal.render;
 import com.metallum.Metallum;
 import com.mojang.blaze3d.buffers.GpuBuffer;
 import com.mojang.blaze3d.buffers.GpuBufferSlice;
+import com.mojang.math.Axis;
 import kroppeb.stareval.function.FunctionReturn;
 import net.caffeinemc.mods.sodium.client.util.FogStorage;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
+import net.irisshaders.iris.api.v0.item.IrisItemLightProvider;
 import net.irisshaders.iris.uniforms.CapturedRenderingState;
 import net.irisshaders.iris.uniforms.CelestialUniforms;
 import net.irisshaders.iris.uniforms.FrameUpdateNotifier;
@@ -16,6 +18,17 @@ import net.irisshaders.iris.pipeline.programs.ShaderKey;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.renderer.EndFlashState;
+import net.minecraft.client.renderer.GameRenderer;
+import net.minecraft.client.renderer.texture.AbstractTexture;
+import net.minecraft.client.renderer.texture.TextureAtlas;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.effect.MobEffects;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 import org.jspecify.annotations.Nullable;
 import org.joml.Matrix3f;
@@ -75,6 +88,25 @@ final class IrisMetalUniformValues implements AutoCloseable {
     private static final String CORE_PROJECTION_INVERSE = "iris_ProjMatInverse";
     private static final String CORE_NORMAL_MATRIX = "iris_NormalMat";
 
+    /**
+     * Uniforms injected by optional world-rendering mods (Distant Horizons,
+     * Voxy). Without those mods Iris on GL leaves them at their zero defaults;
+     * Metal mirrors that instead of treating them as pack errors.
+     */
+    private static final Set<String> OPTIONAL_MOD_UNIFORMS = Set.of(
+            "dhProjection",
+            "dhProjectionInverse",
+            "dhPreviousProjection",
+            "dhRenderDistance",
+            "vxProj",
+            "vxProjInv",
+            "vxProjPrev",
+            "vxModelView",
+            "vxModelViewInv",
+            "vxModelViewPrev",
+            "vxRenderDistance"
+    );
+
     private final float sunPathRotation;
     private final @Nullable CustomUniforms customUniforms;
     private final @Nullable FrameUpdateNotifier updateNotifier;
@@ -82,6 +114,7 @@ final class IrisMetalUniformValues implements AutoCloseable {
     private final boolean strict;
     private final List<Block> blocks = new ArrayList<>();
     private final Set<String> unsupported = new HashSet<>();
+    private final Set<String> optionalZeroed = new HashSet<>();
     private final Matrix4f previousModelView = new Matrix4f();
     private final Matrix4f previousProjection = new Matrix4f();
     private final Vector3d previousCameraPosition = new Vector3d();
@@ -151,7 +184,8 @@ final class IrisMetalUniformValues implements AutoCloseable {
         this(sunPathRotation, customUniforms, updateNotifier, renderStageSource, true);
     }
 
-    private IrisMetalUniformValues(
+    /** Package-private strictness seam for offline shaderpack uniform coverage tests. */
+    IrisMetalUniformValues(
             final float sunPathRotation,
             final @Nullable CustomUniforms customUniforms,
             final @Nullable FrameUpdateNotifier updateNotifier,
@@ -320,6 +354,11 @@ final class IrisMetalUniformValues implements AutoCloseable {
     }
 
     private void upload(final Block block, final Frame frame) {
+        writeBlock(block, frame);
+        block.device.createCommandEncoder().writeToBuffer(block.buffer.slice(), block.staging);
+    }
+
+    private void writeBlock(final Block block, final Frame frame) {
         ByteBuffer staging = block.staging;
         zero(staging);
         for (IrisMetalGlslLinker.UniformMember member : block.layout) {
@@ -329,7 +368,28 @@ final class IrisMetalUniformValues implements AutoCloseable {
             write(staging, member, frame, block.alphaTestReference);
         }
         staging.rewind();
-        block.device.createCommandEncoder().writeToBuffer(block.buffer.slice(), staging);
+    }
+
+    /**
+     * Offline coverage seam: fills one registered block's staging bytes using
+     * neutral frame state without a GPU device, then returns a snapshot of any
+     * uniform names that had no value source. Used by shaderpack coverage tests
+     * on hosts where the Metal native libraries are unavailable.
+     */
+    Set<String> offlineUnsupported(final Object token) {
+        if (this.closed) {
+            throw new IllegalStateException("Iris Metal uniform values are closed");
+        }
+        Block block = findBlock(token);
+        if (block == null) {
+            throw new IllegalArgumentException("No Iris uniform block registered for token: " + token);
+        }
+        if (block.staging == null) {
+            block.staging = ByteBuffer.allocateDirect(block.size).order(ByteOrder.nativeOrder());
+        }
+        // Neutral frame keeps the coverage seam independent of Minecraft state.
+        writeBlock(block, neutralFrame());
+        return new HashSet<>(this.unsupported);
     }
 
     int coreDrawBlockSize(final ShaderKey key) {
@@ -806,7 +866,20 @@ final class IrisMetalUniformValues implements AutoCloseable {
             case "isEyeInWater" -> out.putInt(at, 0);
             case "shadowFade" -> out.putFloat(at, 0.0f);
 
-            default -> reportUnsupported(out, member);
+            default -> {
+                if (OPTIONAL_MOD_UNIFORMS.contains(member.name())) {
+                    // zero(staging) already wrote the GL default; only log once.
+                    if (this.optionalZeroed.add(member.name())) {
+                        Metallum.LOGGER.debug(
+                                "[metallum-iris] uniform '{}' belongs to an optional mod"
+                                        + " (Distant Horizons / Voxy) and is zero-filled",
+                                member.name()
+                        );
+                    }
+                } else {
+                    reportUnsupported(out, member);
+                }
+            }
         }
     }
 
@@ -829,6 +902,18 @@ final class IrisMetalUniformValues implements AutoCloseable {
             // GbufferPrograms.getCurrentPhase().ordinal(). The owning Metal
             // pipeline supplies the same WorldRenderingPhase state directly.
             out.putInt(member.offset(), this.renderStageSource.getAsInt());
+            return true;
+        }
+        if ("entityId".equals(member.name())) {
+            if (member.arrayCount() != 0 || !"int".equals(member.type())) {
+                throw new IllegalStateException(
+                        "Iris built-in uniform 'entityId' must be int, got "
+                                + member.type() + (member.arrayCount() == 0 ? "" : "[]")
+                );
+            }
+            // CommonUniforms: fallback for when entityId via attributes cannot
+            // be used (lightning). Reads the same captured rendered entity.
+            out.putInt(member.offset(), CapturedRenderingState.INSTANCE.getCurrentRenderedEntity());
             return true;
         }
         if ("iris_currentAlphaTest".equals(member.name())) {
@@ -859,7 +944,7 @@ final class IrisMetalUniformValues implements AutoCloseable {
             return true;
         }
         if (this.customUniforms == null || !this.customUniforms.hasVariable(member.name())) {
-            return false;
+            return writeIrisCommonUniform(out, member, alphaTestReference);
         }
         // UniformMember uses 0 for an ordinary scalar/vector/matrix and a
         // positive value only for an explicit GLSL array declarator.
@@ -914,6 +999,268 @@ final class IrisMetalUniformValues implements AutoCloseable {
         return true;
     }
 
+    /**
+     * Supplies Iris dynamic/common uniforms that the shaderpack custom-uniform
+     * graph does not own. Values mirror the suppliers Iris registers in
+     * {@code CommonUniforms}, {@code CelestialUniforms},
+     * {@code IrisExclusiveUniforms} and {@code BiomeUniforms}; optional-mod
+     * (DH/Voxy) names are handled by the zero-fill path in {@link #write}.
+     */
+    private static boolean writeIrisCommonUniform(
+            final ByteBuffer out,
+            final IrisMetalGlslLinker.UniformMember member,
+            final OptionalDouble alphaTestReference
+    ) {
+        int at = member.offset();
+        switch (member.name()) {
+            case "entityColor" -> {
+                requireUniformType(member, "vec4");
+                putVec4(out, at, 0.0f, 0.0f, 0.0f, 0.0f);
+                return true;
+            }
+            case "blockEntityId" -> {
+                requireUniformType(member, "int");
+                out.putInt(at, -1);
+                return true;
+            }
+            case "alphaTestRef" -> {
+                requireUniformType(member, "float");
+                out.putFloat(
+                        at,
+                        (float) alphaTestReference.orElseGet(
+                                CapturedRenderingState.INSTANCE::getCurrentAlphaTest
+                        )
+                );
+                return true;
+            }
+            case "darknessLightFactor" -> {
+                requireUniformType(member, "float");
+                out.putFloat(at, CapturedRenderingState.INSTANCE.getDarknessLightFactor());
+                return true;
+            }
+            case "hideGUI" -> {
+                requireUniformType(member, "bool");
+                out.putInt(at, hideGui() ? 1 : 0);
+                return true;
+            }
+            case "thunderStrength" -> {
+                requireUniformType(member, "float");
+                out.putFloat(at, thunderStrength());
+                return true;
+            }
+            case "endFlashIntensity" -> {
+                requireUniformType(member, "float");
+                out.putFloat(at, endFlashIntensity());
+                return true;
+            }
+            case "endFlashPosition" -> {
+                requireUniformType(member, "vec3");
+                Vector4f position = endFlashPosition();
+                putVec3(out, at, position.x, position.y, position.z);
+                return true;
+            }
+            case "lightningBoltPosition" -> {
+                requireUniformType(member, "vec4");
+                // Iris searches rendered entities for a lightning bolt; the
+                // value is zero in every ordinary frame, so zero-fill until
+                // entity scanning is wired into the Metal frame sampler.
+                putVec4(out, at, 0.0f, 0.0f, 0.0f, 0.0f);
+                return true;
+            }
+            case "nightVision" -> {
+                requireUniformType(member, "float");
+                out.putFloat(at, nightVision());
+                return true;
+            }
+            case "blindness" -> {
+                requireUniformType(member, "float");
+                out.putFloat(at, blindness());
+                return true;
+            }
+            case "darknessFactor" -> {
+                requireUniformType(member, "float");
+                out.putFloat(at, darknessFactor());
+                return true;
+            }
+            case "temperature" -> {
+                requireUniformType(member, "float");
+                out.putFloat(at, temperature());
+                return true;
+            }
+            case "heldBlockLightValue" -> {
+                requireUniformType(member, "int");
+                out.putInt(at, heldBlockLightValue());
+                return true;
+            }
+            case "atlasSize" -> {
+                requireUniformType(member, "ivec2");
+                Vector2i size = atlasSize();
+                putIVec2(out, at, size.x, size.y);
+                return true;
+            }
+            case "centerDepthSmooth" -> {
+                requireUniformType(member, "float");
+                // Iris rewrites this float into a lookup of the center-depth
+                // sampler during composite transforms. The Metal frontend does
+                // not run that rewrite yet, so keep the pack alive with the
+                // GL default until the transformer is ported.
+                out.putFloat(at, 0.0f);
+                return true;
+            }
+            default -> {
+                return false;
+            }
+        }
+    }
+
+    private static void requireUniformType(
+            final IrisMetalGlslLinker.UniformMember member,
+            final String expected
+    ) {
+        if (member.arrayCount() != 0 || !expected.equals(member.type())) {
+            throw new IllegalStateException(
+                    "Iris built-in uniform '" + member.name() + "' must be " + expected + ", got "
+                            + member.type() + (member.arrayCount() == 0 ? "" : "[]")
+            );
+        }
+    }
+
+    private static boolean hideGui() {
+        Minecraft minecraft = Minecraft.getInstance();
+        return minecraft != null && minecraft.gui != null && minecraft.gui.hud.isHidden();
+    }
+
+    private static float thunderStrength() {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft == null || minecraft.level == null) {
+            return 0.0f;
+        }
+        return Math.clamp(
+                0.0f,
+                1.0f,
+                minecraft.level.getThunderLevel(CapturedRenderingState.INSTANCE.getTickDelta())
+        );
+    }
+
+    private static float endFlashIntensity() {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft == null || minecraft.level == null) {
+            return 0.0f;
+        }
+        EndFlashState state = minecraft.level.endFlashState();
+        return state == null
+                ? 0.0f
+                : state.getIntensity(CapturedRenderingState.INSTANCE.getTickDelta());
+    }
+
+    private static Vector4f endFlashPosition() {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft == null || minecraft.level == null || minecraft.level.dimension() != Level.END) {
+            return new Vector4f();
+        }
+        EndFlashState state = minecraft.level.endFlashState();
+        if (state == null) {
+            return new Vector4f();
+        }
+        float yAngle = state.getYAngle();
+        float xAngle = state.getXAngle();
+        Vector4f position = new Vector4f(0.0f, 100.0f, 0.0f, 0.0f);
+        Matrix4f transform = new Matrix4f(CapturedRenderingState.INSTANCE.getGbufferModelView());
+        transform.rotate(Axis.YP.rotationDegrees(180.0f - yAngle));
+        transform.rotate(Axis.XP.rotationDegrees(-90.0f - xAngle));
+        return transform.transform(position);
+    }
+
+    private static float nightVision() {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft == null || !(minecraft.getCameraEntity() instanceof LivingEntity livingEntity)) {
+            return 0.0f;
+        }
+        try {
+            // Mirrors CommonUniforms#getNightVision, including the NPE guard
+            // around Iris's mixin-extended GameRenderer.nightVisionScale.
+            return Math.clamp(
+                    0.0f,
+                    1.0f,
+                    GameRenderer.nightVisionScale(
+                            livingEntity,
+                            CapturedRenderingState.INSTANCE.getTickDelta()
+                    )
+            );
+        } catch (NullPointerException ignored) {
+            return 0.0f;
+        }
+    }
+
+    private static float blindness() {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft == null || !(minecraft.getCameraEntity() instanceof LivingEntity livingEntity)) {
+            return 0.0f;
+        }
+        MobEffectInstance blindness = livingEntity.getEffect(MobEffects.BLINDNESS);
+        if (blindness == null) {
+            return 0.0f;
+        }
+        if (blindness.isInfiniteDuration()) {
+            return 1.0f;
+        }
+        return Math.clamp(0.0f, 1.0f, blindness.getDuration() / 20.0f);
+    }
+
+    private static float darknessFactor() {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft == null || !(minecraft.getCameraEntity() instanceof LivingEntity livingEntity)) {
+            return 0.0f;
+        }
+        MobEffectInstance darkness = livingEntity.getEffect(MobEffects.DARKNESS);
+        return darkness == null
+                ? 0.0f
+                : darkness.getBlendFactor(livingEntity, CapturedRenderingState.INSTANCE.getTickDelta());
+    }
+
+    private static float temperature() {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft == null || minecraft.player == null || minecraft.player.level() == null) {
+            return 0.0f;
+        }
+        return minecraft.player.level()
+                .getBiome(minecraft.player.blockPosition())
+                .value()
+                .getBaseTemperature();
+    }
+
+    private static int heldBlockLightValue() {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft == null || minecraft.player == null) {
+            return 0;
+        }
+        ItemStack heldStack = minecraft.player.getItemInHand(InteractionHand.MAIN_HAND);
+        if (heldStack == null || heldStack.isEmpty()) {
+            return 0;
+        }
+        Item heldItem = heldStack.getItem();
+        if (!(heldItem instanceof IrisItemLightProvider lightProvider)) {
+            return 0;
+        }
+        return lightProvider.getLightEmission(minecraft.player, heldStack);
+    }
+
+    private static Vector2i atlasSize() {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft == null) {
+            return new Vector2i(0, 0);
+        }
+        try {
+            AbstractTexture atlas = minecraft.getTextureManager().getTexture(TextureAtlas.LOCATION_BLOCKS);
+            return new Vector2i(
+                    atlas.getTexture().getWidth(0),
+                    atlas.getTexture().getHeight(0)
+            );
+        } catch (RuntimeException ignored) {
+            return new Vector2i(0, 0);
+        }
+    }
+
     private static Matrix4fc packProjectionUniform(final String name, final Matrix4fc value) {
         return switch (name) {
             case "gbufferProjection", "gbufferPreviousProjection", "iris_ProjectionMatrix" ->
@@ -940,18 +1287,21 @@ final class IrisMetalUniformValues implements AutoCloseable {
     }
 
     private void reportUnsupported(final ByteBuffer out, final IrisMetalGlslLinker.UniformMember member) {
-        if (this.strict) {
-            throw new IllegalStateException(
-                    "Iris uniform '" + member.name() + "' (" + member.type()
-                            + ") has no Metal or Iris value source"
-            );
-        }
-        // Translation-only tests deliberately use the legacy relaxed constructor.
+        // GL leaves uniforms with no registered supplier at their zero default,
+        // and Iris itself tolerates broken pack custom-uniform expressions the
+        // same way. Mirror that instead of crashing the frame.
         if (this.unsupported.add(member.name())) {
-            Metallum.LOGGER.debug(
-                    "[metallum-iris] uniform '{}' ({}) has no value source; zero-filled",
-                    member.name(), member.type()
-            );
+            if (this.strict) {
+                Metallum.LOGGER.warn(
+                        "[metallum-iris] uniform '{}' ({}) has no value source; zero-filled",
+                        member.name(), member.type()
+                );
+            } else {
+                Metallum.LOGGER.debug(
+                        "[metallum-iris] uniform '{}' ({}) has no value source; zero-filled",
+                        member.name(), member.type()
+                );
+            }
         }
     }
 
