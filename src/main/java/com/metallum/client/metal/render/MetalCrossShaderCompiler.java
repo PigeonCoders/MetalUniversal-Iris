@@ -47,7 +47,8 @@ public final class MetalCrossShaderCompiler {
     private static final int MSL_VERSION_4_0 = 0x040000;
     private static final Pattern VERTEX_ENTRY_PATTERN = Pattern.compile("\\bvertex\\s+\\w+\\s+(\\w+)\\s*\\(");
     private static final Pattern FRAGMENT_ENTRY_PATTERN = Pattern.compile("\\bfragment\\s+\\w+\\s+(\\w+)\\s*\\(");
-    private static final Pattern RESOURCE_ARGUMENT = Pattern.compile("\\b(\\w+)\\s*\\[\\[(?:buffer|texture|sampler)\\(");
+    private static final Pattern RESOURCE_ARGUMENT = Pattern.compile("\\b(\\w+)\\s*\\[\\[(?:texture|sampler)\\(");
+    private static final Pattern BUFFER_ARGUMENT = Pattern.compile("\\b(\\w+)\\s*&\\s*\\w+\\s*\\[\\[buffer\\(");
     private static final Pattern EXPLICIT_FRAGMENT_OUTPUT_PATTERN = Pattern.compile(
             "\\blayout\\s*\\(\\s*location\\s*=\\s*(\\d+)[^)]*\\)\\s*"
                     + "(?:(?:flat|smooth|noperspective|centroid|sample|invariant|precise)\\s+)*"
@@ -1841,13 +1842,19 @@ public final class MetalCrossShaderCompiler {
      */
     private static Set<String> resourceArgumentNames(final String msl) {
         Set<String> names = new HashSet<>();
-        Matcher matcher = RESOURCE_ARGUMENT.matcher(msl);
-        while (matcher.find()) {
-            String name = matcher.group(1);
+        Matcher resource = RESOURCE_ARGUMENT.matcher(msl);
+        while (resource.find()) {
+            String name = resource.group(1);
             names.add(name);
             if (name.endsWith("Smplr")) {
                 names.add(name.substring(0, name.length() - "Smplr".length()));
             }
+        }
+        // SPIRV-Cross renames uniform-buffer arguments (_110, _73, ...), so
+        // capture the struct type name instead of the parameter name.
+        Matcher buffer = BUFFER_ARGUMENT.matcher(msl);
+        while (buffer.find()) {
+            names.add(buffer.group(1));
         }
         return names;
     }
