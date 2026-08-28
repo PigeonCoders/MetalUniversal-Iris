@@ -227,9 +227,18 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
                 missing.add("uniform block " + block);
             }
         }
+        Set<String> declaredSamplers = new HashSet<>();
         for (IrisMetalGlslLinker.SamplerDecl sampler : program.samplers()) {
-            if (compiled.resource(sampler.name()) == null) {
-                missing.add("sampler " + sampler.name());
+            declaredSamplers.add(sampler.name());
+        }
+        // Shaderpack headers declare feature-guarded samplers (PBR/DH/Voxy)
+        // that never reach the compiled MSL. Validate in the opposite
+        // direction: anything the Metal pipeline actually uses must have come
+        // from the linked program's declarations.
+        for (MetalCompiledRenderPipeline.ResourceBinding binding : compiled.resources()) {
+            if (binding.kind() == MetalCompiledRenderPipeline.ResourceKind.SAMPLED_IMAGE
+                    && !declaredSamplers.contains(binding.name())) {
+                missing.add("undeclared sampler " + binding.name());
             }
         }
         if (!missing.isEmpty()) {

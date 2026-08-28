@@ -101,9 +101,12 @@ public final class IrisMetalTerrainBridge {
             return null;
         }
         if (!source.getLocation().getNamespace().contains("sodium")) {
-            throw new IllegalArgumentException(
-                    "Iris Metal terrain received a non-Sodium pipeline " + source.getLocation()
-            );
+            // A terrain context can outlive an aborted Sodium draw while the
+            // game unwinds an exception (e.g. texture atlas animation during
+            // crash handling). Never hijack a non-Sodium pipeline; clear the
+            // stale context so vanilla compilation can proceed.
+            ACTIVE_TERRAIN.remove();
+            return null;
         }
         if (!context.pipeline().compiledPrograms().isOwnedBy(device)) {
             throw new IllegalStateException("Iris Metal terrain PSO crossed Metal device ownership");
