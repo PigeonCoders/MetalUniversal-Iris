@@ -738,23 +738,23 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                 );
             }
         }
-        for (IrisMetalGlslLinker.SamplerDecl sampler : plan.program().samplers()) {
-            if (!sampler.sampled()) {
-                continue;
-            }
-            MetalRenderPass.TextureViewAndSampler binding = textureBinding(
-                    sampler.name(), plan.stage().textureStage, targets, resources, plan.readsFromAlt()
-            );
-            if (binding == null) {
-                throw new IllegalStateException(
-                        "Iris pass " + plan.name() + " is missing required sampler '" + sampler.name() + "'"
-                );
-            }
-            pass.bindTexture(sampler.name(), binding.textureView(), binding.sampler());
-        }
         IrisMetalComputeResources computeResources = resources.computeResources();
         for (MetalCompiledRenderPipeline.ResourceBinding binding : pipeline.resources()) {
-            if (binding.kind() == MetalCompiledRenderPipeline.ResourceKind.STORAGE_BUFFER) {
+            if (binding.kind() == MetalCompiledRenderPipeline.ResourceKind.SAMPLED_IMAGE) {
+                // Only samplers that survived GLSL->SPIR-V->MSL compilation
+                // need a binding; declarations guarded by optional features
+                // (PBR/DH/Voxy) are not in the compiled pipeline and must not
+                // fail the pass.
+                MetalRenderPass.TextureViewAndSampler sampled = textureBinding(
+                        binding.name(), plan.stage().textureStage, targets, resources, plan.readsFromAlt()
+                );
+                if (sampled == null) {
+                    throw new IllegalStateException(
+                            "Iris pass " + plan.name() + " is missing required sampler '" + binding.name() + "'"
+                    );
+                }
+                pass.bindTexture(binding.name(), sampled.textureView(), sampled.sampler());
+            } else if (binding.kind() == MetalCompiledRenderPipeline.ResourceKind.STORAGE_BUFFER) {
                 if (computeResources == null) {
                     throw new IllegalStateException(
                             "Iris pass " + plan.name() + " requires generation-owned SSBO resources"
@@ -884,6 +884,9 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             }
         } else {
             int color = parseSuffix(name, "colortex");
+            if (color < 0) {
+                color = legacyColorTarget(name);
+            }
             if (color >= 0) {
                 if (color >= targets.colorTargets().targetCount()) {
                     throw new IllegalStateException("Iris sampler target out of range: " + name);
@@ -1084,6 +1087,24 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         } catch (NumberFormatException ignored) {
             return -1;
         }
+    }
+
+    /**
+     * Maps Iris's legacy gbuffer sampler aliases to their colortex indices.
+     * Mirrors {@code PackRenderTargetDirectives.LEGACY_RENDER_TARGETS}.
+     */
+    static int legacyColorTarget(final String name) {
+        return switch (name) {
+            case "gcolor" -> 0;
+            case "gdepth" -> 1;
+            case "gnormal" -> 2;
+            case "composite" -> 3;
+            case "gaux1" -> 4;
+            case "gaux2" -> 5;
+            case "gaux3" -> 6;
+            case "gaux4" -> 7;
+            default -> -1;
+        };
     }
 
     private int shadowTargetCount() {
