@@ -44,9 +44,6 @@ jobs:
           cmake --version
       - name: build
         run: ./gradlew buildMacNative buildMacSpvc buildMacGlslang buildIOSNative buildIOSSpvc buildIOSGlslang build metalIrisTexturesIntegrationTest
-      - name: dump test xml for diagnostics
-        if: always()
-        run: find build/test-results -name '*.xml' -type f -exec cat {} \; || true
       - name: capture build artifacts
         uses: actions/upload-artifact@v7
         with:
