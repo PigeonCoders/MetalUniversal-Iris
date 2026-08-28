@@ -48,6 +48,7 @@ final class IrisMetalWorldResources implements AutoCloseable {
                 programSet.getPackDirectives().getRenderTargetDirectives().getRenderTargetSettings(),
                 mipmappedTargets(programSet),
                 programSet.getPack().getCustomTextureDataMap(),
+                programSet.getPack().getIrisCustomTextureDataMap(),
                 programSet.getPackDirectives().getNoiseTextureResolution(),
                 programSet.getPack().getCustomNoiseTexture(),
                 createShadowTargets(device, programSet),
@@ -76,6 +77,37 @@ final class IrisMetalWorldResources implements AutoCloseable {
                 targetSettings,
                 mipmappedTargets,
                 customDefinitions,
+                Map.of(),
+                noiseResolution,
+                customNoise,
+                null,
+                null
+        );
+    }
+
+    IrisMetalWorldResources(
+            final MetalDevice device,
+            final int generation,
+            final GpuFormat[] formats,
+            final int width,
+            final int height,
+            final Map<Integer, RenderTargetSettings> targetSettings,
+            final Set<Integer> mipmappedTargets,
+            final Map<TextureStage, ? extends Map<String, CustomTextureData>> customDefinitions,
+            final Map<String, ? extends CustomTextureData> irisDefinitions,
+            final int noiseResolution,
+            final @Nullable CustomTextureData customNoise
+    ) {
+        this(
+                device,
+                generation,
+                formats,
+                width,
+                height,
+                targetSettings,
+                mipmappedTargets,
+                customDefinitions,
+                irisDefinitions,
                 noiseResolution,
                 customNoise,
                 null,
@@ -92,6 +124,7 @@ final class IrisMetalWorldResources implements AutoCloseable {
             final Map<Integer, RenderTargetSettings> targetSettings,
             final Set<Integer> mipmappedTargets,
             final Map<TextureStage, ? extends Map<String, CustomTextureData>> customDefinitions,
+            final Map<String, ? extends CustomTextureData> irisDefinitions,
             final int noiseResolution,
             final @Nullable CustomTextureData customNoise,
             final @Nullable IrisMetalShadowTargets shadowTargets,
@@ -112,7 +145,7 @@ final class IrisMetalWorldResources implements AutoCloseable {
             newTargets = new IrisMetalRenderTargets(
                     device, formats, width, height, targetSettings, mipmappedTargets
             );
-            newCustomTextures = new IrisMetalCustomTextures(device, customDefinitions);
+            newCustomTextures = new IrisMetalCustomTextures(device, customDefinitions, irisDefinitions);
             newCustomTextures.prewarmAll();
             newNoiseTexture = new IrisMetalNoiseTexture(device, noiseResolution, customNoise);
             if (computePack != null) {
