@@ -431,6 +431,8 @@ public final class MetalCrossShaderCompiler {
         final List<VulkanBindGroupLayout.Entry> entries =
                 filterUsedShaderpackEntries(reflectedEntries, usedVertex, usedFragment);
         final Map<String, Integer> resourceBindings = shaderpackResourceBindings(entries);
+        System.err.println("[used-debug] vertex=" + usedVertex + " fragment=" + usedFragment
+                + " entries=" + entries + " map=" + resourceBindings);
         final int pushConstantBinding = entries.size();
         final MslShader vertexMsl = spirvToMsl(
                 spirvWordsToByteBuffer(vertexSpvWords), pushConstantBinding,
@@ -1875,6 +1877,8 @@ public final class MetalCrossShaderCompiler {
                 final long resources = pResources.get(0);
                 final Set<String> used = new HashSet<>();
                 collectUsedResourceNames(stack, compiler, resources, used);
+                System.err.println("[used-debug] prepass model=" + Spvc.spvc_compiler_get_execution_model(compiler)
+                        + " used=" + used);
                 return used;
             } finally {
                 Spvc.spvc_context_destroy(context);
