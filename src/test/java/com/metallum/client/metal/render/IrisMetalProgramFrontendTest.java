@@ -157,10 +157,7 @@ final class IrisMetalProgramFrontendTest {
             count++;
             unique.add(Integer.parseInt(matcher.group(1)));
         }
-        if (unique.size() != count) {
-            // TEMP diagnostics for shaderpack resource compaction.
-            throw new AssertionError(kind + " bindings collide in generated MSL:\n" + msl);
-        }
+        assertTrue(unique.size() == count, kind + " bindings collide in generated MSL");
     }
 
     private static int resourceBinding(final String msl, final String type, final String kind) {
