@@ -70,6 +70,7 @@ test {
 	exclude "**/MetalIrisCustomTexturesIntegrationTest.class"
 	exclude "**/MetalIrisNoiseTextureIntegrationTest.class"
 	exclude "**/MetalIrisPbrDefaultsIntegrationTest.class"
+	exclude "**/MellowMetalMslCompileIntegrationTest.class"
 	exclude "**/IrisMetalCenterDepthSamplerTest.class"
 }
 
@@ -191,6 +192,7 @@ tasks.register("metalIrisTexturesIntegrationTest", Test) {
 		includeTestsMatching "com.metallum.client.metal.render.MetalIrisNoiseTextureIntegrationTest"
 		includeTestsMatching "com.metallum.client.metal.render.IrisMetalCenterDepthSamplerTest"
 		includeTestsMatching "com.metallum.client.metal.render.MetalIrisPbrDefaultsIntegrationTest"
+		includeTestsMatching "com.metallum.client.metal.render.MellowMetalMslCompileIntegrationTest"
 	}
 	jvmArgs "--enable-native-access=ALL-UNNAMED"
 	environment "MTL_DEBUG_LAYER", "1"
