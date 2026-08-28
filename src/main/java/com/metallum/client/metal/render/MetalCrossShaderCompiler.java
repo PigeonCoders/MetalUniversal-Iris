@@ -416,6 +416,7 @@ public final class MetalCrossShaderCompiler {
         final List<VulkanBindGroupLayout.Entry> entries =
                 buildShaderpackBindGroupEntries(vertexReflection, fragmentReflection);
         final Map<String, Integer> resourceBindings = shaderpackResourceBindings(entries);
+        System.err.println("[bindings-debug] map=" + resourceBindings);
         final int pushConstantBinding = entries.size();
         final MslShader vertexMsl = spirvToMsl(
                 spirvWordsToByteBuffer(vertexSpvWords), pushConstantBinding,
@@ -1720,6 +1721,7 @@ public final class MetalCrossShaderCompiler {
                 Spvc.spvc_compiler_set_decoration(
                         compiler, resource.id(), Spv.SpvDecorationDescriptorSet, 0
                 );
+                System.err.println("[bindings-debug] type=" + resourceType + " name=" + name + " -> " + binding);
             }
         }
     }
