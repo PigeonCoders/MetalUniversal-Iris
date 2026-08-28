@@ -281,11 +281,11 @@ public final class MetalCrossShaderCompiler {
         final int pushConstantBinding = entries.size() + storageResources.size();
         final MslShader vertexMsl = spirvToMsl(
                 vertexSpirv, pushConstantBinding,
-                vertexAttributeFormats, enablePointSize, Map.of(), resourceBindings, physicalInputNames
+                vertexAttributeFormats, enablePointSize, Map.of(), resourceBindings, physicalInputNames, true
         );
         final MslShader fragmentMsl = spirvToMsl(
                 fragmentSpirv, pushConstantBinding,
-                Map.of(), true, Map.of(), resourceBindings
+                Map.of(), true, Map.of(), resourceBindings, null, true
         );
         validateFragmentOutputSignature(name, colorTargets, fragmentMsl.stageOutputLocations());
 
@@ -1401,7 +1401,8 @@ public final class MetalCrossShaderCompiler {
                 enablePointSize,
                 explicitFragmentOutputLocations,
                 explicitResourceBindings,
-                null
+                null,
+                true
         );
     }
 
@@ -1428,7 +1429,8 @@ public final class MetalCrossShaderCompiler {
                 enablePointSize,
                 explicitFragmentOutputLocations,
                 Map.of(),
-                null
+                null,
+                false
         );
     }
 
@@ -1439,7 +1441,8 @@ public final class MetalCrossShaderCompiler {
             final boolean enablePointSize,
             final Map<String, Integer> explicitFragmentOutputLocations,
             final Map<String, Integer> explicitResourceBindings,
-            @Nullable final List<String> physicalInputNames
+            @Nullable final List<String> physicalInputNames,
+            final boolean remapClipSpace
     ) throws ShaderCompileException {
         try (MemoryStack stack = MemoryStack.stackPush()) {
             IntBuffer spirvWords = spirvBytes.asIntBuffer();
@@ -1564,8 +1567,12 @@ public final class MetalCrossShaderCompiler {
 
                 PointerBuffer pSource = stack.mallocPointer(1);
                 checkSpvc(Spvc.spvc_compiler_compile(compiler, pSource), "spvc_compiler_compile");
+                String msl = MemoryUtil.memUTF8(pSource.get(0));
+                if (remapClipSpace) {
+                    msl = MetalMslClipSpace.fixup(msl);
+                }
                 return new MslShader(
-                        MemoryUtil.memUTF8(pSource.get(0)),
+                        msl,
                         hasPushConstants,
                         activeResources,
                         stageOutputLocations,

@@ -105,6 +105,10 @@ final class MellowMetalMslCompileIntegrationTest {
         assertNotNull(result);
         assertBindingsWithinLimits(result.vertexMsl(), "vertex");
         assertBindingsWithinLimits(result.fragmentMsl(), "fragment");
+        assertTrue(
+                result.vertexMsl().contains("out.gl_Position.z = (out.gl_Position.z + out.gl_Position.w) * 0.5"),
+                "vertex MSL is missing the clip-space Z remap to Metal [0,w]; front-half geometry would be clipped"
+        );
     }
 
     private static void assertBindingsWithinLimits(final String msl, final String stage) {
