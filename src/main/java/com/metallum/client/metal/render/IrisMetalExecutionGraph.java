@@ -66,6 +66,16 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             "composite2", "composite3", "composite4", "composite5", "composite6"
     );
 
+    /**
+     * EXPERIMENTAL post-processing bisect. When true every COMPOSITE raster
+     * pass and the final shader are skipped, so the displayed image is the raw
+     * colortex0 written by the terrain pass over the per-frame fog clear. If
+     * the bands are visible here, they are produced by terrain/clear; if not,
+     * they are produced by composite7/8/12/final. Revert all three
+     * experimental flags before the real fix.
+     */
+    private static final boolean DEBUG_SKIP_ALL_POST = true;
+
     private static final Pattern COMPUTE_BINDING = Pattern.compile(
             "layout\\s*\\(([^)]*\\bbinding\\s*=\\s*(\\d+)[^)]*)\\)\\s*"
                     + "(?:readonly\\s+|writeonly\\s+|coherent\\s+|volatile\\s+|restrict\\s+)*"
@@ -253,6 +263,9 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                 if (source == null || !source.isValid()) {
                     continue;
                 }
+                if (DEBUG_SKIP_ALL_POST && stage == Stage.COMPOSITE) {
+                    continue;
+                }
                 if (DEBUG_DISABLE_BLOOM && stage == Stage.COMPOSITE
                         && BLOOM_PROGRAM_NAMES.contains(source.getName())) {
                     continue;
@@ -318,7 +331,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         state = new BitSet();
 
         Optional<ProgramSource> finalSource = programSet.get(ProgramId.Final);
-        if (finalSource.isPresent() && finalSource.get().isValid()) {
+        if (!DEBUG_SKIP_ALL_POST && finalSource.isPresent() && finalSource.get().isValid()) {
             ProgramSource source = finalSource.get();
             int[] drawBuffers = validateDrawBuffers(source.getName(), source.getDirectives().getDrawBuffers());
             IrisMetalGlslLinker.LinkedRasterProgram linked = programs.finalProgram();
