@@ -24,6 +24,15 @@ import java.util.function.Supplier;
 public final class IrisMetalTerrainBridge {
     private static final ThreadLocal<TerrainContext> ACTIVE_TERRAIN = new ThreadLocal<>();
 
+    /**
+     * EXPERIMENTAL texture bisect. Bind the shaderpack {@code gtexture} alias
+     * to the neutral 1x1 PBR default texture instead of Sodium's block atlas.
+     * If the psychedelic terrain becomes a flat tint, the defect is in the
+     * atlas binding/UV path; if it stays rainbow, the defect is in vertex
+     * attributes/lighting. Revert with the other experimental flags.
+     */
+    private static final boolean DEBUG_NEUTRAL_GTEXTURE = true;
+
     private IrisMetalTerrainBridge() {
     }
 
@@ -161,6 +170,10 @@ public final class IrisMetalTerrainBridge {
         TerrainContext context = currentContext();
         if (context == null) {
             return null;
+        }
+        if (DEBUG_NEUTRAL_GTEXTURE
+                && ("gtexture".equals(name) || "texture".equals(name) || "tex".equals(name))) {
+            return context.pipeline().resources().pbrNormals();
         }
         MetalRenderPass.TextureViewAndSampler alias = switch (name) {
             case "gtexture", "texture", "tex" -> bound.get("u_BlockTex");
