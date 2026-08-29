@@ -52,6 +52,20 @@ final class IrisMetalExecutionGraphTest {
     }
 
     @Test
+    void legacyGbufferAliasesMapToIrisColorTargets() {
+        assertEquals(0, IrisMetalExecutionGraph.legacyColorTarget("gcolor"));
+        assertEquals(1, IrisMetalExecutionGraph.legacyColorTarget("gdepth"));
+        assertEquals(2, IrisMetalExecutionGraph.legacyColorTarget("gnormal"));
+        assertEquals(3, IrisMetalExecutionGraph.legacyColorTarget("composite"));
+        assertEquals(4, IrisMetalExecutionGraph.legacyColorTarget("gaux1"));
+        assertEquals(5, IrisMetalExecutionGraph.legacyColorTarget("gaux2"));
+        assertEquals(6, IrisMetalExecutionGraph.legacyColorTarget("gaux3"));
+        assertEquals(7, IrisMetalExecutionGraph.legacyColorTarget("gaux4"));
+        assertEquals(-1, IrisMetalExecutionGraph.legacyColorTarget("colortex4"));
+        assertEquals(-1, IrisMetalExecutionGraph.legacyColorTarget("unknown"));
+    }
+
+    @Test
     void rasterStorageBindingsKeepLogicalSsboIdentity() {
         String descriptor = MetalCrossShaderCompiler.storageBufferDescriptorName(7, "voxelData");
         assertEquals("iris_ssbo/7/voxelData", descriptor);

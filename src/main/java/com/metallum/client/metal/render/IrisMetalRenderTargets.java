@@ -115,6 +115,22 @@ final class IrisMetalRenderTargets implements AutoCloseable {
             encoder.clearColorTexture(colorTargets.mainTexture(index), clear);
             encoder.clearColorTexture(colorTargets.altTexture(index), clear);
         }
+
+        // EXPERIMENTAL ghosting fix (step 1). Mellow FANCY declares
+        // colortex0Clear=false and colortex1Clear=false, so no full-screen pass
+        // refreshes the sky in colortex0 and only sub-rect tiles refresh
+        // colortex1. When the camera moves, pixels that no longer have terrain
+        // keep the previous frame's image (the reported black smears and block
+        // ghosting). Clear the two feedback buffers every frame to test that
+        // hypothesis: colortex0 falls back to fog (its Iris default), colortex1
+        // to black. Remove this block and revert the commit if the artifact
+        // persists or water reflections regress.
+        encoder.clearColorTexture(colorTargets.mainTexture(0), fog);
+        encoder.clearColorTexture(colorTargets.altTexture(0), fog);
+        Vector4f black = new Vector4f(0.0F, 0.0F, 0.0F, 1.0F);
+        encoder.clearColorTexture(colorTargets.mainTexture(1), black);
+        encoder.clearColorTexture(colorTargets.altTexture(1), black);
+
         this.fullClearRequired = false;
         return fullClear;
     }

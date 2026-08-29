@@ -9,6 +9,7 @@ import net.irisshaders.iris.helpers.Tri;
 import net.irisshaders.iris.pipeline.VanillaRenderingPipeline;
 import net.irisshaders.iris.pipeline.WorldRenderingPhase;
 import net.irisshaders.iris.shaderpack.ShaderPack;
+import net.irisshaders.iris.shaderpack.materialmap.BlockMaterialMapping;
 import net.irisshaders.iris.shaderpack.materialmap.WorldRenderingSettings;
 import net.irisshaders.iris.shaderpack.programs.ProgramSet;
 import net.irisshaders.iris.shaderpack.properties.CloudSetting;
@@ -67,6 +68,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
     private IrisMetalWorldResources resources;
     private @Nullable IrisMetalCenterDepthSampler centerDepthSampler;
     private MetalDevice centerDepthDevice;
+    private boolean initializedBlockIds;
     private int receiptWidth = -1;
     private int receiptHeight = -1;
 
@@ -182,6 +184,24 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
 
     @Override
     public void beginLevelRendering() {
+        if (!this.initializedBlockIds) {
+            // IrisRenderingPipeline publishes these maps on the first world
+            // frame; IrisExclusiveUniforms.getCurrentSelectedBlockId reads
+            // them from WorldRenderingSettings during the uniform-graph update.
+            WorldRenderingSettings settings = WorldRenderingSettings.INSTANCE;
+            settings.setBlockStateIds(BlockMaterialMapping.createBlockStateIdMap(
+                    this.pack.getIdMap().getBlockProperties(),
+                    this.pack.getIdMap().getTagEntries()
+            ));
+            settings.setBlockTypeIds(BlockMaterialMapping.createBlockTypeMap(
+                    this.pack.getIdMap().getBlockRenderTypeMap()
+            ));
+            Minecraft minecraft = Minecraft.getInstance();
+            if (minecraft != null) {
+                minecraft.levelExtractor.allChanged();
+            }
+            this.initializedBlockIds = true;
+        }
         this.receipts.recordEvent("frame.begin");
         prepareResources();
         prepareTerrainUniforms();

@@ -52,7 +52,7 @@
 2. **提交并推分支**：清晰的中文/英文 commit message，说明“改了什么 + 为什么 + 验证了什么”。
 3. **开 PR 到 `main`**。
 4. **必须等 GitHub CI 全绿**。CI 在 `macos-15` 上执行**含原生库的完整构建**：
-   - `buildMacNative buildMacSpvc buildMacGlslang buildIOSNative buildIOSSpvc buildIOSGlslang build`
+   - `buildMacNative buildMacSpvc buildMacGlslang buildIOSNative buildIOSSpvc buildIOSGlslang build metalIrisTexturesIntegrationTest`
    - 产物：macOS/iOS 的 `libmetallum.dylib`、`libspvc.dylib`、`libglslang*.dylib` 等，位于 `src/main/resources/natives/`
    - CI 不绿 = 阶段未完成，禁止进入下一阶段，也禁止把“本地能编译”当通过。
 5. **交给用户实机测试**：CI 绿后**停止代码工作**，把 PR 链接 + CI artifacts（或带 tag 的 release）交给用户，在真机（Apple Silicon macOS / iOS）上运行 MakeUp 或 Mellow，收集截图/日志/复现步骤。

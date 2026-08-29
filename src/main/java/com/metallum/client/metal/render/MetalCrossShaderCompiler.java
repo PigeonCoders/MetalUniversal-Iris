@@ -47,6 +47,8 @@ public final class MetalCrossShaderCompiler {
     private static final int MSL_VERSION_4_0 = 0x040000;
     private static final Pattern VERTEX_ENTRY_PATTERN = Pattern.compile("\\bvertex\\s+\\w+\\s+(\\w+)\\s*\\(");
     private static final Pattern FRAGMENT_ENTRY_PATTERN = Pattern.compile("\\bfragment\\s+\\w+\\s+(\\w+)\\s*\\(");
+    private static final Pattern RESOURCE_ARGUMENT = Pattern.compile("\\b(\\w+)\\s*\\[\\[(?:texture|sampler)\\(");
+    private static final Pattern BUFFER_ARGUMENT = Pattern.compile("\\b(\\w+)\\s*&\\s*\\w+\\s*\\[\\[buffer\\(");
     private static final Pattern EXPLICIT_FRAGMENT_OUTPUT_PATTERN = Pattern.compile(
             "\\blayout\\s*\\(\\s*location\\s*=\\s*(\\d+)[^)]*\\)\\s*"
                     + "(?:(?:flat|smooth|noperspective|centroid|sample|invariant|precise)\\s+)*"
@@ -169,7 +171,7 @@ public final class MetalCrossShaderCompiler {
             String vertexEntryPoint = extractEntryPoint(vertexMsl.source(), VERTEX_ENTRY_PATTERN, "main0");
             String fragmentEntryPoint = extractEntryPoint(fragmentMsl.source(), FRAGMENT_ENTRY_PATTERN, "main0");
             List<MetalCompiledRenderPipeline.ResourceBinding> resources = buildResourceBindings(
-                    layoutEntries, storageResources, vertexMsl, fragmentMsl
+                    layoutEntries, storageResources, vertexMsl, fragmentMsl, null
             );
             return new MetalCompiledRenderPipeline(
                     device,
@@ -263,28 +265,34 @@ public final class MetalCrossShaderCompiler {
         final ByteBuffer fragmentSpirv = spirvWordsToByteBuffer(fragmentSpvWords);
         final ShaderpackReflection vertexReflection = reflectShaderpackResources(vertexSpirv);
         final ShaderpackReflection fragmentReflection = reflectShaderpackResources(fragmentSpirv);
-        final List<VulkanBindGroupLayout.Entry> reflectedEntries = buildShaderpackBindGroupEntries(vertexReflection, fragmentReflection);
+        final List<VulkanBindGroupLayout.Entry> reflectedEntries =
+                buildShaderpackBindGroupEntries(vertexReflection, fragmentReflection);
+        final Map<String, Integer> provisionalBindings = shaderpackResourceBindings(reflectedEntries);
+        final Set<String> usedVertex = usedShaderpackResources(vertexSpirv, provisionalBindings);
+        final Set<String> usedFragment = usedShaderpackResources(fragmentSpirv, provisionalBindings);
+        final List<VulkanBindGroupLayout.Entry> entries =
+                filterUsedShaderpackEntries(reflectedEntries, usedVertex, usedFragment);
         final List<RasterStorageResource> storageResources = rebindRasterStorageResources(
-                vertexSpirv, fragmentSpirv, reflectedEntries.size()
+                vertexSpirv, fragmentSpirv, entries.size()
         );
-        final Map<String, Integer> resourceBindings = shaderpackResourceBindings(reflectedEntries);
+        final Map<String, Integer> resourceBindings = shaderpackResourceBindings(entries);
         final List<String> physicalInputNames = vertexInputNames(vertexFormatBindings);
 
-        final int pushConstantBinding = reflectedEntries.size() + storageResources.size();
+        final int pushConstantBinding = entries.size() + storageResources.size();
         final MslShader vertexMsl = spirvToMsl(
                 vertexSpirv, pushConstantBinding,
-                vertexAttributeFormats, enablePointSize, Map.of(), resourceBindings, physicalInputNames
+                vertexAttributeFormats, enablePointSize, Map.of(), resourceBindings, physicalInputNames, true
         );
         final MslShader fragmentMsl = spirvToMsl(
                 fragmentSpirv, pushConstantBinding,
-                Map.of(), true, Map.of(), resourceBindings
+                Map.of(), true, Map.of(), resourceBindings, null, true
         );
         validateFragmentOutputSignature(name, colorTargets, fragmentMsl.stageOutputLocations());
 
         final String vertexEntryPoint = extractEntryPoint(vertexMsl.source(), VERTEX_ENTRY_PATTERN, "main0");
         final String fragmentEntryPoint = extractEntryPoint(fragmentMsl.source(), FRAGMENT_ENTRY_PATTERN, "main0");
         final List<MetalCompiledRenderPipeline.ResourceBinding> resources = buildResourceBindings(
-                reflectedEntries, storageResources, vertexMsl, fragmentMsl
+                entries, storageResources, vertexMsl, fragmentMsl, shaderpackResourceBindings(entries)
         );
 
         return new MetalCompiledRenderPipeline(
@@ -413,8 +421,17 @@ public final class MetalCrossShaderCompiler {
                 reflectShaderpackResources(spirvWordsToByteBuffer(vertexSpvWords));
         final ShaderpackReflection fragmentReflection =
                 reflectShaderpackResources(spirvWordsToByteBuffer(fragmentSpvWords));
-        final List<VulkanBindGroupLayout.Entry> entries =
+        final List<VulkanBindGroupLayout.Entry> reflectedEntries =
                 buildShaderpackBindGroupEntries(vertexReflection, fragmentReflection);
+        final Map<String, Integer> provisionalBindings = shaderpackResourceBindings(reflectedEntries);
+        final Set<String> usedVertex = usedShaderpackResources(
+                spirvWordsToByteBuffer(vertexSpvWords), provisionalBindings
+        );
+        final Set<String> usedFragment = usedShaderpackResources(
+                spirvWordsToByteBuffer(fragmentSpvWords), provisionalBindings
+        );
+        final List<VulkanBindGroupLayout.Entry> entries =
+                filterUsedShaderpackEntries(reflectedEntries, usedVertex, usedFragment);
         final Map<String, Integer> resourceBindings = shaderpackResourceBindings(entries);
         final int pushConstantBinding = entries.size();
         final MslShader vertexMsl = spirvToMsl(
@@ -877,20 +894,30 @@ public final class MetalCrossShaderCompiler {
             final List<VulkanBindGroupLayout.Entry> entries,
             final List<RasterStorageResource> storageResources,
             final MslShader vertexMsl,
-            final MslShader fragmentMsl
+            final MslShader fragmentMsl,
+            final @Nullable Map<String, Integer> bindingIndexes
     ) {
         List<MetalCompiledRenderPipeline.ResourceBinding> resources = new ArrayList<>(
                 entries.size() + storageResources.size() + 1
         );
-        for (int index = 0; index < entries.size(); index++) {
-            VulkanBindGroupLayout.Entry entry = entries.get(index);
+        int nextEntryIndex = 0;
+        for (VulkanBindGroupLayout.Entry entry : entries) {
             MetalCompiledRenderPipeline.ResourceKind kind = switch (entry.type()) {
                 case UNIFORM_BUFFER -> MetalCompiledRenderPipeline.ResourceKind.UNIFORM_BUFFER;
                 case SAMPLED_IMAGE -> MetalCompiledRenderPipeline.ResourceKind.SAMPLED_IMAGE;
                 case TEXEL_BUFFER -> MetalCompiledRenderPipeline.ResourceKind.TEXEL_BUFFER;
             };
             GpuFormat texelFormat = entry.type() == VulkanBindGroupLayout.VulkanBindGroupEntryType.TEXEL_BUFFER ? entry.texelBufferFormat() : null;
-            resources.add(new MetalCompiledRenderPipeline.ResourceBinding(kind, entry.name(), index, stageMask(entry.name(), vertexMsl, fragmentMsl), texelFormat));
+            int bindingIndex = bindingIndexes == null
+                    ? nextEntryIndex++
+                    : bindingIndexes.get(entry.name());
+            resources.add(new MetalCompiledRenderPipeline.ResourceBinding(
+                    kind,
+                    entry.name(),
+                    bindingIndex,
+                    stageMask(entry.name(), vertexMsl, fragmentMsl),
+                    texelFormat
+            ));
         }
 
         for (RasterStorageResource storage : storageResources) {
@@ -1374,7 +1401,8 @@ public final class MetalCrossShaderCompiler {
                 enablePointSize,
                 explicitFragmentOutputLocations,
                 explicitResourceBindings,
-                null
+                null,
+                true
         );
     }
 
@@ -1401,7 +1429,8 @@ public final class MetalCrossShaderCompiler {
                 enablePointSize,
                 explicitFragmentOutputLocations,
                 Map.of(),
-                null
+                null,
+                MetalIrisDepthConvention.conventionalDepthActive()
         );
     }
 
@@ -1412,7 +1441,8 @@ public final class MetalCrossShaderCompiler {
             final boolean enablePointSize,
             final Map<String, Integer> explicitFragmentOutputLocations,
             final Map<String, Integer> explicitResourceBindings,
-            @Nullable final List<String> physicalInputNames
+            @Nullable final List<String> physicalInputNames,
+            final boolean remapClipSpace
     ) throws ShaderCompileException {
         try (MemoryStack stack = MemoryStack.stackPush()) {
             IntBuffer spirvWords = spirvBytes.asIntBuffer();
@@ -1537,8 +1567,12 @@ public final class MetalCrossShaderCompiler {
 
                 PointerBuffer pSource = stack.mallocPointer(1);
                 checkSpvc(Spvc.spvc_compiler_compile(compiler, pSource), "spvc_compiler_compile");
+                String msl = MemoryUtil.memUTF8(pSource.get(0));
+                if (remapClipSpace) {
+                    msl = MetalMslClipSpace.fixup(msl);
+                }
                 return new MslShader(
-                        MemoryUtil.memUTF8(pSource.get(0)),
+                        msl,
                         hasPushConstants,
                         activeResources,
                         stageOutputLocations,
@@ -1678,6 +1712,7 @@ public final class MetalCrossShaderCompiler {
         };
         PointerBuffer listPointer = stack.mallocPointer(1);
         PointerBuffer countPointer = stack.mallocPointer(1);
+        int executionModel = Spvc.spvc_compiler_get_execution_model(compiler);
         for (int resourceType : resourceTypes) {
             checkSpvc(
                     Spvc.spvc_resources_get_resource_list_for_type(
@@ -1689,11 +1724,23 @@ public final class MetalCrossShaderCompiler {
             SpvcReflectedResource.Buffer list = SpvcReflectedResource.create(listPointer.get(0), count);
             for (int index = 0; index < count; index++) {
                 SpvcReflectedResource resource = list.get(index);
-                Integer binding = bindings.get(resource.nameString());
+                String name = resource.nameString();
+                Integer binding = bindings.get(name);
                 if (binding == null) {
-                    throw new ShaderCompileException(
-                            "Shader resource '" + resource.nameString() + "' has no unified Metal binding"
-                    );
+                    if (Spvc.spvc_compiler_has_decoration(compiler, resource.id(), Spv.SpvDecorationBinding)) {
+                        int originalBinding = Spvc.spvc_compiler_get_decoration(
+                                compiler, resource.id(), Spv.SpvDecorationBinding
+                        );
+                        if (Spvc.spvc_compiler_msl_is_resource_used(
+                                compiler, executionModel, 0, originalBinding
+                        )) {
+                            throw new ShaderCompileException(
+                                    "Used shader resource '" + name + "' has no unified Metal binding"
+                            );
+                        }
+                    }
+                    // Feature-guarded declaration that MSL codegen will not emit.
+                    continue;
                 }
                 Spvc.spvc_compiler_set_decoration(
                         compiler, resource.id(), Spv.SpvDecorationBinding, binding
@@ -1738,6 +1785,103 @@ public final class MetalCrossShaderCompiler {
         for (int i = 0; i < count; i++) {
             out.add(list.get(i).nameString());
         }
+    }
+
+    /**
+     * Collects only resources that MSL code generation will actually reference.
+     * Shaderpack headers declare many feature-guarded samplers (PBR/DH/Voxy);
+     * without this filter their unused declarations consume Metal's 16-sampler
+     * binding budget and MSL fails with "sampler attribute parameter is out of
+     * bounds".
+     */
+    /**
+     * Dry-runs MSL codegen once with the provisional (unfiltered) binding plan
+     * and derives the used resource set from the emitted function signature.
+     * SPIRV-Cross only populates its own usage map for bindings registered
+     * explicitly through {@code add_msl_resource_binding}, which this backend
+     * does not use.
+     */
+    private static Set<String> usedShaderpackResources(
+            final ByteBuffer spirvBytes,
+            final Map<String, Integer> provisionalBindings
+    ) throws ShaderCompileException {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            final IntBuffer spirvWords = spirvBytes.asIntBuffer();
+            final int wordCount = spirvWords.remaining();
+            if (wordCount < 5) {
+                throw new ShaderCompileException(
+                        "SPIR-V is too small for shaderpack usage analysis: " + wordCount
+                );
+            }
+            final PointerBuffer pContext = stack.mallocPointer(1);
+            checkSpvc(Spvc.spvc_context_create(pContext), "spvc_context_create");
+            final long context = pContext.get(0);
+            try {
+                final PointerBuffer pIr = stack.mallocPointer(1);
+                checkSpvc(Spvc.spvc_context_parse_spirv(context, spirvWords, wordCount, pIr), "spvc_context_parse_spirv");
+                final long ir = pIr.get(0);
+                if (ir == 0L) {
+                    throw new ShaderCompileException(
+                            "spvc_context_parse_spirv returned SPVC_SUCCESS but parsed_ir is NULL during usage analysis"
+                    );
+                }
+                final PointerBuffer pCompiler = stack.mallocPointer(1);
+                checkSpvc(
+                        Spvc.spvc_context_create_compiler(
+                                context, Spvc.SPVC_BACKEND_MSL, ir, Spvc.SPVC_CAPTURE_MODE_COPY, pCompiler
+                        ),
+                        "spvc_context_create_compiler"
+                );
+                final long compiler = pCompiler.get(0);
+                applyExplicitResourceBindings(stack, compiler, provisionalBindings);
+
+                final PointerBuffer pSource = stack.mallocPointer(1);
+                checkSpvc(Spvc.spvc_compiler_compile(compiler, pSource), "spvc_compiler_compile(usage analysis)");
+                return resourceArgumentNames(MemoryUtil.memUTF8(pSource.get(0)));
+            } finally {
+                Spvc.spvc_context_destroy(context);
+            }
+        }
+    }
+
+    /**
+     * Collects resource variable names that actually appear in generated MSL
+     * function parameters. SPIRV-Cross's {@code is_msl_resource_binding_used}
+     * only works for bindings added explicitly via
+     * {@code add_msl_resource_binding}, so usage is derived from the emitted
+     * source instead.
+     */
+    private static Set<String> resourceArgumentNames(final String msl) {
+        Set<String> names = new HashSet<>();
+        Matcher resource = RESOURCE_ARGUMENT.matcher(msl);
+        while (resource.find()) {
+            String name = resource.group(1);
+            names.add(name);
+            if (name.endsWith("Smplr")) {
+                names.add(name.substring(0, name.length() - "Smplr".length()));
+            }
+        }
+        // SPIRV-Cross renames uniform-buffer arguments (_110, _73, ...), so
+        // capture the struct type name instead of the parameter name.
+        Matcher buffer = BUFFER_ARGUMENT.matcher(msl);
+        while (buffer.find()) {
+            names.add(buffer.group(1));
+        }
+        return names;
+    }
+
+    private static List<VulkanBindGroupLayout.Entry> filterUsedShaderpackEntries(
+            final List<VulkanBindGroupLayout.Entry> entries,
+            final Set<String> usedVertex,
+            final Set<String> usedFragment
+    ) {
+        List<VulkanBindGroupLayout.Entry> filtered = new ArrayList<>(entries.size());
+        for (VulkanBindGroupLayout.Entry entry : entries) {
+            if (usedVertex.contains(entry.name()) || usedFragment.contains(entry.name())) {
+                filtered.add(entry);
+            }
+        }
+        return filtered;
     }
 
     /**
@@ -1883,11 +2027,20 @@ public final class MetalCrossShaderCompiler {
     private static Map<String, Integer> shaderpackResourceBindings(
             final List<VulkanBindGroupLayout.Entry> entries
     ) {
+        // Metal has independent buffer/texture argument tables, so compact
+        // sampled images from 0 while buffers also start from 0. This keeps
+        // pack headers with many feature-guarded samplers within the 16-slot
+        // sampler limit after unused declarations have been filtered out.
         Map<String, Integer> bindings = new LinkedHashMap<>();
-        for (int index = 0; index < entries.size(); index++) {
-            String name = entries.get(index).name();
-            Integer previous = bindings.putIfAbsent(name, index);
-            if (previous != null && previous != index) {
+        int nextBuffer = 0;
+        int nextTexture = 0;
+        for (VulkanBindGroupLayout.Entry entry : entries) {
+            String name = entry.name();
+            int binding = entry.type() == VulkanBindGroupEntryType.UNIFORM_BUFFER
+                    ? nextBuffer++
+                    : nextTexture++;
+            Integer previous = bindings.putIfAbsent(name, binding);
+            if (previous != null && previous != binding) {
                 throw new IllegalStateException("Shader resource '" + name + "' has duplicate Metal bindings");
             }
         }

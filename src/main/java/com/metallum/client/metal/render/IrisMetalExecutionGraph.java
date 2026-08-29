@@ -21,6 +21,9 @@ import net.irisshaders.iris.shaderpack.programs.ComputeSource;
 import net.irisshaders.iris.shaderpack.programs.ProgramSet;
 import net.irisshaders.iris.shaderpack.programs.ProgramSource;
 import net.irisshaders.iris.shaderpack.texture.TextureStage;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.texture.AbstractTexture;
+import net.minecraft.client.renderer.texture.TextureAtlas;
 import net.minecraft.resources.Identifier;
 import org.joml.Vector4fc;
 import org.jspecify.annotations.Nullable;
@@ -50,6 +53,29 @@ import java.util.regex.Pattern;
  */
 @Environment(EnvType.CLIENT)
 final class IrisMetalExecutionGraph implements AutoCloseable {
+    /**
+     * EXPERIMENTAL bloom bisect. When true the Mellow bloom passes
+     * (composite2..composite6) are not planned at all, leaving colortex1 at
+     * its per-frame clear color. If the sky-colored bands disappear with this
+     * build, the defect is inside the bloom tile ping-pong chain; revert this
+     * flag (and the preceding colortex clear experiment) before implementing
+     * the real fix.
+     */
+    private static final boolean DEBUG_DISABLE_BLOOM = true;
+    private static final Set<String> BLOOM_PROGRAM_NAMES = Set.of(
+            "composite2", "composite3", "composite4", "composite5", "composite6"
+    );
+
+    /**
+     * EXPERIMENTAL post-processing bisect. When true every COMPOSITE raster
+     * pass and the final shader are skipped, so the displayed image is the raw
+     * colortex0 written by the terrain pass over the per-frame fog clear. If
+     * the bands are visible here, they are produced by terrain/clear; if not,
+     * they are produced by composite7/8/12/final. Revert all three
+     * experimental flags before the real fix.
+     */
+    private static final boolean DEBUG_SKIP_ALL_POST = true;
+
     private static final Pattern COMPUTE_BINDING = Pattern.compile(
             "layout\\s*\\(([^)]*\\bbinding\\s*=\\s*(\\d+)[^)]*)\\)\\s*"
                     + "(?:readonly\\s+|writeonly\\s+|coherent\\s+|volatile\\s+|restrict\\s+)*"
@@ -237,6 +263,13 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                 if (source == null || !source.isValid()) {
                     continue;
                 }
+                if (DEBUG_SKIP_ALL_POST && stage == Stage.COMPOSITE) {
+                    continue;
+                }
+                if (DEBUG_DISABLE_BLOOM && stage == Stage.COMPOSITE
+                        && BLOOM_PROGRAM_NAMES.contains(source.getName())) {
+                    continue;
+                }
                 int[] drawBuffers = validateDrawBuffers(
                         source.getName(), source.getDirectives().getDrawBuffers()
                 );
@@ -298,7 +331,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         state = new BitSet();
 
         Optional<ProgramSource> finalSource = programSet.get(ProgramId.Final);
-        if (finalSource.isPresent() && finalSource.get().isValid()) {
+        if (!DEBUG_SKIP_ALL_POST && finalSource.isPresent() && finalSource.get().isValid()) {
             ProgramSource source = finalSource.get();
             int[] drawBuffers = validateDrawBuffers(source.getName(), source.getDirectives().getDrawBuffers());
             IrisMetalGlslLinker.LinkedRasterProgram linked = programs.finalProgram();
@@ -738,23 +771,23 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                 );
             }
         }
-        for (IrisMetalGlslLinker.SamplerDecl sampler : plan.program().samplers()) {
-            if (!sampler.sampled()) {
-                continue;
-            }
-            MetalRenderPass.TextureViewAndSampler binding = textureBinding(
-                    sampler.name(), plan.stage().textureStage, targets, resources, plan.readsFromAlt()
-            );
-            if (binding == null) {
-                throw new IllegalStateException(
-                        "Iris pass " + plan.name() + " is missing required sampler '" + sampler.name() + "'"
-                );
-            }
-            pass.bindTexture(sampler.name(), binding.textureView(), binding.sampler());
-        }
         IrisMetalComputeResources computeResources = resources.computeResources();
         for (MetalCompiledRenderPipeline.ResourceBinding binding : pipeline.resources()) {
-            if (binding.kind() == MetalCompiledRenderPipeline.ResourceKind.STORAGE_BUFFER) {
+            if (binding.kind() == MetalCompiledRenderPipeline.ResourceKind.SAMPLED_IMAGE) {
+                // Only samplers that survived GLSL->SPIR-V->MSL compilation
+                // need a binding; declarations guarded by optional features
+                // (PBR/DH/Voxy) are not in the compiled pipeline and must not
+                // fail the pass.
+                MetalRenderPass.TextureViewAndSampler sampled = textureBinding(
+                        binding.name(), plan.stage().textureStage, targets, resources, plan.readsFromAlt()
+                );
+                if (sampled == null) {
+                    throw new IllegalStateException(
+                            "Iris pass " + plan.name() + " is missing required sampler '" + binding.name() + "'"
+                    );
+                }
+                pass.bindTexture(binding.name(), sampled.textureView(), sampled.sampler());
+            } else if (binding.kind() == MetalCompiledRenderPipeline.ResourceKind.STORAGE_BUFFER) {
                 if (computeResources == null) {
                     throw new IllegalStateException(
                             "Iris pass " + plan.name() + " requires generation-owned SSBO resources"
@@ -860,6 +893,18 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             standard = centerDepthSampler == null ? null : centerDepthSampler.binding();
         } else if (name.equals("noisetex")) {
             standard = resources.noiseTexture().binding();
+        } else if (name.equals("normals")) {
+            standard = resources.pbrNormals();
+        } else if (name.equals("specular")) {
+            standard = resources.pbrSpecular();
+        } else if (name.equals("vxDepthTexTrans") || name.equals("vxDepthTexOpaque")
+                || name.equals("dhDepthTex0") || name.equals("dhDepthTex1")) {
+            // Optional Voxy / Distant Horizons depth inputs. Their declarations
+            // still reach the compiled pipeline; without those mods GL leaves
+            // them at defaults, so bind a neutral 1x1 color texture.
+            standard = resources.pbrSpecular();
+        } else if (name.equals("gtexture") || name.equals("texture") || name.equals("tex")) {
+            standard = vanillaBlockAtlas();
         } else if (name.equals("depthtex0")) {
             standard = new MetalRenderPass.TextureViewAndSampler(targets.mainDepthView(), targets.depthSampler());
         } else if (name.equals("depthtex1")) {
@@ -884,6 +929,9 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             }
         } else {
             int color = parseSuffix(name, "colortex");
+            if (color < 0) {
+                color = legacyColorTarget(name);
+            }
             if (color >= 0) {
                 if (color >= targets.colorTargets().targetCount()) {
                     throw new IllegalStateException("Iris sampler target out of range: " + name);
@@ -909,6 +957,20 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         MetalRenderPass.TextureViewAndSampler override = resources.customTextures()
                 .resolve(stage, name);
         return override == null ? standard : override;
+    }
+
+    /** Borrows the vanilla block atlas for Iris's {@code gtexture} sampler alias. */
+    private MetalRenderPass.@Nullable TextureViewAndSampler vanillaBlockAtlas() {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft == null) {
+            return null;
+        }
+        try {
+            AbstractTexture atlas = minecraft.getTextureManager().getTexture(TextureAtlas.LOCATION_BLOCKS);
+            return new MetalRenderPass.TextureViewAndSampler(atlas.getTextureView(), atlas.getSampler());
+        } catch (RuntimeException ignored) {
+            return null;
+        }
     }
 
     private @Nullable GpuTextureView storageImageBinding(
@@ -1084,6 +1146,24 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         } catch (NumberFormatException ignored) {
             return -1;
         }
+    }
+
+    /**
+     * Maps Iris's legacy gbuffer sampler aliases to their colortex indices.
+     * Mirrors {@code PackRenderTargetDirectives.LEGACY_RENDER_TARGETS}.
+     */
+    static int legacyColorTarget(final String name) {
+        return switch (name) {
+            case "gcolor" -> 0;
+            case "gdepth" -> 1;
+            case "gnormal" -> 2;
+            case "composite" -> 3;
+            case "gaux1" -> 4;
+            case "gaux2" -> 5;
+            case "gaux3" -> 6;
+            case "gaux4" -> 7;
+            default -> -1;
+        };
     }
 
     private int shadowTargetCount() {
