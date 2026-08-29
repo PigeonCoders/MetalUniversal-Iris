@@ -53,6 +53,19 @@ import java.util.regex.Pattern;
  */
 @Environment(EnvType.CLIENT)
 final class IrisMetalExecutionGraph implements AutoCloseable {
+    /**
+     * EXPERIMENTAL bloom bisect. When true the Mellow bloom passes
+     * (composite2..composite6) are not planned at all, leaving colortex1 at
+     * its per-frame clear color. If the sky-colored bands disappear with this
+     * build, the defect is inside the bloom tile ping-pong chain; revert this
+     * flag (and the preceding colortex clear experiment) before implementing
+     * the real fix.
+     */
+    private static final boolean DEBUG_DISABLE_BLOOM = true;
+    private static final Set<String> BLOOM_PROGRAM_NAMES = Set.of(
+            "composite2", "composite3", "composite4", "composite5", "composite6"
+    );
+
     private static final Pattern COMPUTE_BINDING = Pattern.compile(
             "layout\\s*\\(([^)]*\\bbinding\\s*=\\s*(\\d+)[^)]*)\\)\\s*"
                     + "(?:readonly\\s+|writeonly\\s+|coherent\\s+|volatile\\s+|restrict\\s+)*"
@@ -238,6 +251,10 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                 }
                 ProgramSource source = sources[index];
                 if (source == null || !source.isValid()) {
+                    continue;
+                }
+                if (DEBUG_DISABLE_BLOOM && stage == Stage.COMPOSITE
+                        && BLOOM_PROGRAM_NAMES.contains(source.getName())) {
                     continue;
                 }
                 int[] drawBuffers = validateDrawBuffers(
