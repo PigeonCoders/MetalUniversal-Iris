@@ -121,15 +121,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
 
     private void publishWorldSettings() {
         WorldRenderingSettings settings = WorldRenderingSettings.INSTANCE;
-        // EXPERIMENTAL vertex-format bisect. The latest crash is inside
-        // Iris's XHFPTerrainVertex.write (the extended 36-byte encoder), which
-        // suggests Sodium's chunk builders were created for one stride while
-        // the encoder uses another. Force the plain COMPACT format so encoder
-        // and builder always agree; shaderpack normals/material/midUV then
-        // come from our generic default attribute buffer. Revert this line
-        // (restore FormatAnalyzer.createFormat(true,true,true,true)) once the
-        // stride problem is fixed properly.
-        settings.setVertexFormat(net.caffeinemc.mods.sodium.client.render.chunk.vertex.format.ChunkMeshFormats.COMPACT);
+        settings.setVertexFormat(FormatAnalyzer.createFormat(true, true, true, true));
         settings.setEntityIds(this.pack.getIdMap().getEntityIdMap());
         settings.setItemIds(this.pack.getIdMap().getItemIdMap());
         settings.setAmbientOcclusionLevel(this.directives.getAmbientOcclusionLevel());
