@@ -58,7 +58,7 @@ final class IrisMetalWorldResources implements AutoCloseable {
         this(
                 device,
                 generation,
-                IrisMetalRenderTargetFormats.from(programSet.getPackDirectives()),
+                IrisMetalRenderTargetFormats.from(programSet.getPackDirectives(), programSet),
                 width,
                 height,
                 programSet.getPackDirectives().getRenderTargetDirectives().getRenderTargetSettings(),
@@ -367,7 +367,7 @@ final class IrisMetalWorldResources implements AutoCloseable {
                 result.addAll(source.getDirectives().getMipmappedBuffers());
             }
         });
-        int targetCount = IrisMetalRenderTargetFormats.from(programSet.getPackDirectives()).length;
+        int targetCount = IrisMetalRenderTargetFormats.from(programSet.getPackDirectives(), programSet).length;
         for (Integer target : result) {
             if (target == null || target < 0 || target >= targetCount) {
                 throw new IllegalArgumentException(

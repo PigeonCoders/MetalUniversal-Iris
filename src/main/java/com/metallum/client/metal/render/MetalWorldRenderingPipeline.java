@@ -80,7 +80,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
                 this.generation,
                 this.programSet,
                 this.programs,
-                IrisMetalRenderTargetFormats.from(this.programSet.getPackDirectives()).length
+                IrisMetalRenderTargetFormats.from(this.programSet.getPackDirectives(), this.programSet).length
         );
         this.receipts = IrisMetalRuntimeReceipts.open(this.generation);
         this.pack = programSet.getPack();
@@ -265,7 +265,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
                     device,
                     this.generation,
                     this.programs,
-                    IrisMetalRenderTargetFormats.from(this.directives)
+                    IrisMetalRenderTargetFormats.from(this.directives, this.programSet)
             );
         } else if (!this.compiledPrograms.isOwnedBy(device)) {
             throw new IllegalStateException("Iris Metal compiled generation crossed Metal device ownership");
