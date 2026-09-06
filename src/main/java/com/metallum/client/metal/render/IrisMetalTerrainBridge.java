@@ -45,6 +45,7 @@ public final class IrisMetalTerrainBridge {
         if (linked.isEmpty()) {
             if (LOGGED_MISSES.add(key.toString())) {
                 Metallum.LOGGER.warn("[metallum-iris] terrain key has no linked program: {}", key);
+                MetallumDebugLog.log("[metallum-iris] terrain key MISS " + key);
             }
             ACTIVE_TERRAIN.remove();
             return;
@@ -54,6 +55,7 @@ public final class IrisMetalTerrainBridge {
                     "[metallum-iris] terrain begin key={} program={} drawBuffers={}",
                     key, linked.orElseThrow().name(), java.util.Arrays.toString(linked.orElseThrow().program().drawBuffers())
             );
+            MetallumDebugLog.log("[metallum-iris] terrain begin " + key + " -> " + linked.orElseThrow().name());
         }
         int[] drawBuffers = linked.orElseThrow().program().drawBuffers();
         if (drawBuffers.length == 0) {

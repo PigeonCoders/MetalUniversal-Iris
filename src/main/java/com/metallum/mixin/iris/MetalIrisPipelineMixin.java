@@ -98,6 +98,9 @@ public class MetalIrisPipelineMixin {
                         "[metallum-iris] vanilla pipeline reached MetalRenderPass without iris override: {}",
                         location
                 );
+                com.metallum.client.metal.render.MetallumDebugLog.log(
+                        "[metallum-iris] vanilla pipeline " + location
+                );
             }
             return;
         }

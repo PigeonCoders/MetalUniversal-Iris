@@ -79,6 +79,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
     private void debugHook(final String hook) {
         if (loggedHooks.add(hook)) {
             Metallum.LOGGER.info("[metallum-iris] hook {}", hook);
+            MetallumDebugLog.log("[metallum-iris] hook " + hook);
         }
     }
 
