@@ -1,6 +1,5 @@
 package com.metallum.client.metal.render;
 
-import com.metallum.Metallum;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 
@@ -36,15 +35,6 @@ public final class IrisMetalGlslLinker {
     private static final Set<String> UNIFORM_QUALIFIERS = Set.of(
             "lowp", "mediump", "highp", "coherent", "volatile", "restrict", "readonly", "writeonly"
     );
-
-    /**
-     * EXPERIMENTAL vertex-color bisect. Replaces Sodium terrain glcolor with
-     * opaque white after the neutral-gtexture test still showed rainbow
-     * terrain. White glcolor leaves only albedo * procedural light; if the
-     * rainbow disappears, the corruption is in the a_Color vertex attribute.
-     * Revert with the other experimental flags.
-     */
-    private static final boolean DEBUG_WHITE_TERRAIN_COLOR = true;
 
     private static final List<LooseUniform> SODIUM_PUSH_CONSTANTS = List.of(
             new LooseUniform("vec3", "u_RegionOffset", ""),
@@ -130,19 +120,6 @@ public final class IrisMetalGlslLinker {
             }
             if (sodium && fragmentPack.size() != fragment.uniforms().size()) {
                 fragmentSource = insertBlock(fragmentSource, SODIUM_PUSH_CONSTANT_BLOCK);
-            }
-            if (DEBUG_WHITE_TERRAIN_COLOR && sodium) {
-                String previous = vertexSource;
-                vertexSource = vertexSource.replace(
-                        "glcolor = _vert_color;",
-                        "glcolor = vec4(1.0, 1.0, 1.0, 1.0);"
-                );
-                if (previous.equals(vertexSource)) {
-                    Metallum.LOGGER.warn(
-                            "[MetalUniversal/Iris] white-glcolor experiment found no "
-                                    + "'glcolor = _vert_color;' in {}", program.name()
-                    );
-                }
             }
 
             Map<String, String> samplerTypes = new LinkedHashMap<>();
