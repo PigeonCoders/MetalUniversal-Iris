@@ -1,5 +1,6 @@
 package com.metallum.client.metal.render;
 
+import com.metallum.Metallum;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.mojang.blaze3d.systems.CommandEncoder;
 import com.mojang.blaze3d.systems.RenderPass;
@@ -15,14 +16,18 @@ import org.joml.Vector4fc;
 import org.jspecify.annotations.Nullable;
 
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalDouble;
+import java.util.Set;
 import java.util.function.Supplier;
 
 /** Atomically pairs one Sodium terrain draw with its Iris PSO and attachments. */
 public final class IrisMetalTerrainBridge {
     private static final ThreadLocal<TerrainContext> ACTIVE_TERRAIN = new ThreadLocal<>();
+    private static final Set<String> LOGGED_KEYS = new HashSet<>();
+    private static final Set<String> LOGGED_MISSES = new HashSet<>();
 
     private IrisMetalTerrainBridge() {
     }
@@ -38,8 +43,17 @@ public final class IrisMetalTerrainBridge {
         Optional<IrisMetalGlslLinker.LinkedRasterProgram> linked =
                 pipeline.programs().sodium(key.getProgram(), key.getAlphaTest());
         if (linked.isEmpty()) {
+            if (LOGGED_MISSES.add(key.toString())) {
+                Metallum.LOGGER.warn("[metallum-iris] terrain key has no linked program: {}", key);
+            }
             ACTIVE_TERRAIN.remove();
             return;
+        }
+        if (LOGGED_KEYS.add(key.toString())) {
+            Metallum.LOGGER.info(
+                    "[metallum-iris] terrain begin key={} program={} drawBuffers={}",
+                    key, linked.orElseThrow().name(), java.util.Arrays.toString(linked.orElseThrow().program().drawBuffers())
+            );
         }
         int[] drawBuffers = linked.orElseThrow().program().drawBuffers();
         if (drawBuffers.length == 0) {

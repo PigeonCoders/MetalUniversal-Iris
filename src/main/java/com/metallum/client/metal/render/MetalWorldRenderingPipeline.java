@@ -1,5 +1,6 @@
 package com.metallum.client.metal.render;
 
+import com.metallum.Metallum;
 import it.unimi.dsi.fastutil.objects.Object2ObjectMap;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
@@ -37,8 +38,10 @@ import org.joml.Vector3d;
 import org.joml.Vector4f;
 
 import java.util.BitSet;
+import java.util.HashSet;
 import java.util.Objects;
 import java.util.OptionalInt;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -71,6 +74,13 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
     private boolean initializedBlockIds;
     private int receiptWidth = -1;
     private int receiptHeight = -1;
+    private final Set<String> loggedHooks = new HashSet<>();
+
+    private void debugHook(final String hook) {
+        if (loggedHooks.add(hook)) {
+            Metallum.LOGGER.info("[metallum-iris] hook {}", hook);
+        }
+    }
 
     public MetalWorldRenderingPipeline(final ProgramSet programSet) {
         this.generation = GENERATIONS.incrementAndGet();
@@ -184,6 +194,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
 
     @Override
     public void beginLevelRendering() {
+        debugHook("beginLevelRendering");
         if (!this.initializedBlockIds) {
             // IrisRenderingPipeline publishes these maps on the first world
             // frame; IrisExclusiveUniforms.getCurrentSelectedBlockId reads
@@ -312,6 +323,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
 
     @Override
     public void beginTranslucents() {
+        debugHook("beginTranslucents");
         RenderTarget target = Minecraft.getInstance().gameRenderer.mainRenderTarget();
         GpuTexture depth = target.getDepthTexture();
         if (depth == null) {
@@ -325,6 +337,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
 
     @Override
     public void beginHand() {
+        debugHook("beginHand");
         RenderTarget target = Minecraft.getInstance().gameRenderer.mainRenderTarget();
         GpuTexture depth = target.getDepthTexture();
         GpuTextureView depthView = target.getDepthTextureView();
@@ -343,6 +356,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
             final Camera camera,
             final CameraRenderState cameraRenderState
     ) {
+        debugHook("renderShadows");
         if (this.directives.isPrepareBeforeShadow()) {
             this.receipts.recordEvent("prepare");
             this.executionGraph.executePrepare(this.resources());
@@ -360,6 +374,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
 
     @Override
     public void finalizeLevelRendering() {
+        debugHook("finalizeLevelRendering");
         RenderTarget target = Minecraft.getInstance().gameRenderer.mainRenderTarget();
         GpuTexture depth = target.getDepthTexture();
         GpuTextureView colorView = target.getColorTextureView();
@@ -386,6 +401,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
 
     @Override
     public void destroy() {
+        debugHook("destroy");
         IrisMetalPackLifecycle.onSemanticPipelineDestroyed();
         this.frameState.endWorldRendering();
         this.receipts.recordEvent("generation.destroy");
