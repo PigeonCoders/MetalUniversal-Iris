@@ -46,15 +46,17 @@ public final class IrisMetalFrameDiagnostics {
             return;
         }
         String normalized = label.toLowerCase();
-        if (!normalized.contains("sky")
-                && !normalized.contains("stars")
-                && !normalized.contains("sunrise")
-                && !normalized.contains("celestial")
-                && !normalized.contains("terrain")
-                && !normalized.contains("hand")
-                && !normalized.contains("item")
-                && !normalized.contains("outline")
-                && !normalized.contains("panorama")) {
+        boolean keyPass = normalized.startsWith("iris ")
+                || normalized.contains("sky")
+                || normalized.contains("stars")
+                || normalized.contains("sunrise")
+                || normalized.contains("celestial")
+                || normalized.contains("terrain")
+                || normalized.contains("hand")
+                || normalized.contains("item")
+                || normalized.contains("outline")
+                || normalized.contains("panorama");
+        if (!keyPass) {
             return;
         }
         // Every submission, not once per frame: the three Sodium terrain
