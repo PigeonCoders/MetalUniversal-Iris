@@ -261,7 +261,18 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
             // normal "Missing uniform" at draw time instead.
             boolean optionalVanillaCoreBlock = block.startsWith("iris_")
                     || block.equals("u_Globals");
-            if (compiled.resource(block) == null && !pushConstantAlias && !optionalVanillaCoreBlock) {
+            // Vanilla-key programs (gbuffers_skybasic etc.) often declare
+            // MetallumIrisUniforms but never read it; glslang drops the block
+            // from SPIR-V. The install path binds it only when the compiled
+            // pipeline actually reflects it, so a missing block here is not an
+            // error and a genuinely required one still fails at draw time with
+            // "Missing uniform".
+            boolean optionalIrisUniformBlock =
+                    IrisMetalGlslLinker.UNIFORM_BLOCK_NAME.equals(block);
+            if (compiled.resource(block) == null
+                    && !pushConstantAlias
+                    && !optionalVanillaCoreBlock
+                    && !optionalIrisUniformBlock) {
                 missing.add("uniform block " + block);
             }
         }
