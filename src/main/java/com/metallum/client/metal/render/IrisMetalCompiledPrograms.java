@@ -12,9 +12,11 @@ import com.mojang.blaze3d.vertex.VertexFormat;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.irisshaders.iris.gl.blending.AlphaTest;
+import net.irisshaders.iris.gl.state.ShaderAttributeInputs;
 import net.irisshaders.iris.gl.blending.BlendMode;
 import net.irisshaders.iris.gl.blending.BlendModeFunction;
 import net.irisshaders.iris.gl.blending.BlendModeOverride;
+import net.irisshaders.iris.pipeline.programs.ShaderKey;
 import net.irisshaders.iris.shaderpack.loading.ProgramId;
 import org.jspecify.annotations.Nullable;
 
@@ -40,6 +42,7 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
     private final IrisMetalWorldPrograms sources;
     private final GpuFormat[] targetFormats;
     private final Map<SodiumKey, MetalCompiledRenderPipeline> sodiumPipelines = new HashMap<>();
+    private final Map<VanillaPipelineKey, MetalCompiledRenderPipeline> vanillaPipelines = new HashMap<>();
     private boolean closed;
 
     IrisMetalCompiledPrograms(
@@ -98,8 +101,34 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
         ));
     }
 
+    synchronized Optional<MetalCompiledRenderPipeline> vanilla(
+            final ShaderKey key,
+            final ShaderAttributeInputs inputs,
+            final RasterState state
+    ) {
+        ensureOpen();
+        Objects.requireNonNull(key, "key");
+        Objects.requireNonNull(inputs, "inputs");
+        Objects.requireNonNull(state, "state");
+        Optional<IrisMetalGlslLinker.LinkedRasterProgram> linked = this.sources.vanilla(
+                key.getProgram(),
+                key.getAlphaTest(),
+                false,
+                false,
+                inputs
+        );
+        if (linked.isEmpty()) {
+            return Optional.empty();
+        }
+        VanillaPipelineKey cacheKey = new VanillaPipelineKey(key, inputs, state);
+        return Optional.of(this.vanillaPipelines.computeIfAbsent(
+                cacheKey,
+                ignored -> compile("vanilla_" + key.getName(), linked.orElseThrow(), state)
+        ));
+    }
+
     synchronized int cachedPipelineCount() {
-        return this.sodiumPipelines.size();
+        return this.sodiumPipelines.size() + this.vanillaPipelines.size();
     }
 
     private MetalCompiledRenderPipeline compile(
@@ -223,7 +252,16 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
         for (String block : program.uniformBlockNames()) {
             boolean pushConstantAlias = IrisMetalGlslLinker.SODIUM_PUSH_CONSTANT_BLOCK_NAME.equals(block)
                     && compiled.resource("push_constants") != null;
-            if (compiled.resource(block) == null && !pushConstantAlias) {
+            // TransformPatcher.patchVanilla emits the full Mojang core bind
+            // group set (iris_DynamicTransforms / iris_Projection /
+            // iris_Globals / iris_Fog / u_Globals) into every vanilla-key
+            // program. Most are only declared, not read, so glslang drops them
+            // from the SPIR-V and they never reach the reflected resource
+            // table. A program that actually reads one will fail with the
+            // normal "Missing uniform" at draw time instead.
+            boolean optionalVanillaCoreBlock = block.startsWith("iris_")
+                    || block.equals("u_Globals");
+            if (compiled.resource(block) == null && !pushConstantAlias && !optionalVanillaCoreBlock) {
                 missing.add("uniform block " + block);
             }
         }
@@ -312,6 +350,8 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
         this.device.waitForSubmittedGpuWork();
         this.sodiumPipelines.values().forEach(MetalCompiledRenderPipeline::close);
         this.sodiumPipelines.clear();
+        this.vanillaPipelines.values().forEach(MetalCompiledRenderPipeline::close);
+        this.vanillaPipelines.clear();
     }
 
     record RasterState(
@@ -359,5 +399,12 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
     }
 
     private record SodiumKey(ProgramId requested, AlphaTest fallbackAlpha, RasterState state) {
+    }
+
+    private record VanillaPipelineKey(
+            ShaderKey key,
+            ShaderAttributeInputs inputs,
+            RasterState state
+    ) {
     }
 }

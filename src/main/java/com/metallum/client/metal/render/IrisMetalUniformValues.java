@@ -426,6 +426,34 @@ final class IrisMetalUniformValues implements AutoCloseable {
         materializeDraw(key, output, dynamicTransforms, projection);
     }
 
+    /**
+     * Materializes one vanilla-key core draw block from the current CPU-side
+     * matrices. GL {@code ExtendedShader.iris$setupState} uploads
+     * {@code iris_ModelViewMatInverse}/{@code iris_NormalMat} from
+     * {@code RenderSystem.getModelViewMatrixCopy()} and
+     * {@code iris_ProjMatInverse} from the captured gbuffer projection, so
+     * this mirrors that pairing instead of reading GPU buffers back.
+     */
+    void materializeCoreDraw(
+            final ShaderKey key,
+            final ByteBuffer output,
+            final org.joml.Matrix4fc modelView,
+            final org.joml.Matrix4fc projection
+    ) {
+        Block block = findBlock(key);
+        if (block == null || block.staging == null) {
+            throw new IllegalStateException("Iris uniform block is not prepared for " + key);
+        }
+        materializeDrawUniforms(
+                block.staging,
+                block.layout,
+                output,
+                modelView,
+                projection,
+                this.renderStageSource.getAsInt()
+        );
+    }
+
     void materializeDraw(
             final Object token,
             final ByteBuffer output,
@@ -468,6 +496,53 @@ final class IrisMetalUniformValues implements AutoCloseable {
         materializeDrawUniforms(
                 base, layout, output, dynamicTransforms, projection, renderStage, false
         );
+    }
+
+    private static void materializeDrawUniforms(
+            final ByteBuffer base,
+            final List<IrisMetalGlslLinker.UniformMember> layout,
+            final ByteBuffer output,
+            final org.joml.Matrix4fc modelView,
+            final org.joml.Matrix4fc projection,
+            final int renderStage
+    ) {
+        ByteBuffer destination = output.slice().order(output.order());
+        ByteBuffer source = base.duplicate().order(base.order());
+        source.clear();
+        if (destination.remaining() < source.remaining()) {
+            throw new IllegalArgumentException(
+                    "Iris core transient block is " + destination.remaining()
+                            + " bytes, expected at least " + source.remaining()
+            );
+        }
+        destination.put(source);
+
+        Matrix4f modelViewInverse = new Matrix4f(modelView).invert();
+        Matrix4f projectionInverse = MetalIrisDepthConvention.projectionInverse(new Matrix4f(projection));
+        Matrix3f normalMatrix = modelViewInverse.transpose3x3(new Matrix3f());
+
+        for (IrisMetalGlslLinker.UniformMember member : layout) {
+            switch (member.name()) {
+                case CORE_MODEL_VIEW_INVERSE -> {
+                    requireCoreDrawType(member, "mat4");
+                    putMat4(destination, member.offset(), modelViewInverse);
+                }
+                case CORE_PROJECTION_INVERSE -> {
+                    requireCoreDrawType(member, "mat4");
+                    putMat4(destination, member.offset(), projectionInverse);
+                }
+                case CORE_NORMAL_MATRIX -> {
+                    requireCoreDrawType(member, "mat3");
+                    putMat3(destination, member.offset(), normalMatrix);
+                }
+                case "renderStage" -> {
+                    requireDynamicDrawType(member, "int");
+                    destination.putInt(member.offset(), renderStage);
+                }
+                default -> {
+                }
+            }
+        }
     }
 
     private static void materializeDrawUniforms(

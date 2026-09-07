@@ -262,7 +262,7 @@ public final class IrisMetalTerrainBridge {
         }
     }
 
-    private static int renderTargetIndex(final String name) {
+    static int renderTargetIndex(final String name) {
         if (name.startsWith("colortex")) {
             try {
                 return Integer.parseInt(name.substring("colortex".length()));

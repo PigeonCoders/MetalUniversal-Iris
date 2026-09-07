@@ -25,6 +25,7 @@ import net.irisshaders.iris.uniforms.custom.CustomUniforms;
 import net.irisshaders.iris.pipeline.programs.ShaderKey;
 import com.mojang.blaze3d.buffers.GpuBufferSlice;
 import com.mojang.blaze3d.pipeline.RenderTarget;
+import com.mojang.blaze3d.systems.RenderPassDescriptor;
 import com.mojang.blaze3d.shaders.ShaderSource;
 import com.mojang.blaze3d.textures.GpuTexture;
 import com.mojang.blaze3d.textures.GpuTextureView;
@@ -173,6 +174,10 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
         return this.resources;
     }
 
+    IrisMetalUniformValues uniformValues() {
+        return this.uniformValues;
+    }
+
     /** Returns the generation-owned pack uniform block for a terrain shader key. */
     GpuBufferSlice uniformSlice(final ShaderKey key) {
         GpuBufferSlice slice = this.uniformValues.slice(key);
@@ -223,6 +228,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
                 this.resources(), new Vector4f((float) fog.x, (float) fog.y, (float) fog.z, 1.0F)
         );
         this.frameState.beginWorldRendering();
+        IrisMetalDescriptorRedirect.set(this::redirectVanillaDescriptor);
         this.receipts.recordEvent("setup");
         this.executionGraph.executeSetup(this.resources());
         this.receipts.recordEvent("begin");
@@ -246,8 +252,37 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
         if (device == null) {
             throw new IllegalStateException("Iris Metal terrain uniforms have no active Metal device");
         }
+        prepareVanillaUniforms();
         this.uniformValues.prewarm(device);
         this.uniformValues.updateFrame();
+    }
+
+    private @Nullable RenderPassDescriptor redirectVanillaDescriptor(
+            final RenderPassDescriptor descriptor
+    ) {
+        return IrisMetalVanillaBridge.redirectDescriptor(this, descriptor);
+    }
+
+    private void prepareVanillaUniforms() {
+        for (ShaderKey key : new ShaderKey[]{
+                ShaderKey.SKY_BASIC,
+                ShaderKey.SKY_BASIC_COLOR,
+                ShaderKey.SKY_TEXTURED,
+                ShaderKey.HAND_CUTOUT,
+                ShaderKey.HAND_CUTOUT_DIFFUSE,
+                ShaderKey.HAND_WATER_DIFFUSE
+        }) {
+            IrisMetalGlslLinker.LinkedRasterProgram linked =
+                    IrisMetalVanillaBridge.linkedProgram(this, key);
+            if (linked != null) {
+                this.uniformValues.register(key, "vanilla_" + key.getName(), linked);
+            }
+        }
+    }
+
+    /** The Iris rendering phase for vanilla pass redirection. */
+    WorldRenderingPhase phase() {
+        return this.frameState.phase();
     }
 
     private void prepareResources() {
@@ -402,12 +437,14 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
                 colorView
         );
         this.frameState.endWorldRendering();
+        IrisMetalDescriptorRedirect.set(null);
         IrisMetalFrameDiagnostics.endFrame(this.frameState.phase().name());
     }
 
     @Override
     public void destroy() {
         debugHook("destroy");
+        IrisMetalDescriptorRedirect.set(null);
         IrisMetalPackLifecycle.onSemanticPipelineDestroyed();
         this.frameState.endWorldRendering();
         this.receipts.recordEvent("generation.destroy");

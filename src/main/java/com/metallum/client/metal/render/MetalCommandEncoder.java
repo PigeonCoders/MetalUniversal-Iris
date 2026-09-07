@@ -265,7 +265,13 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
 
     @Override
     public @NonNull RenderPassBackend createRenderPass(final RenderPassDescriptor descriptor) {
-        List<RenderPassDescriptor.Attachment<Optional<Vector4fc>>> colorAttachments = descriptor.colorAttachments();
+        // Iris vanilla sky/hand pass redirector. Empty outside world rendering.
+        RenderPassDescriptor effectiveDescriptor = descriptor;
+        RenderPassDescriptor redirected = IrisMetalDescriptorRedirect.redirect(descriptor);
+        if (redirected != null) {
+            effectiveDescriptor = redirected;
+        }
+        List<RenderPassDescriptor.Attachment<Optional<Vector4fc>>> colorAttachments = effectiveDescriptor.colorAttachments();
         int maxColorAttachments = Math.min(
                 com.mojang.blaze3d.pipeline.ColorTargetState.MAX_COLOR_TARGETS,
                 device.getDeviceInfo().limits().maxColorAttachments()
@@ -276,7 +282,7 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
                             + " color slots but the backend limit is " + maxColorAttachments
             );
         }
-        RenderPassDescriptor.Attachment<OptionalDouble> depthAttachment = descriptor.depthAttachment();
+        RenderPassDescriptor.Attachment<OptionalDouble> depthAttachment = effectiveDescriptor.depthAttachment();
         if (colorAttachments.isEmpty() && depthAttachment == null) {
             throw new IllegalArgumentException("Metal render pass has no color or depth attachment");
         }
@@ -376,8 +382,8 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
             metalDepth.markContentsDirty();
         }
 
-        assert descriptor.renderArea != null;
-        RenderPass.RenderArea renderArea = descriptor.renderArea;
+        assert effectiveDescriptor.renderArea != null;
+        RenderPass.RenderArea renderArea = effectiveDescriptor.renderArea;
         if (renderArea == null) {
             throw new IllegalArgumentException("RenderPassDescriptor.renderArea must be provided");
         }
@@ -395,7 +401,7 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         MetalRenderPass renderPass = new MetalRenderPass(
                 device,
                 this,
-                descriptor.label(),
+                effectiveDescriptor.label(),
                 colorTextureViews,
                 depthTexture,
                 renderArea,

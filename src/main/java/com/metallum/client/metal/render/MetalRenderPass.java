@@ -243,6 +243,47 @@ final class MetalRenderPass implements RenderPassBackend {
     public void setUniform(final @NonNull String name, final @NonNull GpuBufferSlice value) {
         uniforms.put(name, value);
         markDescriptorDirty(name);
+        aliasIrisVanillaUniform(name, value);
+    }
+
+    /**
+     * Iris's vanilla patch prefixes the Mojang core bind-group names
+     * ({@code DynamicTransforms}, {@code Projection}, {@code Globals},
+     * {@code Fog}, {@code Lighting}) as {@code iris_*} in shaderpack GLSL.
+     * Vanilla callers keep setting the unprefixed names after
+     * {@code setPipeline} has already installed the pack pipeline, so mirror
+     * those bindings under the prefixed resource names as they arrive.
+     */
+    private void aliasIrisVanillaUniform(final String name, final GpuBufferSlice value) {
+        if (compiledPipeline == null) {
+            return;
+        }
+        String irisName = switch (name) {
+            case "DynamicTransforms", "Projection", "Globals", "Fog", "Lighting" -> "iris_" + name;
+            default -> null;
+        };
+        if (irisName == null) {
+            return;
+        }
+        if (compiledPipeline.resource(irisName) != null) {
+            uniforms.put(irisName, value);
+            markDescriptorDirty(irisName);
+        }
+    }
+
+    /** Mirrors uniforms bound before the pack pipeline was installed. */
+    void aliasExistingIrisVanillaUniforms() {
+        if (compiledPipeline == null) {
+            return;
+        }
+        for (String name : new String[]{
+                "DynamicTransforms", "Projection", "Globals", "Fog", "Lighting"
+        }) {
+            GpuBufferSlice value = uniforms.get(name);
+            if (value != null) {
+                aliasIrisVanillaUniform(name, value);
+            }
+        }
     }
 
     @Override
@@ -730,6 +771,15 @@ final class MetalRenderPass implements RenderPassBackend {
             TextureViewAndSampler textureBinding = samplers.get(binding.name());
             if (textureBinding == null) {
                 textureBinding = IrisMetalTerrainBridge.fallbackSampler(binding.name(), samplers);
+            }
+            if (textureBinding == null) {
+                net.irisshaders.iris.pipeline.WorldRenderingPipeline pipeline =
+                        net.irisshaders.iris.Iris.getPipelineManager().getPipelineNullable();
+                if (pipeline instanceof MetalWorldRenderingPipeline metalWorld) {
+                    textureBinding = IrisMetalVanillaBridge.fallbackSampler(
+                            metalWorld, binding.name(), samplers
+                    );
+                }
             }
             if (textureBinding == null) {
                 throw new IllegalStateException("Missing sampler " + binding.name());
