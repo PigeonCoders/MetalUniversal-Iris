@@ -215,6 +215,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
             this.initializedBlockIds = true;
         }
         this.receipts.recordEvent("frame.begin");
+        IrisMetalFrameDiagnostics.beginFrame(this.frameState.phase().name());
         prepareResources();
         prepareTerrainUniforms();
         Vector3d fog = CapturedRenderingState.INSTANCE.getFogColor();
@@ -325,6 +326,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
     @Override
     public void beginTranslucents() {
         debugHook("beginTranslucents");
+        IrisMetalFrameDiagnostics.logOnce("hook:beginTranslucents", "hook beginTranslucents");
         RenderTarget target = Minecraft.getInstance().gameRenderer.mainRenderTarget();
         GpuTexture depth = target.getDepthTexture();
         if (depth == null) {
@@ -339,6 +341,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
     @Override
     public void beginHand() {
         debugHook("beginHand");
+        IrisMetalFrameDiagnostics.logOnce("hook:beginHand", "hook beginHand");
         RenderTarget target = Minecraft.getInstance().gameRenderer.mainRenderTarget();
         GpuTexture depth = target.getDepthTexture();
         GpuTextureView depthView = target.getDepthTextureView();
@@ -358,6 +361,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
             final CameraRenderState cameraRenderState
     ) {
         debugHook("renderShadows");
+        IrisMetalFrameDiagnostics.logOnce("hook:renderShadows", "hook renderShadows");
         if (this.directives.isPrepareBeforeShadow()) {
             this.receipts.recordEvent("prepare");
             this.executionGraph.executePrepare(this.resources());
@@ -398,6 +402,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
                 colorView
         );
         this.frameState.endWorldRendering();
+        IrisMetalFrameDiagnostics.endFrame(this.frameState.phase().name());
     }
 
     @Override

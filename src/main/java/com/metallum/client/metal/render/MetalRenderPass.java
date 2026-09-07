@@ -59,6 +59,7 @@ final class MetalRenderPass implements RenderPassBackend {
     private GpuBuffer indexBuffer;
     private MTLIndexType indexType = MTLIndexType.UInt16;
     private int pushedDebugGroups = 0;
+    private int drawCount = 0;
     private boolean scissorDirty = true;
     private boolean vertexBuffersDirty = true;
     private boolean pipelineDirty = true;
@@ -91,6 +92,15 @@ final class MetalRenderPass implements RenderPassBackend {
         if (device.useLabels()) {
             commandEncoder.commandBuffer().pushDebugGroup(label.get());
         }
+    }
+
+    int drawCount() {
+        return drawCount;
+    }
+
+    @Nullable
+    String label() {
+        return label;
     }
 
     @Override
@@ -370,6 +380,7 @@ final class MetalRenderPass implements RenderPassBackend {
             drawTriangleFan(enc, firstVertex, vertexCount, instanceCount, firstInstance);
         } else {
             enc.drawPrimitives(primitiveType, firstVertex, vertexCount, Math.max(1, instanceCount), firstInstance);
+            drawCount++;
         }
     }
 
@@ -518,6 +529,7 @@ final class MetalRenderPass implements RenderPassBackend {
     }
 
     private void drawTriangleFan(MTLRenderCommandEncoder encoder, final int firstVertex, final int vertexCount, final int instanceCount, final int baseInstance) {
+        drawCount++;
         int triangleCount = vertexCount - 2;
         int indexCount = triangleCount * 3;
         MTLIndexType fanIndexType = vertexCount - 1 <= 0xFFFF ? MTLIndexType.UInt16 : MTLIndexType.UInt32;
@@ -553,6 +565,7 @@ final class MetalRenderPass implements RenderPassBackend {
             final MTLIndexType indexType,
             final int baseInstance
     ) {
+        drawCount++;
         MTLPrimitiveType primitiveType = primitiveTopology();
 
         long indexOffsetBytes = (long) firstIndex * indexType.bytes;

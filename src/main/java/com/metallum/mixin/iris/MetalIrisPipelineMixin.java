@@ -93,13 +93,16 @@ public class MetalIrisPipelineMixin {
         final WorldRenderingPipeline worldPipeline = Iris.getPipelineManager().getPipelineNullable();
         if (worldPipeline instanceof MetalWorldRenderingPipeline) {
             String location = pipeline.getLocation().toString();
-            if (!location.contains("sodium") && LOGGED_VANILLA_PASSES.add(location)) {
-                Metallum.LOGGER.info(
-                        "[metallum-iris] vanilla pipeline reached MetalRenderPass without iris override: {}",
-                        location
-                );
-                com.metallum.client.metal.render.MetallumDebugLog.log(
-                        "[metallum-iris] vanilla pipeline " + location
+            if (!location.contains("sodium")) {
+                if (LOGGED_VANILLA_PASSES.add(location)) {
+                    Metallum.LOGGER.info(
+                            "[metallum-iris] vanilla pipeline reached MetalRenderPass without iris override: {}",
+                            location
+                    );
+                }
+                com.metallum.client.metal.render.IrisMetalFrameDiagnostics.logOnce(
+                        "vanilla:" + location,
+                        "vanilla pipeline " + location
                 );
             }
             return;

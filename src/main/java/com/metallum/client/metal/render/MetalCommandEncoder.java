@@ -411,6 +411,7 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
     @Override
     public void submitRenderPass() {
         if (currentRenderPass != null) {
+            IrisMetalFrameDiagnostics.pass(currentRenderPass.label(), currentRenderPass.drawCount());
             currentRenderPass.materializePendingClear();
             currentRenderPass.popDebugGroup();
             currentRenderPass = null;

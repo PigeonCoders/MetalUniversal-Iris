@@ -57,6 +57,10 @@ public final class IrisMetalTerrainBridge {
             );
             MetallumDebugLog.log("[metallum-iris] terrain begin " + key + " -> " + linked.orElseThrow().name());
         }
+        IrisMetalFrameDiagnostics.logOnce(
+                "terrain:" + key,
+                "terrain begin " + key + " -> " + linked.orElseThrow().name()
+        );
         int[] drawBuffers = linked.orElseThrow().program().drawBuffers();
         if (drawBuffers.length == 0) {
             drawBuffers = new int[]{0};
