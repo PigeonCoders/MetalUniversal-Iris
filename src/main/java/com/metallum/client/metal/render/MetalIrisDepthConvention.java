@@ -26,10 +26,27 @@ final class MetalIrisDepthConvention {
     private MetalIrisDepthConvention() {
     }
 
-    /** True while Iris reports a live shaderpack and this backend owns it. */
+    /**
+     * True while a shaderpack-world pipeline owns the Metal backend.
+     *
+     * <p>{@code Iris.isPackInUseQuick()} only reports {@code true} for
+     * {@code IrisRenderingPipeline}. This backend replaces that class with
+     * {@link MetalWorldRenderingPipeline}, so relying on the Iris helper here
+     * silently disabled every reverse-Z mirror: depth clears stayed at 0.0
+     * (far), GEQUAL was never inverted to LEQUAL, and deferred1 saw sky depth
+     * 0 instead of 1. That combination is exactly "sky shows the black void
+     * through bands" and "water is transparent because its surface fails the
+     * depth test against the seabed".
+     */
     static boolean conventionalDepthActive() {
         try {
-            return MetalActive.isMetalActive() && Iris.isPackInUseQuick();
+            if (!MetalActive.isMetalActive()) {
+                return false;
+            }
+            net.irisshaders.iris.pipeline.WorldRenderingPipeline pipeline =
+                    Iris.getPipelineManager().getPipelineNullable();
+            return pipeline instanceof MetalWorldRenderingPipeline
+                    || Iris.isPackInUseQuick();
         } catch (Throwable ignored) {
             // Iris may be absent in a vanilla-only deployment; reverse-Z remains.
             return false;
