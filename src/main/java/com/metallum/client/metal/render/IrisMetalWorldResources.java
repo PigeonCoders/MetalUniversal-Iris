@@ -44,6 +44,7 @@ final class IrisMetalWorldResources implements AutoCloseable {
     private final IrisMetalNoiseTexture noiseTexture;
     private final DefaultPbrTexture pbrNormals;
     private final DefaultPbrTexture pbrSpecular;
+    private final DefaultPbrTexture whitePixel;
     @Nullable
     private final IrisMetalComputeResources computeResources;
     private boolean closed;
@@ -158,6 +159,7 @@ final class IrisMetalWorldResources implements AutoCloseable {
         IrisMetalNoiseTexture newNoiseTexture = null;
         DefaultPbrTexture newPbrNormals = null;
         DefaultPbrTexture newPbrSpecular = null;
+        DefaultPbrTexture newWhitePixel = null;
         IrisMetalComputeResources newComputeResources = null;
         try {
             newTargets = new IrisMetalRenderTargets(
@@ -172,6 +174,9 @@ final class IrisMetalWorldResources implements AutoCloseable {
             newPbrSpecular = DefaultPbrTexture.create(
                     device, PBR_SPECULAR_DEFAULT_RGBA, "metallum:iris_pbr/specular"
             );
+            newWhitePixel = DefaultPbrTexture.create(
+                    device, 0xFFFFFFFF, "metallum:iris_pbr/white"
+            );
             if (computePack != null) {
                 newComputeResources = new IrisMetalComputeResources(device, computePack, width, height);
             }
@@ -183,6 +188,7 @@ final class IrisMetalWorldResources implements AutoCloseable {
                     newNoiseTexture,
                     newPbrNormals,
                     newPbrSpecular,
+                    newWhitePixel,
                     newComputeResources
             );
             throw failure;
@@ -193,6 +199,7 @@ final class IrisMetalWorldResources implements AutoCloseable {
         this.noiseTexture = newNoiseTexture;
         this.pbrNormals = newPbrNormals;
         this.pbrSpecular = newPbrSpecular;
+        this.whitePixel = newWhitePixel;
         this.computeResources = newComputeResources;
     }
 
@@ -229,6 +236,11 @@ final class IrisMetalWorldResources implements AutoCloseable {
         return this.pbrSpecular.binding();
     }
 
+    MetalRenderPass.TextureViewAndSampler whitePixel() {
+        ensureOpen();
+        return this.whitePixel.binding();
+    }
+
     @Nullable
     IrisMetalShadowTargets shadowTargets() {
         ensureOpen();
@@ -256,10 +268,14 @@ final class IrisMetalWorldResources implements AutoCloseable {
             final @Nullable IrisMetalNoiseTexture noiseTexture,
             final @Nullable DefaultPbrTexture pbrNormals,
             final @Nullable DefaultPbrTexture pbrSpecular,
+            final @Nullable DefaultPbrTexture whitePixel,
             final @Nullable IrisMetalComputeResources computeResources
     ) {
         if (noiseTexture != null) {
             noiseTexture.close();
+        }
+        if (whitePixel != null) {
+            whitePixel.close();
         }
         if (pbrSpecular != null) {
             pbrSpecular.close();
@@ -300,6 +316,7 @@ final class IrisMetalWorldResources implements AutoCloseable {
                 this.noiseTexture,
                 this.pbrNormals,
                 this.pbrSpecular,
+                this.whitePixel,
                 this.computeResources
         );
     }

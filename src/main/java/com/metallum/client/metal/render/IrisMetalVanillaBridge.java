@@ -239,6 +239,13 @@ public final class IrisMetalVanillaBridge {
         RenderPassDescriptor.Attachment<Optional<org.joml.Vector4fc>> color =
                 descriptor.colorAttachments().getFirst();
         GpuTextureView sceneColor = color.textureView();
+        if (sceneColor.getWidth(0) != pipeline.resources().renderTargets().width()
+                || sceneColor.getHeight(0) != pipeline.resources().renderTargets().height()) {
+            // Non-scene passes (atlas animation uploads, GUI icons, ...) can
+            // run while a world phase is still active, especially during
+            // error unwinding. Never rewrite an off-size surface.
+            return null;
+        }
         org.joml.Vector4fc clearColor = color.clearValue().orElse(null);
         OptionalDouble clearDepth = OptionalDouble.empty();
         RenderPassDescriptor.Attachment<OptionalDouble> depth = descriptor.depthAttachment();
@@ -339,6 +346,9 @@ public final class IrisMetalVanillaBridge {
         }
         if ("noisetex".equals(name)) {
             return pipeline.resources().noiseTexture().binding();
+        }
+        if ("iris_overlay".equals(name)) {
+            return pipeline.resources().whitePixel();
         }
         IrisMetalRenderTargets targets = pipeline.resources().renderTargets();
         GpuTextureView depthView = switch (name) {
