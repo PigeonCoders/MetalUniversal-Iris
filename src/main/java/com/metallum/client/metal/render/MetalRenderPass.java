@@ -77,7 +77,9 @@ final class MetalRenderPass implements RenderPassBackend {
     ) {
         this.device = device;
         this.commandEncoder = encoder;
-        this.label = device.useLabels() ? label.get() : null;
+        // Always evaluate the label: the per-frame diagnostics need it even
+        // when MTL labels are disabled on this device.
+        this.label = label.get();
         this.colorTextures = colorTextures.clone();
         this.depthTexture = depthTexture;
         this.renderArea = renderArea;
@@ -101,6 +103,28 @@ final class MetalRenderPass implements RenderPassBackend {
     @Nullable
     String label() {
         return label;
+    }
+
+    /** Color/depth attachment summary for per-frame diagnostics. */
+    String attachmentSummary() {
+        StringBuilder summary = new StringBuilder("attachments=[");
+        for (GpuTextureView view : colorTextures) {
+            summary.append(view.texture().getFormat())
+                    .append(' ')
+                    .append(view.getWidth(0))
+                    .append('x')
+                    .append(view.getHeight(0))
+                    .append(' ');
+        }
+        summary.setLength(Math.max(summary.length(), "attachments=[".length()));
+        if (summary.charAt(summary.length() - 1) == ' ') {
+            summary.setLength(summary.length() - 1);
+        }
+        summary.append(']');
+        if (depthTexture != null) {
+            summary.append(" depth=").append(depthTexture.texture().getFormat());
+        }
+        return summary.toString();
     }
 
     @Override

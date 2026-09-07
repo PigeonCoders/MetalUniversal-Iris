@@ -41,7 +41,7 @@ public final class IrisMetalFrameDiagnostics {
         MetallumDebugLog.log("frame " + frame + " " + message);
     }
 
-    public static void pass(final String label, final int drawCount) {
+    public static void pass(final String label, final int drawCount, final String attachments) {
         if (frame <= 0 || label == null) {
             return;
         }
@@ -52,10 +52,15 @@ public final class IrisMetalFrameDiagnostics {
                 && !normalized.contains("celestial")
                 && !normalized.contains("terrain")
                 && !normalized.contains("hand")
-                && !normalized.contains("item")) {
+                && !normalized.contains("item")
+                && !normalized.contains("outline")
+                && !normalized.contains("panorama")) {
             return;
         }
-        logOnce("pass:" + label, "pass '" + label + "' draws=" + drawCount);
+        logOnce(
+                "pass:" + label,
+                "pass '" + label + "' draws=" + drawCount + " " + attachments
+        );
     }
 
     public static int frame() {
