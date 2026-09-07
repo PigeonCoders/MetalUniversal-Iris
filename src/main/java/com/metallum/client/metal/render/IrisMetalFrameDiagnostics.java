@@ -57,9 +57,12 @@ public final class IrisMetalFrameDiagnostics {
                 && !normalized.contains("panorama")) {
             return;
         }
-        logOnce(
-                "pass:" + label,
-                "pass '" + label + "' draws=" + drawCount + " " + attachments
+        // Every submission, not once per frame: the three Sodium terrain
+        // layers share the label "Terrain", so de-duplicating hid the solid /
+        // cutout / translucent split entirely.
+        MetallumDebugLog.log(
+                "frame " + frame + " pass '" + label + "' draws=" + drawCount
+                        + " " + attachments
         );
     }
 

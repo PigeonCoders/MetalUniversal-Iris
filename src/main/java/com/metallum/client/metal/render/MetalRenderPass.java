@@ -327,6 +327,7 @@ final class MetalRenderPass implements RenderPassBackend {
         MTLRenderCommandEncoder enc = renderEncoder();
         bindDrawState(enc);
 
+        this.drawCount += drawCount;
         MetalNativeBridge.MTLRenderCommandEncoder_multiDrawIndexed(
                 enc.handle(),
                 primitiveType.value,
@@ -352,6 +353,7 @@ final class MetalRenderPass implements RenderPassBackend {
         MTLRenderCommandEncoder enc = renderEncoder();
         bindDrawState(enc);
 
+        this.drawCount += drawCount;
         enc.drawIndexedPrimitivesIndirect(
                 primitiveType,
                 indexType,
