@@ -68,6 +68,24 @@ public final class IrisMetalProgramFrontend {
                         false
                 )
         );
+        // TEMPORARY BISECTION EXPERIMENT (revert after one device test).
+        if (resolved.requested() == ProgramId.Water
+                && Boolean.parseBoolean(System.getProperty(
+                "metallum.experiment.showWaterFog", "true"))) {
+            Map<PatchShaderType, String> forced = new EnumMap<>(patched);
+            String fragment = forced.get(PatchShaderType.FRAGMENT);
+            String replaced = fragment.replace(
+                    "Color.rgb = get_fog_main(ScreenPos, PlayerPos, Color.rgb, gl_FragCoord.z, SkyColor, VdotL, Dither, false);",
+                    "Color.rgb = vec3(water_fog(ScreenPos));"
+            );
+            if (replaced.equals(fragment)) {
+                throw new ProgramFrontendException(
+                        source.getName(), "water fog experiment pattern not found", null
+                );
+            }
+            forced.put(PatchShaderType.FRAGMENT, replaced);
+            patched = Collections.unmodifiableMap(forced);
+        }
         return new RasterProgram(resolved, patched, alpha, source.getDirectives());
     }
 
@@ -119,6 +137,27 @@ public final class IrisMetalProgramFrontend {
                 )
         );
         AlphaTest alpha = source.getDirectives().getAlphaTestOverride().orElse(AlphaTest.ALWAYS);
+        // TEMPORARY BISECTION EXPERIMENT (revert after one device test):
+        // render deferred1's sky branch as raw depthtex0 and gbuffers_water as
+        // raw water_fog so a screenshot tells us whether the depth captures
+        // are broken without reading back GPU buffers.
+        if (stage == TextureStage.DEFERRED
+                && Boolean.parseBoolean(System.getProperty(
+                "metallum.experiment.showSkyDepth", "true"))) {
+            Map<PatchShaderType, String> forced = new EnumMap<>(patched);
+            String fragment = forced.get(PatchShaderType.FRAGMENT);
+            String replaced = fragment.replaceFirst(
+                    "(?s)if \\(Depth >= 1\\) \\{.*?\\n\\s*\\}\\s*else if",
+                    "if (Depth >= 1) {\nColor.rgb = vec3(Depth);\n}\nelse if"
+            );
+            if (replaced.equals(fragment)) {
+                throw new ProgramFrontendException(
+                        source.getName(), "deferred sky-depth experiment pattern not found", null
+                );
+            }
+            forced.put(PatchShaderType.FRAGMENT, replaced);
+            patched = Collections.unmodifiableMap(forced);
+        }
         return new RasterProgram(resolved, patched, alpha, source.getDirectives());
     }
 
