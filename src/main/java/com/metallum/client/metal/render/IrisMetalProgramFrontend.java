@@ -120,23 +120,31 @@ public final class IrisMetalProgramFrontend {
         );
         AlphaTest alpha = source.getDirectives().getAlphaTestOverride().orElse(AlphaTest.ALWAYS);
         // TEMPORARY BISECTION EXPERIMENT (revert after one device test):
-        // zero out the Mellow bloom blur chain (composite2..composite6) so the
-        // remaining passes composite7/8/final render without bloom. If the
-        // radiating sky bands disappear, the bands are produced by bloom /
-        // colortex1 lighting; if they stay, bloom is exonerated.
-        if (stage == TextureStage.COMPOSITE_AND_FINAL
+        // deferred1 sky branch keeps the smooth sky gradient but disables
+        // stars, clouds and aurora. If the radiating bands disappear, one of
+        // those three lighting effects is the source and the next build
+        // bisects further; if they remain, the defect is the sky gradient or
+        // the depth branch itself.
+        if (stage == TextureStage.DEFERRED
                 && Boolean.parseBoolean(System.getProperty(
-                "metallum.experiment.zeroBloom", "true"))
-                && source.getName().matches("composite[2-6]")) {
+                "metallum.experiment.skyGradientOnly", "true"))) {
             Map<PatchShaderType, String> forced = new EnumMap<>(patched);
             String fragment = forced.get(PatchShaderType.FRAGMENT);
-            String replaced = fragment.replaceFirst(
-                    "(?s)void main\\(\\) \\{.*\\}\\s*$",
-                    "void main() {\n    Color = vec4(0.0);\n}\n"
+            String replaced = fragment.replace(
+                    "Color.rgb += get_stars(PlayerPos);",
+                    "Color.rgb += 0.0;"
+            );
+            replaced = replaced.replace(
+                    "Color.rgb = get_clouds(ViewPosN, PlayerPos, PlayerPosN, SunGlare, Color.rgb, Dither);",
+                    "Color.rgb = Color.rgb;"
+            );
+            replaced = replaced.replace(
+                    "Color.rgb += get_aurora(PlayerPosN, Dither);",
+                    "Color.rgb += 0.0;"
             );
             if (replaced.equals(fragment)) {
                 throw new ProgramFrontendException(
-                        source.getName(), "bloom zero-out pattern not found", null
+                        source.getName(), "deferred sky-gradient-only pattern not found", null
                 );
             }
             forced.put(PatchShaderType.FRAGMENT, replaced);
