@@ -47,6 +47,49 @@ final class MetalMslClipSpace {
      * different SPIRV-Cross output shape), a warning is logged once per shape
      * so the missing depth remap is not silent.
      */
+    private static final java.util.regex.Pattern DEPTH_SAMPLE_PATTERN = java.util.regex.Pattern.compile(
+            "\\b(depthtex[0-2])\\.sample\\(\\s*"
+                    + "(depthtex[0-2])Smplr\\s*,\\s*(.+?)\\)\\.x"
+    );
+
+    /**
+     * GLSL declares Iris depth captures as {@code sampler2D depthtexN}, which
+     * glslang marks as a non-depth image and SPIRV-Cross therefore emits as
+     * {@code texture2d<float>}. The Metal textures behind those samplers are
+     * real depth attachments (D32_FLOAT): binding one to a {@code texture2d}
+     * parameter is invalid on Apple GPUs and reads come back wrong/zero.
+     * Metal's matching type is {@code depth2d<float>}, whose non-compare
+     * {@code sample()} naturally returns a scalar float, so the emitted
+     * {@code .x} swizzle must be removed as well.
+     */
+    static String remapDepthTextureSamplers(final String msl) {
+        String remapped = msl;
+        for (int index = 0; index <= 2; index++) {
+            String name = "depthtex" + index;
+            remapped = remapped.replace(
+                    "texture2d<float> " + name,
+                    "depth2d<float> " + name
+            );
+        }
+        Matcher matcher = DEPTH_SAMPLE_PATTERN.matcher(remapped);
+        if (!matcher.find()) {
+            return remapped;
+        }
+        StringBuffer fixed = new StringBuffer(remapped.length());
+        matcher.reset();
+        while (matcher.find()) {
+            matcher.appendReplacement(
+                    fixed,
+                    Matcher.quoteReplacement(
+                            matcher.group(1) + ".sample(" + matcher.group(2)
+                                    + "Smplr, " + matcher.group(3) + ")"
+                    )
+            );
+        }
+        matcher.appendTail(fixed);
+        return fixed.toString();
+    }
+
     static String fixup(final String msl) {
         if (msl == null || msl.contains("out.gl_Position.z = (out.gl_Position.z + out.gl_Position.w) * 0.5")) {
             return msl;

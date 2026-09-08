@@ -1571,6 +1571,7 @@ public final class MetalCrossShaderCompiler {
                 if (remapClipSpace) {
                     msl = MetalMslClipSpace.fixup(msl);
                 }
+                msl = MetalMslClipSpace.remapDepthTextureSamplers(msl);
                 return new MslShader(
                         msl,
                         hasPushConstants,
