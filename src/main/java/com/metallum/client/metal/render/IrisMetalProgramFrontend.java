@@ -147,6 +147,28 @@ public final class IrisMetalProgramFrontend {
             patched = Collections.unmodifiableMap(forced);
         }
         // TEMPORARY BISECTION (iOS only, revert after one screenshot):
+        // remove the deferred1 cloud contribution while keeping the sky
+        // gradient, stars and aurora. If the radiating bands disappear, the
+        // cloud noise path is the source.
+        if (stage == TextureStage.DEFERRED
+                && com.metallum.client.metal.render.bridge.MetalNativeBridge.isIOS()
+                && Boolean.parseBoolean(System.getProperty(
+                "metallum.experiment.disableClouds", "true"))) {
+            Map<PatchShaderType, String> forced = new EnumMap<>(patched);
+            String fragment = forced.get(PatchShaderType.FRAGMENT);
+            String replaced = fragment.replaceAll(
+                    "(?s)Color\\.rgb\\s*=\\s*get_clouds\\s*\\(.*?\\);",
+                    "Color.rgb = Color.rgb;"
+            );
+            if (replaced.equals(fragment)) {
+                throw new ProgramFrontendException(
+                        source.getName(), "disable-clouds pattern not found", null
+                );
+            }
+            forced.put(PatchShaderType.FRAGMENT, replaced);
+            patched = Collections.unmodifiableMap(forced);
+        }
+        // TEMPORARY BISECTION (iOS only, revert after one screenshot):
         // show the raw bloom sample used by composite7. Stripes here mean the
         // colortex1 pyramid content is bad; a clean image means the mix
         // factor/BloomFactor path is bad.
