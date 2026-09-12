@@ -131,7 +131,7 @@ public final class IrisMetalProgramFrontend {
                 && "composite7".equals(source.getName())
                 && com.metallum.client.metal.render.bridge.MetalNativeBridge.isIOS()
                 && Boolean.parseBoolean(System.getProperty(
-                "metallum.compat.disableBloom", "true"))) {
+                "metallum.compat.disableBloom", "false"))) {
             Map<PatchShaderType, String> forced = new EnumMap<>(patched);
             String fragment = forced.get(PatchShaderType.FRAGMENT);
             String replaced = fragment.replace(
