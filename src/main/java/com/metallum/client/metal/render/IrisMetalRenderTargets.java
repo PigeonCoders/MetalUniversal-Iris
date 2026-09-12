@@ -103,6 +103,18 @@ final class IrisMetalRenderTargets implements AutoCloseable {
     boolean clearForFrame(final MetalCommandEncoder encoder, final Vector4fc fogColor) {
         ensureOpen();
         Vector4f fog = new Vector4f(fogColor.x(), fogColor.y(), fogColor.z(), 1.0F);
+        // TEMPORARY BISECTION (iOS only, revert after one screenshot): clear
+        // colortex0/1 on both ping-pong sides every frame even though Mellow
+        // sets colortex0Clear/colortex1Clear=false. If the bands disappear,
+        // they are a frame-to-frame feedback/accumulation artefact.
+        if (com.metallum.client.metal.render.bridge.MetalNativeBridge.isIOS()
+                && Boolean.parseBoolean(System.getProperty(
+                "metallum.experiment.clearColor01", "true"))) {
+            for (int index = 0; index <= 1; index++) {
+                encoder.clearColorTexture(colorTargets.mainTexture(index), new Vector4f(0.0F));
+                encoder.clearColorTexture(colorTargets.altTexture(index), new Vector4f(0.0F));
+            }
+        }
         boolean fullClear = this.fullClearRequired;
         for (int index = 0; index < colorTargets.targetCount(); index++) {
             RenderTargetSettings settings = targetSettings.get(index);
