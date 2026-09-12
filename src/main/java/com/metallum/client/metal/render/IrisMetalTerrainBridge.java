@@ -68,13 +68,21 @@ public final class IrisMetalTerrainBridge {
             drawBuffers = new int[]{0};
         }
         ACTIVE_TERRAIN.set(new TerrainContext(pipeline, key, drawBuffers));
-        // TEMPORARY BISECTION: suppress every Sodium terrain draw. If the
-        // radiating bands disappear, terrain geometry/shading is writing them
-        // into colortex0 (including over sky pixels).
-        boolean suppressWater = MetalExperimentGate.enabled("metallum.experiment.disableTerrainDraws");
-        SUPPRESS_WATER_DRAWS.set(suppressWater);
-        if (suppressWater) {
-            MetallumDebugLog.log("[metallum-iris] suppress terrain draws experiment active");
+        // TEMPORARY BISECTION: hide every Sodium terrain draw (solid, cutout and
+        // translucent) so one device run shows whether the radiating bands come
+        // from terrain at all. The window alternates every 450 frames (~8-15s)
+        // so the answer is visible in a single session instead of requiring a
+        // rebuild per state; the debug log records which window was active.
+        boolean experiment = MetalExperimentGate.enabled("metallum.experiment.disableTerrainDraws");
+        int frame = IrisMetalFrameDiagnostics.frame();
+        boolean terrainHiddenWindow = (frame / 450) % 2 == 1;
+        boolean suppressTerrain = experiment && terrainHiddenWindow;
+        SUPPRESS_WATER_DRAWS.set(suppressTerrain);
+        if (experiment) {
+            IrisMetalFrameDiagnostics.logOnce(
+                    "terrain-window",
+                    "terrain suppression window=" + (suppressTerrain ? "HIDDEN" : "VISIBLE")
+            );
         }
     }
 
