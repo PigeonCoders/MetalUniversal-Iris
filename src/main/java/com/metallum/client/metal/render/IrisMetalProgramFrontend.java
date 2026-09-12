@@ -125,6 +125,7 @@ public final class IrisMetalProgramFrontend {
         // disappear, they are produced by one of those final effects.
         if (stage == TextureStage.COMPOSITE_AND_FINAL
                 && "final".equals(source.getName())
+                && com.metallum.client.metal.render.bridge.MetalNativeBridge.isIOS()
                 && Boolean.parseBoolean(System.getProperty(
                 "metallum.experiment.plainFinal", "true"))) {
             Map<PatchShaderType, String> forced = new EnumMap<>(patched);
