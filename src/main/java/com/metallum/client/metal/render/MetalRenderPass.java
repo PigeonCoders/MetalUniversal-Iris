@@ -60,10 +60,6 @@ final class MetalRenderPass implements RenderPassBackend {
     private MTLIndexType indexType = MTLIndexType.UInt16;
     private int pushedDebugGroups = 0;
     private int drawCount = 0;
-    // TEMPORARY BISECTION: skip the two vanilla passes that run after Iris
-    // finalize, to see whether the screen-space radiating bands come from one
-    // of them. Remove after the device test.
-    private boolean skipDebugDraw = false;
     private boolean scissorDirty = true;
     private boolean vertexBuffersDirty = true;
     private boolean pipelineDirty = true;
@@ -144,8 +140,6 @@ final class MetalRenderPass implements RenderPassBackend {
 
     @Override
     public void setPipeline(final @NonNull RenderPipeline pipeline) {
-        String location = pipeline.getLocation().toString();
-        this.skipDebugDraw = location.contains("panorama") || location.contains("entity_outline_blit");
         MetalCompiledRenderPipeline compiled = device.getOrCompilePipeline(pipeline);
         validateAttachmentSignature(compiled, pipeline.getLocation().toString());
         if (this.compiledPipeline != compiled) {
@@ -340,9 +334,6 @@ final class MetalRenderPass implements RenderPassBackend {
 
     @Override
     public void drawIndexed(final int indexCount, final int instanceCount, final int firstIndex, final int vertexOffset, final int firstInstance) {
-        if (skipDebugDraw) {
-            return;
-        }
         MetalGpuBuffer nativeIndexBuffer = (MetalGpuBuffer) indexBuffer;
         MTLRenderCommandEncoder enc = renderEncoder();
 
@@ -352,9 +343,6 @@ final class MetalRenderPass implements RenderPassBackend {
 
     @Override
     public void multiDrawIndexed(@NonNull IntBuffer drawParameters, int instanceCount, int firstInstance, int drawCount) {
-        if (skipDebugDraw) {
-            return;
-        }
         MetalGpuBuffer nativeIndexBuffer = (MetalGpuBuffer) indexBuffer;
         MTLRenderCommandEncoder enc = renderEncoder();
         bindDrawState(enc);
@@ -371,9 +359,6 @@ final class MetalRenderPass implements RenderPassBackend {
 
     @Override
     public void multiDrawIndexed(@NonNull PointerBuffer firstIndexOffsets, @NonNull IntBuffer indexCounts, @NonNull IntBuffer vertexOffsets, int drawCount) {
-        if (skipDebugDraw) {
-            return;
-        }
         MTLPrimitiveType primitiveType = primitiveTopology();
         if (primitiveType == MTLPrimitiveType.TriangleFan) {
             throw new UnsupportedOperationException("Metal backend does not support triangle fan multiDrawIndexed");
@@ -400,9 +385,6 @@ final class MetalRenderPass implements RenderPassBackend {
 
     @Override
     public void drawIndexedIndirect(final @NonNull GpuBufferSlice commands, final int drawCount) {
-        if (skipDebugDraw) {
-            return;
-        }
         MTLPrimitiveType primitiveType = primitiveTopology();
         if (primitiveType == MTLPrimitiveType.TriangleFan) {
             throw new UnsupportedOperationException("Metal backend does not support triangle fan indirect draws");
@@ -432,9 +414,6 @@ final class MetalRenderPass implements RenderPassBackend {
             final @NonNull Collection<String> dynamicUniforms,
             final @NonNull T uniformArgument
     ) {
-        if (skipDebugDraw) {
-            return;
-        }
         IndexType fallbackIndexType = defaultIndexType == null ? IndexType.SHORT : defaultIndexType;
         MTLRenderCommandEncoder enc = renderEncoder();
 
@@ -459,9 +438,6 @@ final class MetalRenderPass implements RenderPassBackend {
 
     @Override
     public void draw(final int vertexCount, final int instanceCount, final int firstVertex, final int firstInstance) {
-        if (skipDebugDraw) {
-            return;
-        }
         MTLPrimitiveType primitiveType = primitiveTopology();
         MTLRenderCommandEncoder enc = renderEncoder();
 
@@ -487,9 +463,6 @@ final class MetalRenderPass implements RenderPassBackend {
 
     @Override
     public void drawIndirect(final @NonNull GpuBufferSlice commands, final int drawCount) {
-        if (skipDebugDraw) {
-            return;
-        }
         MTLPrimitiveType primitiveType = primitiveTopology();
         if (primitiveType == MTLPrimitiveType.TriangleFan) {
             throw new UnsupportedOperationException("Metal backend does not support triangle fan indirect draws");
