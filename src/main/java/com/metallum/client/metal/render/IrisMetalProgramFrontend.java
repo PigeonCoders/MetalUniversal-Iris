@@ -129,7 +129,7 @@ public final class IrisMetalProgramFrontend {
         // the bloom mix until the pyramid generation is fixed.
         if (stage == TextureStage.COMPOSITE_AND_FINAL
                 && "composite7".equals(source.getName())
-                && MetalExperimentGate.enabled("metallum.compat.disableBloom")) {
+                && Boolean.getBoolean("metallum.compat.disableBloom")) {
             Map<PatchShaderType, String> forced = new EnumMap<>(patched);
             String fragment = forced.get(PatchShaderType.FRAGMENT);
             String replaced = fragment.replace(
@@ -187,7 +187,7 @@ public final class IrisMetalProgramFrontend {
         // factor/BloomFactor path is bad.
         if (stage == TextureStage.COMPOSITE_AND_FINAL
                 && "composite7".equals(source.getName())
-                && MetalExperimentGate.enabled("metallum.experiment.showFinalBloom")) {
+                && Boolean.getBoolean("metallum.experiment.showFinalBloom")) {
             Map<PatchShaderType, String> forced = new EnumMap<>(patched);
             String fragment = forced.get(PatchShaderType.FRAGMENT);
             String replaced = fragment.replace(
@@ -208,7 +208,7 @@ public final class IrisMetalProgramFrontend {
         // mean the vertex uniform mapping (resolution/aspectRatio) is wrong.
         if (stage == TextureStage.COMPOSITE_AND_FINAL
                 && "composite7".equals(source.getName())
-                && MetalExperimentGate.enabled("metallum.experiment.showBloomTile")) {
+                && Boolean.getBoolean("metallum.experiment.showBloomTile")) {
             Map<PatchShaderType, String> forced = new EnumMap<>(patched);
             String fragment = forced.get(PatchShaderType.FRAGMENT);
             String replaced = fragment.replace(
@@ -230,7 +230,7 @@ public final class IrisMetalProgramFrontend {
         // flat grey screen means composite7/8 generate them.
         if (stage == TextureStage.COMPOSITE_AND_FINAL
                 && "composite7".equals(source.getName())
-                && MetalExperimentGate.enabled("metallum.experiment.greyComposite7")) {
+                && Boolean.getBoolean("metallum.experiment.greyComposite7")) {
             Map<PatchShaderType, String> forced = new EnumMap<>(patched);
             String fragment = forced.get(PatchShaderType.FRAGMENT);
             String replaced = fragment.replaceFirst(
@@ -247,7 +247,7 @@ public final class IrisMetalProgramFrontend {
         }
         if (stage == TextureStage.COMPOSITE_AND_FINAL
                 && "final".equals(source.getName())
-                && MetalExperimentGate.enabled("metallum.experiment.plainFinal")) {
+                && Boolean.getBoolean("metallum.experiment.plainFinal")) {
             Map<PatchShaderType, String> forced = new EnumMap<>(patched);
             String fragment = forced.get(PatchShaderType.FRAGMENT);
             String replaced = fragment.replaceFirst(
