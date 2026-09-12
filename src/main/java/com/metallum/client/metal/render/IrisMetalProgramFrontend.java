@@ -134,10 +134,11 @@ public final class IrisMetalProgramFrontend {
             String replaced = fragment.replace(
                     "float Dither = dither(gl_FragCoord.xy);",
                     "float Dither = dither(gl_FragCoord.xy);\n"
-                            + "if (gl_FragCoord.x < resolution.x * 0.25) { Color = vec4(vec3(Depth), 1.0); }\n"
-                            + "else if (gl_FragCoord.x < resolution.x * 0.5) { Color = vec4(ViewPosN * 0.5 + 0.5, 1.0); }\n"
-                            + "else if (gl_FragCoord.x < resolution.x * 0.75) { Color = vec4(SkyColor, 1.0); }\n"
-                            + "else { Color = vec4(get_clouds(ViewPosN, PlayerPos, PlayerPosN, SunGlare, vec3(0.0), Dither), 1.0); }"
+                            + "if (gl_FragCoord.x < resolution.x * 0.2) { Color = vec4(vec3(Depth), 1.0); return; }\n"
+                            + "else if (gl_FragCoord.x < resolution.x * 0.4) { Color = vec4(ViewPosN * 0.5 + 0.5, 1.0); return; }\n"
+                            + "else if (gl_FragCoord.x < resolution.x * 0.6) { Color = vec4(SkyColor, 1.0); return; }\n"
+                            + "else if (gl_FragCoord.x < resolution.x * 0.8) { Color = vec4(get_clouds(ViewPosN, PlayerPos, PlayerPosN, SunGlare, vec3(0.0), Dither), 1.0); return; }\n"
+                            + "else { Color = vec4(0.5, 0.5, 0.5, 1.0); return; }"
             );
             if (replaced.equals(fragment)) {
                 throw new ProgramFrontendException(
