@@ -109,7 +109,7 @@ final class IrisMetalRenderTargets implements AutoCloseable {
         // they are a frame-to-frame feedback/accumulation artefact.
         if (com.metallum.client.metal.render.bridge.MetalNativeBridge.isIOS()
                 && Boolean.parseBoolean(System.getProperty(
-                "metallum.experiment.clearColor01", "true"))) {
+                "metallum.experiment.clearColor01", "false"))) {
             for (int index = 0; index <= 1; index++) {
                 encoder.clearColorTexture(colorTargets.mainTexture(index), new Vector4f(0.0F));
                 encoder.clearColorTexture(colorTargets.altTexture(index), new Vector4f(0.0F));

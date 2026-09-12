@@ -123,6 +123,29 @@ public final class IrisMetalProgramFrontend {
         // shader down to a plain colortex0 -> main copy, removing CAS,
         // vignette, film grain and color grading. If the radiating bands
         // disappear, they are produced by one of those final effects.
+        // iOS bloom mitigation: composite7 mixes the colortex1 pyramid into
+        // the final image, and that pyramid is proven to carry the radiating
+        // bands on this backend. Keep the pass' colour copy but return before
+        // the bloom mix until the pyramid generation is fixed.
+        if (stage == TextureStage.COMPOSITE_AND_FINAL
+                && "composite7".equals(source.getName())
+                && com.metallum.client.metal.render.bridge.MetalNativeBridge.isIOS()
+                && Boolean.parseBoolean(System.getProperty(
+                "metallum.compat.disableBloom", "true"))) {
+            Map<PatchShaderType, String> forced = new EnumMap<>(patched);
+            String fragment = forced.get(PatchShaderType.FRAGMENT);
+            String replaced = fragment.replace(
+                    "Color = texture(colortex0, texcoord);",
+                    "Color = texture(colortex0, texcoord); return;"
+            );
+            if (replaced.equals(fragment)) {
+                throw new ProgramFrontendException(
+                        source.getName(), "bloom-skip pattern not found", null
+                );
+            }
+            forced.put(PatchShaderType.FRAGMENT, replaced);
+            patched = Collections.unmodifiableMap(forced);
+        }
         // TEMPORARY BISECTION (iOS only, revert after one screenshot):
         // show the raw bloom sample used by composite7. Stripes here mean the
         // colortex1 pyramid content is bad; a clean image means the mix
