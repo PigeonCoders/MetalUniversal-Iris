@@ -310,7 +310,8 @@ final class MetalOffscreenSkyProbeTest {
             data.putFloat(base + uv.offset(), points[index][0] * 0.5F + 0.5F);
             data.putFloat(base + uv.offset() + Float.BYTES, points[index][1] * 0.5F + 0.5F);
         }
-        data.flip();
+        // Absolute putFloat() calls do not advance position; leaving the
+        // buffer position at 0 gives createBuffer() the full vertex payload.
         return data;
     }
 
