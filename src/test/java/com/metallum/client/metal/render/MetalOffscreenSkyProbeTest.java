@@ -44,6 +44,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalDouble;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
@@ -524,6 +525,18 @@ final class MetalOffscreenSkyProbeTest {
                     null, null
             );
 
+            // Same shape scaled past the viewport so every triangle is clipped, like the vanilla
+            // sky disc whose 512-block rim sits far outside the frustum.
+            float[][] clipped = new float[fan.length][];
+            for (int vertex = 0; vertex < fan.length; vertex++) {
+                clipped[vertex] = new float[]{fan[vertex][0] * 4.0F, fan[vertex][1] * 4.0F, 0.0F};
+            }
+            compareTopology(
+                    "fan-clipped", positions(clipped), PrimitiveTopology.TRIANGLE_FAN, clipped.length, null, null,
+                    "fan-clipped-explicit", positions(fanTriangles, clipped), PrimitiveTopology.TRIANGLES,
+                    fanTriangles.length, null, null
+            );
+
             for (IndexType indexType : IndexType.values()) {
                 float[][] quads = quadVertices();
                 int[] quadIndices = sequentialQuadIndices(4);
@@ -565,6 +578,8 @@ final class MetalOffscreenSkyProbeTest {
                 .append(" of ").append(TOPOLOGY_SIZE * TOPOLOGY_SIZE).append('\n');
         REPORT.append("map ").append(labelA).append('\n').append(asciiMap(pixelsA));
         REPORT.append("map ").append(labelB).append('\n').append(asciiMap(pixelsB));
+        assertEquals(0, mismatches,
+                "Metal " + labelA + " expansion must rasterize exactly like " + labelB);
     }
 
     private ByteBuffer renderPrimitive(
@@ -816,7 +831,12 @@ final class MetalOffscreenSkyProbeTest {
     private static void writeReport() {
         try {
             Files.createDirectories(PROBE.getParent());
-            Files.writeString(PROBE, REPORT.toString());
+            Files.writeString(
+                    PROBE,
+                    REPORT.toString(),
+                    java.nio.file.StandardOpenOption.CREATE,
+                    java.nio.file.StandardOpenOption.APPEND
+            );
         } catch (Exception ignored) {
         }
         System.out.println("METAL_RENDER_PROBE_BEGIN\n" + REPORT + "METAL_RENDER_PROBE_END");
