@@ -199,11 +199,20 @@ final class MetalOffscreenSkyProbeTest {
                      GpuTexture.USAGE_TEXTURE_BINDING | GpuTexture.USAGE_COPY_DST,
                      GpuFormat.RGBA8_UNORM, 2, 2, 1, 1
              );
+             MetalGpuTexture sourceColor = (MetalGpuTexture) device.createTexture(
+                     "probe-colortex0-source",
+                     GpuTexture.USAGE_TEXTURE_BINDING | GpuTexture.USAGE_RENDER_ATTACHMENT,
+                     GpuFormat.RGBA8_UNORM, SIZE, SIZE, 1, 1
+             );
              MetalGpuTextureView colorView = new MetalGpuTextureView(color, 0, 1);
+             MetalGpuTextureView sourceView = new MetalGpuTextureView(sourceColor, 0, 1);
              MetalGpuTextureView depthView = new MetalGpuTextureView(depth, 0, 1);
              MetalGpuTextureView noiseView = new MetalGpuTextureView(noise, 0, 1)
         ) {
             writeNoise(noise);
+            // colortex0 is a separate ping-pong side in the real pipeline;
+            // never sample the attachment we are rendering into (feedback).
+            clearTarget(sourceView);
             MetalGpuBuffer uniformBuffer = createBuffer("probe uniforms",
                     GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_COPY_DST, uniforms);
             MetalGpuBuffer vertexBuffer = createBuffer("probe triangle",
@@ -225,7 +234,7 @@ final class MetalOffscreenSkyProbeTest {
                     continue;
                 }
                 MetalGpuTextureView view = switch (binding.name()) {
-                    case "colortex0" -> colorView;
+                    case "colortex0" -> sourceView;
                     case "depthtex0" -> depthView;
                     case "noisetex" -> noiseView;
                     default -> null;
@@ -283,7 +292,7 @@ final class MetalOffscreenSkyProbeTest {
                             continue;
                         }
                         MetalGpuTextureView view = switch (binding.name()) {
-                            case "colortex0" -> controlView;
+                            case "colortex0" -> sourceView;
                             case "depthtex0" -> depthView;
                             case "noisetex" -> noiseView;
                             default -> null;
@@ -398,6 +407,16 @@ final class MetalOffscreenSkyProbeTest {
                 pipeline.close();
             }
         }
+    }
+
+    private void clearTarget(final MetalGpuTextureView view) {
+        RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> "probe source clear")
+                .withColorAttachment(view, Optional.of(new Vector4f(0.0F, 0.0F, 0.0F, 1.0F)))
+                .withRenderArea(new RenderPass.RenderArea(0, 0, SIZE, SIZE));
+        encoder.createRenderPass(descriptor);
+        encoder.submitRenderPass();
+        encoder.submit();
+        device.waitForSubmittedGpuWork();
     }
 
     private void writeNoise(final MetalGpuTexture noise) {
