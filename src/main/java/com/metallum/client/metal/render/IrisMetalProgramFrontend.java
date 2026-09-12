@@ -123,6 +123,30 @@ public final class IrisMetalProgramFrontend {
         // shader down to a plain colortex0 -> main copy, removing CAS,
         // vignette, film grain and color grading. If the radiating bands
         // disappear, they are produced by one of those final effects.
+        // TEMPORARY BISECTION (iOS only, revert after one screenshot):
+        // force composite7/composite8 to a flat 0.5 grey. final is already a
+        // plain colortex0 passthrough in this build, so a striped grey screen
+        // means the bands are added after composite8 (final/display), while a
+        // flat grey screen means composite7/8 generate them.
+        if (stage == TextureStage.COMPOSITE_AND_FINAL
+                && ("composite7".equals(source.getName()) || "composite8".equals(source.getName()))
+                && com.metallum.client.metal.render.bridge.MetalNativeBridge.isIOS()
+                && Boolean.parseBoolean(System.getProperty(
+                "metallum.experiment.greyComposite78", "true"))) {
+            Map<PatchShaderType, String> forced = new EnumMap<>(patched);
+            String fragment = forced.get(PatchShaderType.FRAGMENT);
+            String replaced = fragment.replaceFirst(
+                    "(?s)void main\\(\\) \\{.*\\}\\s*$",
+                    "void main() {\n    Color = vec4(0.5, 0.5, 0.5, 1.0);\n    return;\n}\n"
+            );
+            if (replaced.equals(fragment)) {
+                throw new ProgramFrontendException(
+                        source.getName(), "grey-composite pattern not found", null
+                );
+            }
+            forced.put(PatchShaderType.FRAGMENT, replaced);
+            patched = Collections.unmodifiableMap(forced);
+        }
         if (stage == TextureStage.COMPOSITE_AND_FINAL
                 && "final".equals(source.getName())
                 && com.metallum.client.metal.render.bridge.MetalNativeBridge.isIOS()
