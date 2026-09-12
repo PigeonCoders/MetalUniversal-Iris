@@ -181,6 +181,9 @@ final class MetalOffscreenSkyProbeTest {
         );
         REPORT.append("pipeline valid=").append(pipeline.isValid()).append('\n');
 
+        runControl(vertexBufferPlaceholder(), "clear-only", null, true);
+        runControl(vertexBufferPlaceholder(), "red-pipeline", compileRedPipeline(), false);
+
         try (MetalGpuTexture color = (MetalGpuTexture) device.createTexture(
                 "probe-colortex0",
                 GpuTexture.USAGE_RENDER_ATTACHMENT | GpuTexture.USAGE_TEXTURE_BINDING | GpuTexture.USAGE_COPY_SRC,
@@ -322,6 +325,79 @@ final class MetalOffscreenSkyProbeTest {
                 .append(',').append(b).append(',').append(a)
                 .append(" verdict=").append(r > 1 ? "SKY_BRANCH_RAN" : "SKY_BRANCH_SKIPPED")
                 .append('\n');
+    }
+
+    private java.nio.ByteBuffer vertexBufferPlaceholder() {
+        return fullScreenTriangle();
+    }
+
+    private MetalCompiledRenderPipeline compileRedPipeline() {
+        String vertex = "#version 450\n"
+                + "layout(location=0) in vec3 Position;\n"
+                + "layout(location=1) in vec2 UV0;\n"
+                + "void main() { gl_Position = vec4(Position, 1.0); }\n";
+        String fragment = "#version 450\n"
+                + "layout(location=0) out vec4 Color;\n"
+                + "void main() { Color = vec4(1.0, 0.0, 0.0, 1.0); }\n";
+        try {
+            return MetalCrossShaderCompiler.compileShaderpack(
+                    device, "probe/red", vertex, fragment, null,
+                    Map.of("Position", GpuFormat.RGB32_FLOAT, "UV0", GpuFormat.RG32_FLOAT),
+                    false, false, PolygonMode.FILL, PrimitiveTopology.TRIANGLES,
+                    new com.mojang.blaze3d.vertex.VertexFormat[]{DefaultVertexFormat.POSITION_TEX},
+                    null,
+                    new ColorTargetState[]{
+                            new ColorTargetState(Optional.empty(), GpuFormat.RGBA8_UNORM, ColorTargetState.WRITE_ALL)
+                    }
+            );
+        } catch (Throwable failure) {
+            REPORT.append("red pipeline compile failed: ").append(failure).append('\n');
+            return null;
+        }
+    }
+
+    private void runControl(final java.nio.ByteBuffer vertexData, final String label,
+                            final MetalCompiledRenderPipeline pipeline, final boolean clearOnly) {
+        try (MetalGpuTexture target = (MetalGpuTexture) device.createTexture(
+                "probe-control-" + label,
+                GpuTexture.USAGE_RENDER_ATTACHMENT | GpuTexture.USAGE_COPY_SRC,
+                GpuFormat.RGBA8_UNORM, SIZE, SIZE, 1, 1
+        ); MetalGpuTextureView view = new MetalGpuTextureView(target, 0, 1)) {
+            RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> "probe control " + label)
+                    .withColorAttachment(view, Optional.of(new Vector4f(0.0F, 0.0F, 0.0F, 1.0F)))
+                    .withRenderArea(new RenderPass.RenderArea(0, 0, SIZE, SIZE));
+            MetalRenderPass pass = (MetalRenderPass) encoder.createRenderPass(descriptor);
+            if (!clearOnly) {
+                if (pipeline == null) {
+                    REPORT.append("control ").append(label).append(": no pipeline\n");
+                    return;
+                }
+                pass.setCompiledPipeline(pipeline);
+                MetalGpuBuffer vb = createBuffer("control " + label + " vb",
+                        GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_COPY_DST, vertexData);
+                pass.setVertexBuffer(0, vb.slice());
+                pass.draw(3, 1, 0, 0);
+                encoder.submitRenderPass();
+                encoder.submit();
+                device.waitForSubmittedGpuWork();
+                vb.close();
+            } else {
+                encoder.submitRenderPass();
+                encoder.submit();
+                device.waitForSubmittedGpuWork();
+            }
+            ByteBuffer pixels = readback(target);
+            int center = ((SIZE / 2) * SIZE + SIZE / 2) * 4;
+            int r = Byte.toUnsignedInt(pixels.get(center));
+            int g = Byte.toUnsignedInt(pixels.get(center + 1));
+            int b = Byte.toUnsignedInt(pixels.get(center + 2));
+            int a = Byte.toUnsignedInt(pixels.get(center + 3));
+            REPORT.append("control ").append(label).append(" rgba=")
+                    .append(r).append(',').append(g).append(',').append(b).append(',').append(a).append('\n');
+            if (pipeline != null && !clearOnly) {
+                pipeline.close();
+            }
+        }
     }
 
     private void writeNoise(final MetalGpuTexture noise) {
