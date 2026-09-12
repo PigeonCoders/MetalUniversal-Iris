@@ -28,6 +28,6 @@ public abstract class IrisSodiumShaderChunkRendererMixin {
             final TerrainRenderPass pass,
             final CallbackInfo ci
     ) {
-        IrisMetalTerrainBridge.end();
+        IrisMetalTerrainBridge.end(pass);
     }
 }

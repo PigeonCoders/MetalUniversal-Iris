@@ -27,6 +27,7 @@ import java.util.function.Supplier;
 public final class IrisMetalTerrainBridge {
     private static final ThreadLocal<TerrainContext> ACTIVE_TERRAIN = new ThreadLocal<>();
     private static final ThreadLocal<Boolean> SUPPRESS_WATER_DRAWS = new ThreadLocal<>();
+    private static final ThreadLocal<int[]> SUPPRESSED_DRAWS = new ThreadLocal<>();
     private static final Set<String> LOGGED_KEYS = new HashSet<>();
     private static final Set<String> LOGGED_MISSES = new HashSet<>();
 
@@ -77,16 +78,42 @@ public final class IrisMetalTerrainBridge {
         }
     }
 
-    /** TEMPORARY BISECTION: true while the translucent terrain layer is being
-     *  executed with the iOS water-draw suppression experiment enabled. */
+    /** TEMPORARY BISECTION: true while a terrain layer is being executed with the
+     *  iOS terrain-draw suppression experiment enabled. */
     public static boolean suppressCurrentDraws() {
         Boolean value = SUPPRESS_WATER_DRAWS.get();
         return value != null && value;
     }
 
-    public static void end() {
+    /** Counts skipped terrain draws so a bisection build can prove the switch worked. */
+    public static void recordSuppressedDraws(final int count) {
+        if (count <= 0) {
+            return;
+        }
+        ThreadLocal<int[]> counter = SUPPRESSED_DRAWS;
+        int[] value = counter.get();
+        if (value == null) {
+            value = new int[1];
+            counter.set(value);
+        }
+        value[0] += count;
+    }
+
+    public static void end(final TerrainRenderPass pass) {
+        Integer suppressed = null;
+        int[] value = SUPPRESSED_DRAWS.get();
+        if (value != null && value[0] > 0) {
+            suppressed = value[0];
+        }
+        SUPPRESSED_DRAWS.remove();
         SUPPRESS_WATER_DRAWS.remove();
         ACTIVE_TERRAIN.remove();
+        if (suppressed != null) {
+            IrisMetalFrameDiagnostics.logOnce(
+                    "suppressed:" + suppressed,
+                    "terrain draws suppressed=" + suppressed
+            );
+        }
     }
 
     public static @Nullable RenderPass createRenderPass(

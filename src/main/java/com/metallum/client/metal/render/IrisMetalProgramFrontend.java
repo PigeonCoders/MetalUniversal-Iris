@@ -146,7 +146,7 @@ public final class IrisMetalProgramFrontend {
         }
         // TEMPORARY BISECTION (iOS only): remove deferred1 stars only.
         if (stage == TextureStage.DEFERRED
-                && MetalExperimentGate.enabled("metallum.experiment.disableStars")) {
+                && Boolean.getBoolean("metallum.experiment.disableStars")) {
             Map<PatchShaderType, String> forced = new EnumMap<>(patched);
             String fragment = forced.get(PatchShaderType.FRAGMENT);
             String replaced = fragment.replaceAll(

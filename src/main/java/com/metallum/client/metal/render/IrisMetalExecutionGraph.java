@@ -686,7 +686,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             // skip the color mipmap generation/enabling path used by the bloom
             // pyramid. If the radiating bands disappear, the mip chain (or its
             // sampler state) is the broken part of the bloom pipeline.
-            boolean skipMipmaps = MetalExperimentGate.enabled("metallum.experiment.disableMipmaps");
+            boolean skipMipmaps = Boolean.getBoolean("metallum.experiment.disableMipmaps");
             if (!skipMipmaps) {
                 for (int target : plan.program().program().directives().getMipmappedBuffers()) {
                     targets.enableReadMipmaps(target);
