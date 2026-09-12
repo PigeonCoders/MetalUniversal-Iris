@@ -129,10 +129,10 @@ public final class IrisMetalProgramFrontend {
         // means the bands are added after composite8 (final/display), while a
         // flat grey screen means composite7/8 generate them.
         if (stage == TextureStage.COMPOSITE_AND_FINAL
-                && ("composite7".equals(source.getName()) || "composite8".equals(source.getName()))
+                && "composite7".equals(source.getName())
                 && com.metallum.client.metal.render.bridge.MetalNativeBridge.isIOS()
                 && Boolean.parseBoolean(System.getProperty(
-                "metallum.experiment.greyComposite78", "true"))) {
+                "metallum.experiment.greyComposite7", "true"))) {
             Map<PatchShaderType, String> forced = new EnumMap<>(patched);
             String fragment = forced.get(PatchShaderType.FRAGMENT);
             String replaced = fragment.replaceFirst(
@@ -151,7 +151,7 @@ public final class IrisMetalProgramFrontend {
                 && "final".equals(source.getName())
                 && com.metallum.client.metal.render.bridge.MetalNativeBridge.isIOS()
                 && Boolean.parseBoolean(System.getProperty(
-                "metallum.experiment.plainFinal", "true"))) {
+                "metallum.experiment.plainFinal", "false"))) {
             Map<PatchShaderType, String> forced = new EnumMap<>(patched);
             String fragment = forced.get(PatchShaderType.FRAGMENT);
             String replaced = fragment.replaceFirst(
