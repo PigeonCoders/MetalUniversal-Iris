@@ -201,13 +201,10 @@ final class MetalOffscreenSkyProbeTest {
              MetalGpuTextureView noiseView = new MetalGpuTextureView(noise, 0, 1)
         ) {
             writeNoise(noise);
-            MetalGpuBuffer uniformBuffer = (MetalGpuBuffer) device.createBuffer(
-                    () -> "probe uniforms", GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_COPY_DST, uniforms
-            );
-            MetalGpuBuffer vertexBuffer = (MetalGpuBuffer) device.createBuffer(
-                    () -> "probe triangle", GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_COPY_DST,
-                    fullScreenTriangle()
-            );
+            MetalGpuBuffer uniformBuffer = createBuffer("probe uniforms",
+                    GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_COPY_DST, uniforms);
+            MetalGpuBuffer vertexBuffer = createBuffer("probe triangle",
+                    GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_COPY_DST, fullScreenTriangle());
             MetalGpuSampler sampler = new MetalGpuSampler(
                     device, AddressMode.CLAMP_TO_EDGE, AddressMode.CLAMP_TO_EDGE,
                     FilterMode.NEAREST, FilterMode.NEAREST, 1, OptionalDouble.empty()
@@ -272,6 +269,15 @@ final class MetalOffscreenSkyProbeTest {
         }
         data.flip();
         encoder.writeToTexture(noise, data, 0, 0, 0, 0, 2, 2);
+    }
+
+    private MetalGpuBuffer createBuffer(final String label, final int usage, final ByteBuffer data) {
+        try {
+            return (MetalGpuBuffer) device.createBuffer(() -> label, usage, data);
+        } catch (Throwable failure) {
+            REPORT.append("BUFFER FAIL ").append(label).append(": ").append(failure).append('\n');
+            throw failure;
+        }
     }
 
     private ByteBuffer readback(final MetalGpuTexture texture) {
