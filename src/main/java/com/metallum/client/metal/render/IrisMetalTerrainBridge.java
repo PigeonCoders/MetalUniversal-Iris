@@ -63,6 +63,7 @@ public final class IrisMetalTerrainBridge {
                 "terrain:" + key,
                 "terrain begin " + key + " -> " + linked.orElseThrow().name()
         );
+        IrisMetalFrameDiagnostics.logOnce("terrain-matrix", terrainMatrixDiagnostic());
         int[] drawBuffers = linked.orElseThrow().program().drawBuffers();
         if (drawBuffers.length == 0) {
             drawBuffers = new int[]{0};
@@ -91,6 +92,34 @@ public final class IrisMetalTerrainBridge {
     public static boolean suppressCurrentDraws() {
         Boolean value = SUPPRESS_WATER_DRAWS.get();
         return value != null && value;
+    }
+
+    /**
+     * TEMPORARY BISECTION: Mellow's WAVY_PLANTS path rebuilds gl_Position from the
+     * pack's gbufferModelView/gbufferProjection uniforms, while every other terrain
+     * vertex goes through Sodium's u_ModelViewMatrix/u_ProjectionMatrix. If the
+     * captured gbuffer matrices drift from the live ones used for the draw, only the
+     * waving quads end up somewhere else — exactly the thin sliver signature.
+     */
+    private static String terrainMatrixDiagnostic() {
+        try {
+            org.joml.Matrix4f captured = new org.joml.Matrix4f(
+                    net.irisshaders.iris.uniforms.CapturedRenderingState.INSTANCE.getGbufferModelView()
+            );
+            org.joml.Matrix4f live = new org.joml.Matrix4f(
+                    com.mojang.blaze3d.systems.RenderSystem.getModelViewMatrixCopy()
+            );
+            org.joml.Matrix4f capturedProj = new org.joml.Matrix4f(
+                    net.irisshaders.iris.uniforms.CapturedRenderingState.INSTANCE.getGbufferProjection()
+            );
+            return "terrain matrices capturedMV[3]=" + captured.m30() + "," + captured.m31() + "," + captured.m32()
+                    + " liveMV[3]=" + live.m30() + "," + live.m31() + "," + live.m32()
+                    + " capturedProjDiag=" + capturedProj.m00() + "," + capturedProj.m11() + ","
+                    + capturedProj.m22() + "," + capturedProj.m23()
+                    + " differs=" + !captured.equals(live, 0.05f);
+        } catch (Throwable failure) {
+            return "terrain matrices unavailable: " + failure;
+        }
     }
 
     /** Counts skipped terrain draws so a bisection build can prove the switch worked. */

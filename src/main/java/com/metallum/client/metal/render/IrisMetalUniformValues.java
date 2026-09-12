@@ -780,6 +780,7 @@ final class IrisMetalUniformValues implements AutoCloseable {
         Matrix4f modelView = new Matrix4f(state.getGbufferModelView());
         Matrix4f projection = MetalIrisDepthConvention.projection(state.getGbufferProjection());
         warnIfUnfilled(modelView, projection);
+        logMatrixDiagnostic(modelView, projection);
 
         Matrix4f modelViewInverse = new Matrix4f(modelView).invert();
         Matrix4f projectionInverse = new Matrix4f(projection).invert();
@@ -854,6 +855,32 @@ final class IrisMetalUniformValues implements AutoCloseable {
     }
 
     record SystemFrameTime(float frameTime, float frameTimeCounter, int frameCounter) {
+    }
+
+    /**
+     * TEMPORARY BISECTION: records the captured gbuffer matrices every 60th frame.
+     * A world-space pack shader re-derives gl_Position from these matrices (Mellow's
+     * WAVY_PLANTS path does), so a captured matrix that does not match the one the
+     * vanilla/Sodium path uses shows up as whole-quad displacement (thin slivers)
+     * while the rest of the terrain stays correct.
+     */
+    private void logMatrixDiagnostic(final Matrix4f modelView, final Matrix4f projection) {
+        int frame = IrisMetalFrameDiagnostics.frame();
+        if (frame <= 0 || frame % 60 != 1) {
+            return;
+        }
+        Matrix4f current = new Matrix4f(com.mojang.blaze3d.systems.RenderSystem.getModelViewMatrixCopy());
+        IrisMetalFrameDiagnostics.logOnce(
+                "matrix-diagnostic",
+                "uniforms frame=" + frame
+                        + " capturedModelViewIdentity=" + modelView.equals(new Matrix4f(), 0.0f)
+                        + " capturedProjectionIdentity=" + projection.equals(new Matrix4f(), 0.0f)
+                        + " capturedMV[3]=" + modelView.m30() + "," + modelView.m31() + "," + modelView.m32()
+                        + " currentMV[3]=" + current.m30() + "," + current.m31() + "," + current.m32()
+                        + " modelsDiffer=" + !modelView.equals(current, 0.05f)
+                        + " projDiag=" + projection.m00() + "," + projection.m11() + ","
+                        + projection.m22() + "," + projection.m23()
+        );
     }
 
     private void warnIfUnfilled(final Matrix4f modelView, final Matrix4f projection) {
