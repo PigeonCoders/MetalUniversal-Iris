@@ -123,24 +123,24 @@ public final class IrisMetalProgramFrontend {
         // shader down to a plain colortex0 -> main copy, removing CAS,
         // vignette, film grain and color grading. If the radiating bands
         // disappear, they are produced by one of those final effects.
-        // TEMPORARY BISECTION (iOS only, revert after one screenshot): show
-        // the raw bloom buffer (colortex1 tile sample) as the screen colour.
-        // Striped bloom -> bloom pyramid/flip is bad; clean bloom -> the mix
-        // factor / luminance path is bad.
+        // TEMPORARY BISECTION (iOS only, revert after one screenshot):
+        // paint composite7 with its interpolated bloom-tile coordinate.
+        // A correct tile atlas shows a stable small gradient; stripes here
+        // mean the vertex uniform mapping (resolution/aspectRatio) is wrong.
         if (stage == TextureStage.COMPOSITE_AND_FINAL
                 && "composite7".equals(source.getName())
                 && com.metallum.client.metal.render.bridge.MetalNativeBridge.isIOS()
                 && Boolean.parseBoolean(System.getProperty(
-                "metallum.experiment.showBloom", "true"))) {
+                "metallum.experiment.showBloomTile", "true"))) {
             Map<PatchShaderType, String> forced = new EnumMap<>(patched);
             String fragment = forced.get(PatchShaderType.FRAGMENT);
             String replaced = fragment.replace(
-                    "Color.rgb = mix(Color.rgb, FinalBloom, BloomFactor * BLOOM_STRENGTH);",
-                    "Color.rgb = FinalBloom;"
+                    "Color = texture(colortex0, texcoord);",
+                    "Color = vec4(BloomTilePos, 0.0, 1.0); return;"
             );
             if (replaced.equals(fragment)) {
                 throw new ProgramFrontendException(
-                        source.getName(), "show-bloom pattern not found", null
+                        source.getName(), "bloom-tile pattern not found", null
                 );
             }
             forced.put(PatchShaderType.FRAGMENT, replaced);
