@@ -129,9 +129,7 @@ public final class IrisMetalProgramFrontend {
         // the bloom mix until the pyramid generation is fixed.
         if (stage == TextureStage.COMPOSITE_AND_FINAL
                 && "composite7".equals(source.getName())
-                && com.metallum.client.metal.render.bridge.MetalNativeBridge.isIOS()
-                && Boolean.parseBoolean(System.getProperty(
-                "metallum.compat.disableBloom", "false"))) {
+                && MetalExperimentGate.enabled("metallum.compat.disableBloom")) {
             Map<PatchShaderType, String> forced = new EnumMap<>(patched);
             String fragment = forced.get(PatchShaderType.FRAGMENT);
             String replaced = fragment.replace(
@@ -146,14 +144,29 @@ public final class IrisMetalProgramFrontend {
             forced.put(PatchShaderType.FRAGMENT, replaced);
             patched = Collections.unmodifiableMap(forced);
         }
+        // TEMPORARY BISECTION (iOS only): remove deferred1 stars only.
+        if (stage == TextureStage.DEFERRED
+                && MetalExperimentGate.enabled("metallum.experiment.disableStars")) {
+            Map<PatchShaderType, String> forced = new EnumMap<>(patched);
+            String fragment = forced.get(PatchShaderType.FRAGMENT);
+            String replaced = fragment.replaceAll(
+                    "(?s)Color\\.rgb\\s*\\+=\\s*get_stars\\s*\\(.*?\\);",
+                    "Color.rgb += 0.0;"
+            );
+            if (replaced.equals(fragment)) {
+                throw new ProgramFrontendException(
+                        source.getName(), "disable-stars pattern not found", null
+                );
+            }
+            forced.put(PatchShaderType.FRAGMENT, replaced);
+            patched = Collections.unmodifiableMap(forced);
+        }
         // TEMPORARY BISECTION (iOS only, revert after one screenshot):
         // remove the deferred1 cloud contribution while keeping the sky
         // gradient, stars and aurora. If the radiating bands disappear, the
         // cloud noise path is the source.
         if (stage == TextureStage.DEFERRED
-                && com.metallum.client.metal.render.bridge.MetalNativeBridge.isIOS()
-                && Boolean.parseBoolean(System.getProperty(
-                "metallum.experiment.disableClouds", "true"))) {
+                && Boolean.getBoolean("metallum.experiment.disableClouds")) {
             Map<PatchShaderType, String> forced = new EnumMap<>(patched);
             String fragment = forced.get(PatchShaderType.FRAGMENT);
             String replaced = fragment.replaceAll(
@@ -174,9 +187,7 @@ public final class IrisMetalProgramFrontend {
         // factor/BloomFactor path is bad.
         if (stage == TextureStage.COMPOSITE_AND_FINAL
                 && "composite7".equals(source.getName())
-                && com.metallum.client.metal.render.bridge.MetalNativeBridge.isIOS()
-                && Boolean.parseBoolean(System.getProperty(
-                "metallum.experiment.showFinalBloom", "false"))) {
+                && MetalExperimentGate.enabled("metallum.experiment.showFinalBloom")) {
             Map<PatchShaderType, String> forced = new EnumMap<>(patched);
             String fragment = forced.get(PatchShaderType.FRAGMENT);
             String replaced = fragment.replace(
@@ -197,9 +208,7 @@ public final class IrisMetalProgramFrontend {
         // mean the vertex uniform mapping (resolution/aspectRatio) is wrong.
         if (stage == TextureStage.COMPOSITE_AND_FINAL
                 && "composite7".equals(source.getName())
-                && com.metallum.client.metal.render.bridge.MetalNativeBridge.isIOS()
-                && Boolean.parseBoolean(System.getProperty(
-                "metallum.experiment.showBloomTile", "false"))) {
+                && MetalExperimentGate.enabled("metallum.experiment.showBloomTile")) {
             Map<PatchShaderType, String> forced = new EnumMap<>(patched);
             String fragment = forced.get(PatchShaderType.FRAGMENT);
             String replaced = fragment.replace(
@@ -221,9 +230,7 @@ public final class IrisMetalProgramFrontend {
         // flat grey screen means composite7/8 generate them.
         if (stage == TextureStage.COMPOSITE_AND_FINAL
                 && "composite7".equals(source.getName())
-                && com.metallum.client.metal.render.bridge.MetalNativeBridge.isIOS()
-                && Boolean.parseBoolean(System.getProperty(
-                "metallum.experiment.greyComposite7", "false"))) {
+                && MetalExperimentGate.enabled("metallum.experiment.greyComposite7")) {
             Map<PatchShaderType, String> forced = new EnumMap<>(patched);
             String fragment = forced.get(PatchShaderType.FRAGMENT);
             String replaced = fragment.replaceFirst(
@@ -240,9 +247,7 @@ public final class IrisMetalProgramFrontend {
         }
         if (stage == TextureStage.COMPOSITE_AND_FINAL
                 && "final".equals(source.getName())
-                && com.metallum.client.metal.render.bridge.MetalNativeBridge.isIOS()
-                && Boolean.parseBoolean(System.getProperty(
-                "metallum.experiment.plainFinal", "false"))) {
+                && MetalExperimentGate.enabled("metallum.experiment.plainFinal")) {
             Map<PatchShaderType, String> forced = new EnumMap<>(patched);
             String fragment = forced.get(PatchShaderType.FRAGMENT);
             String replaced = fragment.replaceFirst(

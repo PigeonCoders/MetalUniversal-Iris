@@ -107,9 +107,7 @@ final class IrisMetalRenderTargets implements AutoCloseable {
         // colortex0/1 on both ping-pong sides every frame even though Mellow
         // sets colortex0Clear/colortex1Clear=false. If the bands disappear,
         // they are a frame-to-frame feedback/accumulation artefact.
-        if (com.metallum.client.metal.render.bridge.MetalNativeBridge.isIOS()
-                && Boolean.parseBoolean(System.getProperty(
-                "metallum.experiment.clearColor01", "false"))) {
+        if (MetalExperimentGate.enabled("metallum.experiment.clearColor01")) {
             for (int index = 0; index <= 1; index++) {
                 encoder.clearColorTexture(colorTargets.mainTexture(index), new Vector4f(0.0F));
                 encoder.clearColorTexture(colorTargets.altTexture(index), new Vector4f(0.0F));
