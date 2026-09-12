@@ -119,37 +119,6 @@ public final class IrisMetalProgramFrontend {
                 )
         );
         AlphaTest alpha = source.getDirectives().getAlphaTestOverride().orElse(AlphaTest.ALWAYS);
-        // TEMPORARY BISECTION EXPERIMENT (revert after one device test):
-        // deferred1 sky branch keeps the smooth sky gradient but disables
-        // stars, clouds and aurora. If the radiating bands disappear, one of
-        // those three lighting effects is the source and the next build
-        // bisects further; if they remain, the defect is the sky gradient or
-        // the depth branch itself.
-        if (stage == TextureStage.DEFERRED
-                && Boolean.parseBoolean(System.getProperty(
-                "metallum.experiment.skyGradientOnly", "true"))) {
-            Map<PatchShaderType, String> forced = new EnumMap<>(patched);
-            String fragment = forced.get(PatchShaderType.FRAGMENT);
-            String replaced = fragment.replace(
-                    "Color.rgb += get_stars(PlayerPos);",
-                    "Color.rgb += 0.0;"
-            );
-            replaced = replaced.replace(
-                    "Color.rgb = get_clouds(ViewPosN, PlayerPos, PlayerPosN, SunGlare, Color.rgb, Dither);",
-                    "Color.rgb = Color.rgb;"
-            );
-            replaced = replaced.replace(
-                    "Color.rgb += get_aurora(PlayerPosN, Dither);",
-                    "Color.rgb += 0.0;"
-            );
-            if (replaced.equals(fragment)) {
-                throw new ProgramFrontendException(
-                        source.getName(), "deferred sky-gradient-only pattern not found", null
-                );
-            }
-            forced.put(PatchShaderType.FRAGMENT, replaced);
-            patched = Collections.unmodifiableMap(forced);
-        }
         return new RasterProgram(resolved, patched, alpha, source.getDirectives());
     }
 
