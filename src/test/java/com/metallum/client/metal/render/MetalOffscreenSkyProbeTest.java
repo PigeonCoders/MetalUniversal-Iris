@@ -243,14 +243,65 @@ final class MetalOffscreenSkyProbeTest {
 
             ByteBuffer pixels = readback(color);
             int center = ((SIZE / 2) * SIZE + SIZE / 2) * 4;
-            REPORT.append("center rgba=")
-                    .append(Byte.toUnsignedInt(pixels.get(center))).append(',')
-                    .append(Byte.toUnsignedInt(pixels.get(center + 1))).append(',')
-                    .append(Byte.toUnsignedInt(pixels.get(center + 2))).append(',')
-                    .append(Byte.toUnsignedInt(pixels.get(center + 3))).append('\n');
-            REPORT.append("verdict=")
-                    .append(Byte.toUnsignedInt(pixels.get(center)) > 1 ? "SKY_BRANCH_RAN" : "SKY_BRANCH_SKIPPED")
-                    .append('\n');
+            reportPixel("sampled-depth", pixels, center);
+
+            // Control: hardcode Depth=1.0 in the fragment GLSL. If this turns
+            // the sky on, the depth texture sample is the broken link.
+            String controlFragment = linked.fragmentGlsl().replace(
+                    "float Depth = get_depth(texcoord, IsDH);",
+                    "float Depth = 1.0; // probe control"
+            );
+            if (!controlFragment.equals(linked.fragmentGlsl())) {
+                MetalCompiledRenderPipeline control = MetalCrossShaderCompiler.compileShaderpack(
+                        device, "probe/deferred1-control", linked.vertexGlsl(), controlFragment,
+                        null,
+                        Map.of("Position", GpuFormat.RGB32_FLOAT, "UV0", GpuFormat.RG32_FLOAT),
+                        false, false, PolygonMode.FILL, PrimitiveTopology.TRIANGLES,
+                        new com.mojang.blaze3d.vertex.VertexFormat[]{DefaultVertexFormat.POSITION_TEX},
+                        null,
+                        new ColorTargetState[]{
+                                new ColorTargetState(Optional.empty(), GpuFormat.RGBA8_UNORM, ColorTargetState.WRITE_ALL)
+                        }
+                );
+                try (MetalGpuTexture controlColor = (MetalGpuTexture) device.createTexture(
+                        "probe-control-color",
+                        GpuTexture.USAGE_RENDER_ATTACHMENT | GpuTexture.USAGE_TEXTURE_BINDING | GpuTexture.USAGE_COPY_SRC,
+                        GpuFormat.RGBA8_UNORM, SIZE, SIZE, 1, 1
+                ); MetalGpuTextureView controlView = new MetalGpuTextureView(controlColor, 0, 1)) {
+                    RenderPassDescriptor controlDescriptor = RenderPassDescriptor.create(() -> "probe control pass")
+                            .withColorAttachment(controlView, Optional.of(new Vector4f(0.0F, 0.0F, 0.0F, 1.0F)))
+                            .withDepthAttachment(depthView, OptionalDouble.empty())
+                            .withRenderArea(new RenderPass.RenderArea(0, 0, SIZE, SIZE));
+                    MetalRenderPass controlPass = (MetalRenderPass) encoder.createRenderPass(controlDescriptor);
+                    controlPass.setCompiledPipeline(control);
+                    controlPass.setUniform("MetallumIrisUniforms", uniformBuffer.slice());
+                    for (MetalCompiledRenderPipeline.ResourceBinding binding : control.resources()) {
+                        if (binding.kind() != MetalCompiledRenderPipeline.ResourceKind.SAMPLED_IMAGE) {
+                            continue;
+                        }
+                        MetalGpuTextureView view = switch (binding.name()) {
+                            case "colortex0" -> controlView;
+                            case "depthtex0" -> depthView;
+                            case "noisetex" -> noiseView;
+                            default -> null;
+                        };
+                        if (view != null) {
+                            controlPass.bindTexture(binding.name(), view, sampler);
+                        }
+                    }
+                    controlPass.setVertexBuffer(0, vertexBuffer.slice());
+                    controlPass.draw(3, 1, 0, 0);
+                    encoder.submitRenderPass();
+                    encoder.submit();
+                    device.waitForSubmittedGpuWork();
+                    ByteBuffer controlPixels = readback(controlColor);
+                    reportPixel("control-depth-1", controlPixels, center);
+                } finally {
+                    control.close();
+                }
+            } else {
+                REPORT.append("control patch pattern not found\n");
+            }
             vertexBuffer.close();
             uniformBuffer.close();
             sampler.close();
@@ -260,6 +311,17 @@ final class MetalOffscreenSkyProbeTest {
         if (pack == null) {
             throw new IllegalStateException("unreachable");
         }
+    }
+
+    private static void reportPixel(final String label, final ByteBuffer pixels, final int offset) {
+        int r = Byte.toUnsignedInt(pixels.get(offset));
+        int g = Byte.toUnsignedInt(pixels.get(offset + 1));
+        int b = Byte.toUnsignedInt(pixels.get(offset + 2));
+        int a = Byte.toUnsignedInt(pixels.get(offset + 3));
+        REPORT.append(label).append(" rgba=").append(r).append(',').append(g)
+                .append(',').append(b).append(',').append(a)
+                .append(" verdict=").append(r > 1 ? "SKY_BRANCH_RAN" : "SKY_BRANCH_SKIPPED")
+                .append('\n');
     }
 
     private void writeNoise(final MetalGpuTexture noise) {
