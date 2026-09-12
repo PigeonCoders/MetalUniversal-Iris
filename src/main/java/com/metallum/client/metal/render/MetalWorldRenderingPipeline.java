@@ -423,35 +423,10 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
         }
         this.receipts.recordEvent("depthtex0.capture");
         this.executionGraph.captureFinalDepth(this.resources(), depth);
-        // TEMPORARY BISECTION EXPERIMENT (revert after one screenshot):
-        // bypass composite2..8 and final, copying the live colortex0 read side
-        // straight to the main target. If the radiating bands survive this,
-        // they are added after finalize (or by main-target handling); if they
-        // vanish, the composite/final shader chain is responsible.
-        if (Boolean.parseBoolean(System.getProperty(
-                "metallum.experiment.rawColortexCopy", "true"))) {
-            MetalDevice copyDevice = MetalDeviceRegistry.getActiveDevice();
-            if (copyDevice == null) {
-                throw new IllegalStateException("raw colortex copy has no active Metal device");
-            }
-            GpuTexture source = this.resources().renderTargets().colorTargets().readTexture(0);
-            copyDevice.createCommandEncoder().copyTextureToTexture(
-                    source,
-                    target.getColorTexture(),
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    target.width,
-                    target.height
-            );
-        } else {
-            this.receipts.recordEvent("composite");
-            this.executionGraph.executeComposite(this.resources());
-            this.receipts.recordEvent("final");
-            this.executionGraph.executeFinal(this.resources(), colorView);
-        }
+        this.receipts.recordEvent("composite");
+        this.executionGraph.executeComposite(this.resources());
+        this.receipts.recordEvent("final");
+        this.executionGraph.executeFinal(this.resources(), colorView);
         MetalDevice device = MetalDeviceRegistry.getActiveDevice();
         if (device == null) {
             throw new IllegalStateException("Iris final readback has no active Metal device");
