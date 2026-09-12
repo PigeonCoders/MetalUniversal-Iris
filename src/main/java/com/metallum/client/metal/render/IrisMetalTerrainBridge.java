@@ -67,13 +67,15 @@ public final class IrisMetalTerrainBridge {
             drawBuffers = new int[]{0};
         }
         ACTIVE_TERRAIN.set(new TerrainContext(pipeline, key, drawBuffers));
-        boolean suppressWater = pass.isTranslucent()
-                && com.metallum.client.metal.render.bridge.MetalNativeBridge.isIOS()
+        // TEMPORARY BISECTION: suppress every Sodium terrain draw. If the
+        // radiating bands disappear, terrain geometry/shading is writing them
+        // into colortex0 (including over sky pixels).
+        boolean suppressWater = com.metallum.client.metal.render.bridge.MetalNativeBridge.isIOS()
                 && Boolean.parseBoolean(System.getProperty(
-                "metallum.experiment.disableWaterDraws", "true"));
+                "metallum.experiment.disableTerrainDraws", "true"));
         SUPPRESS_WATER_DRAWS.set(suppressWater);
         if (suppressWater) {
-            MetallumDebugLog.log("[metallum-iris] suppress water draws experiment active");
+            MetallumDebugLog.log("[metallum-iris] suppress terrain draws experiment active");
         }
     }
 
