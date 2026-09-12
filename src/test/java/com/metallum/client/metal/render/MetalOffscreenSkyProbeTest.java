@@ -257,59 +257,34 @@ final class MetalOffscreenSkyProbeTest {
             int center = ((SIZE / 2) * SIZE + SIZE / 2) * 4;
             reportPixel("sampled-depth", pixels, center);
 
-            // Control: hardcode Depth=1.0 in the fragment GLSL. If this turns
-            // the sky on, the depth texture sample is the broken link.
-            String controlFragment = linked.fragmentGlsl().replace(
+            // Variants with the depth probe hardcoded to far, then one light
+            // effect removed at a time. The pixel stats reveal whether the
+            // radiating bands come from a specific deferred1 effect.
+            String controlBase = linked.fragmentGlsl().replace(
                     "float Depth = get_depth(texcoord, IsDH);",
                     "float Depth = 1.0; // probe control"
             );
-            if (!controlFragment.equals(linked.fragmentGlsl())) {
-                MetalCompiledRenderPipeline control = MetalCrossShaderCompiler.compileShaderpack(
-                        device, "probe/deferred1-control", linked.vertexGlsl(), controlFragment,
-                        null,
-                        Map.of("Position", GpuFormat.RGB32_FLOAT, "UV0", GpuFormat.RG32_FLOAT),
-                        false, false, PolygonMode.FILL, PrimitiveTopology.TRIANGLES,
-                        new com.mojang.blaze3d.vertex.VertexFormat[]{DefaultVertexFormat.POSITION_TEX},
-                        null,
-                        new ColorTargetState[]{
-                                new ColorTargetState(Optional.empty(), GpuFormat.RGBA8_UNORM, ColorTargetState.WRITE_ALL)
-                        }
-                );
-                try (MetalGpuTexture controlColor = (MetalGpuTexture) device.createTexture(
-                        "probe-control-color",
-                        GpuTexture.USAGE_RENDER_ATTACHMENT | GpuTexture.USAGE_TEXTURE_BINDING | GpuTexture.USAGE_COPY_SRC,
-                        GpuFormat.RGBA8_UNORM, SIZE, SIZE, 1, 1
-                ); MetalGpuTextureView controlView = new MetalGpuTextureView(controlColor, 0, 1)) {
-                    RenderPassDescriptor controlDescriptor = RenderPassDescriptor.create(() -> "probe control pass")
-                            .withColorAttachment(controlView, Optional.of(new Vector4f(0.0F, 0.0F, 0.0F, 1.0F)))
-                            .withDepthAttachment(depthView, OptionalDouble.empty())
-                            .withRenderArea(new RenderPass.RenderArea(0, 0, SIZE, SIZE));
-                    MetalRenderPass controlPass = (MetalRenderPass) encoder.createRenderPass(controlDescriptor);
-                    controlPass.setCompiledPipeline(control);
-                    controlPass.setUniform("MetallumIrisUniforms", uniformBuffer.slice());
-                    for (MetalCompiledRenderPipeline.ResourceBinding binding : control.resources()) {
-                        if (binding.kind() != MetalCompiledRenderPipeline.ResourceKind.SAMPLED_IMAGE) {
-                            continue;
-                        }
-                        MetalGpuTextureView view = switch (binding.name()) {
-                            case "colortex0" -> sourceView;
-                            case "depthtex0" -> depthView;
-                            case "noisetex" -> noiseView;
-                            default -> null;
-                        };
-                        if (view != null) {
-                            controlPass.bindTexture(binding.name(), view, sampler);
-                        }
-                    }
-                    controlPass.setVertexBuffer(0, vertexBuffer.slice());
-                    controlPass.draw(3, 1, 0, 0);
-                    encoder.submitRenderPass();
-                    encoder.submit();
-                    device.waitForSubmittedGpuWork();
-                    ByteBuffer controlPixels = readback(controlColor);
-                    reportPixel("control-depth-1", controlPixels, center);
-                } finally {
-                    control.close();
+            if (!controlBase.equals(linked.fragmentGlsl())) {
+                java.util.LinkedHashMap<String, String> variants = new java.util.LinkedHashMap<>();
+                variants.put("control-depth1", controlBase);
+                variants.put("no-clouds", controlBase.replace(
+                        "Color.rgb = get_clouds(ViewPosN, PlayerPos, PlayerPosN, SunGlare, Color.rgb, Dither);",
+                        "Color.rgb = Color.rgb;"));
+                variants.put("no-stars", controlBase.replace(
+                        "Color.rgb += get_stars(PlayerPos);",
+                        "Color.rgb += 0.0;"));
+                variants.put("no-aurora", controlBase.replace(
+                        "Color.rgb += get_aurora(PlayerPosN, Dither);",
+                        "Color.rgb += 0.0;"));
+                variants.put("no-stars-clouds-aurora", controlBase
+                        .replace("Color.rgb += get_stars(PlayerPos(Placeholder));", "") // no-op
+                        .replace("Color.rgb += get_stars(PlayerPos);", "Color.rgb += 0.0;")
+                        .replace("Color.rgb = get_clouds(ViewPosN, PlayerPos, PlayerPosN, SunGlare, Color.rgb, Dither);",
+                                "Color.rgb = Color.rgb;")
+                        .replace("Color.rgb += get_aurora(PlayerPosN, Dither);", "Color.rgb += 0.0;"));
+                for (Map.Entry<String, String> variant : variants.entrySet()) {
+                    renderVariant(variant.getKey(), linked.vertexGlsl(), variant.getValue(),
+                            uniformBuffer, vertexBuffer, sampler, sourceView, depthView, noiseView, center);
                 }
             } else {
                 REPORT.append("control patch pattern not found\n");
@@ -323,6 +298,111 @@ final class MetalOffscreenSkyProbeTest {
         if (pack == null) {
             throw new IllegalStateException("unreachable");
         }
+    }
+
+    private void renderVariant(
+            final String name,
+            final String vertexGlsl,
+            final String fragmentGlsl,
+            final MetalGpuBuffer uniformBuffer,
+            final MetalGpuBuffer vertexBuffer,
+            final MetalGpuSampler sampler,
+            final MetalGpuTextureView sourceView,
+            final MetalGpuTextureView depthView,
+            final MetalGpuTextureView noiseView,
+            final int center
+    ) {
+        MetalCompiledRenderPipeline pipeline;
+        try {
+            pipeline = MetalCrossShaderCompiler.compileShaderpack(
+                    device, "probe/variant/" + name, vertexGlsl, fragmentGlsl, null,
+                    Map.of("Position", GpuFormat.RGB32_FLOAT, "UV0", GpuFormat.RG32_FLOAT),
+                    false, false, PolygonMode.FILL, PrimitiveTopology.TRIANGLES,
+                    new com.mojang.blaze3d.vertex.VertexFormat[]{DefaultVertexFormat.POSITION_TEX},
+                    null,
+                    new ColorTargetState[]{
+                            new ColorTargetState(Optional.empty(), GpuFormat.RGBA8_UNORM, ColorTargetState.WRITE_ALL)
+                    }
+            );
+        } catch (Throwable failure) {
+            REPORT.append("variant ").append(name).append(" compile failed: ")
+                    .append(failure).append('\n');
+            return;
+        }
+        try (MetalGpuTexture target = (MetalGpuTexture) device.createTexture(
+                "probe-variant-" + name,
+                GpuTexture.USAGE_RENDER_ATTACHMENT | GpuTexture.USAGE_COPY_SRC,
+                GpuFormat.RGBA8_UNORM, SIZE, SIZE, 1, 1
+        ); MetalGpuTextureView view = new MetalGpuTextureView(target, 0, 1)) {
+            RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> "probe variant " + name)
+                    .withColorAttachment(view, Optional.of(new Vector4f(0.0F, 0.0F, 0.0F, 1.0F)))
+                    .withDepthAttachment(depthView, OptionalDouble.empty())
+                    .withRenderArea(new RenderPass.RenderArea(0, 0, SIZE, SIZE));
+            MetalRenderPass pass = (MetalRenderPass) encoder.createRenderPass(descriptor);
+            pass.setCompiledPipeline(pipeline);
+            pass.setUniform("MetallumIrisUniforms", uniformBuffer.slice());
+            for (MetalCompiledRenderPipeline.ResourceBinding binding : pipeline.resources()) {
+                if (binding.kind() != MetalCompiledRenderPipeline.ResourceKind.SAMPLED_IMAGE) {
+                    continue;
+                }
+                MetalGpuTextureView bindingView = switch (binding.name()) {
+                    case "colortex0" -> sourceView;
+                    case "depthtex0" -> depthView;
+                    case "noisetex" -> noiseView;
+                    default -> null;
+                };
+                if (bindingView != null) {
+                    pass.bindTexture(binding.name(), bindingView, sampler);
+                }
+            }
+            pass.setVertexBuffer(0, vertexBuffer.slice());
+            pass.draw(3, 1, 0, 0);
+            encoder.submitRenderPass();
+            encoder.submit();
+            device.waitForSubmittedGpuWork();
+            ByteBuffer pixels = readback(target);
+            reportPixel(name, pixels, center);
+            reportStripes(name, pixels);
+        } finally {
+            pipeline.close();
+        }
+    }
+
+    private static void reportStripes(final String name, final ByteBuffer pixels) {
+        long sum = 0;
+        long sumSquares = 0;
+        int max = 0;
+        int stripes = 0;
+        int samples = SIZE * SIZE;
+        int previousRow = -1;
+        for (int y = 0; y < SIZE; y++) {
+            int previous = -1;
+            for (int x = 0; x < SIZE; x++) {
+                int value = Byte.toUnsignedInt(pixels.get((y * SIZE + x) * 4));
+                sum += value;
+                sumSquares += (long) value * value;
+                max = Math.max(max, value);
+                if (previous >= 0 && Math.abs(value - previous) > 8) {
+                    stripes++;
+                }
+                previous = value;
+            }
+            if (previousRow >= 0) {
+                int value = Byte.toUnsignedInt(pixels.get((y * SIZE) * 4));
+                if (Math.abs(value - previousRow) > 8) {
+                    stripes++;
+                }
+            }
+            previousRow = Byte.toUnsignedInt(pixels.get((y * SIZE) * 4));
+        }
+        double mean = (double) sum / samples;
+        double variance = sumSquares / (double) samples - mean * mean;
+        REPORT.append("stats ").append(name)
+                .append(" mean=").append(String.format(java.util.Locale.ROOT, "%.2f", mean))
+                .append(" max=").append(max)
+                .append(" var=").append(String.format(java.util.Locale.ROOT, "%.2f", variance))
+                .append(" stripes=").append(stripes)
+                .append('\n');
     }
 
     private static void reportPixel(final String label, final ByteBuffer pixels, final int offset) {
