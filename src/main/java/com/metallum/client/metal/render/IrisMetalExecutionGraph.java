@@ -539,6 +539,128 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                 );
             }
         }
+        captureFinalStrip(mainColor);
+    }
+
+    // ------------------------------------------------------------------
+    // TEMPORARY BISECTION: final-image strip readback
+    // ------------------------------------------------------------------
+    private static final int STRIP_WIDTH = 128;
+    private static final int STRIP_HEIGHT = 8;
+
+    private GpuBuffer[] stripBuffers;
+    private int stripCaptures;
+
+    /**
+     * Copies a small strip of the final image into a CPU-visible staging buffer two
+     * frames before reading it, then logs a dark-sliver metric plus two raw luminance
+     * rows. This makes bisections answerable from {@code metallum-debug.log} alone
+     * instead of depending on a screenshot description. Only runs in diagnostic
+     * builds (same gate as the terrain hide/show experiment).
+     */
+    private void captureFinalStrip(final GpuTextureView mainColor) {
+        if (!MetalExperimentGate.enabled("metallum.experiment.disableTerrainDraws")) {
+            return;
+        }
+        try {
+            int frame = IrisMetalFrameDiagnostics.frame();
+            int width = mainColor.getWidth(0);
+            int height = mainColor.getHeight(0);
+            if (frame <= 0 || width < STRIP_WIDTH || height < STRIP_HEIGHT) {
+                return;
+            }
+            MetalDevice device = MetalDeviceRegistry.getActiveDevice();
+            if (device == null) {
+                return;
+            }
+            int slot = frame % 2;
+            if (this.stripBuffers == null) {
+                this.stripBuffers = new GpuBuffer[2];
+                for (int index = 0; index < 2; index++) {
+                    final int stripIndex = index;
+                    this.stripBuffers[index] = device.createBuffer(
+                            () -> "metallum final strip " + stripIndex,
+                            GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST,
+                            (long) STRIP_WIDTH * STRIP_HEIGHT * 4
+                    );
+                }
+            }
+            if (this.stripCaptures >= 2) {
+                IrisMetalFrameDiagnostics.logOnce(
+                        "final-strip",
+                        describeFinalStrip((MetalGpuBuffer) this.stripBuffers[slot], frame)
+                );
+            }
+            int x = Math.max(0, width / 2 - STRIP_WIDTH / 2);
+            int y = Math.min(height - STRIP_HEIGHT, Math.max(0, (int) (height * 0.42F)));
+            activeEncoder().copyTextureToBuffer(
+                    mainColor.texture(), this.stripBuffers[slot], 0L, () -> {
+                    }, 0, x, y, STRIP_WIDTH, STRIP_HEIGHT
+            );
+            this.stripCaptures++;
+        } catch (Throwable failure) {
+            IrisMetalFrameDiagnostics.logOnce(
+                    "final-strip-failure",
+                    "final strip readback failed: " + failure
+            );
+        }
+    }
+
+    private static String describeFinalStrip(final MetalGpuBuffer buffer, final int frame) {
+        int bytes = STRIP_WIDTH * STRIP_HEIGHT * 4;
+        java.nio.ByteBuffer storage = buffer.currentStorage();
+        if (storage == null) {
+            return "finalStrip frame=" + frame + " unavailable";
+        }
+        java.nio.ByteBuffer pixels = storage.duplicate().order(java.nio.ByteOrder.nativeOrder());
+        if (pixels.capacity() < bytes) {
+            return "finalStrip frame=" + frame + " short buffer=" + pixels.capacity();
+        }
+        int[] luminance = new int[STRIP_WIDTH * STRIP_HEIGHT];
+        long sum = 0L;
+        for (int pixel = 0; pixel < luminance.length; pixel++) {
+            int offset = pixel * 4;
+            int red = pixels.get(offset) & 0xFF;
+            int green = pixels.get(offset + 1) & 0xFF;
+            int blue = pixels.get(offset + 2) & 0xFF;
+            luminance[pixel] = (red * 30 + green * 59 + blue * 11) / 100;
+            sum += luminance[pixel];
+        }
+        int thin = 0;
+        int wide = 0;
+        int row = STRIP_HEIGHT / 2;
+        int run = 0;
+        for (int x = 0; x <= STRIP_WIDTH; x++) {
+            boolean dark = x < STRIP_WIDTH && luminance[row * STRIP_WIDTH + x] < 24;
+            if (dark) {
+                run++;
+            } else if (run > 0) {
+                if (run <= 4) {
+                    thin += run;
+                } else {
+                    wide += run;
+                }
+                run = 0;
+            }
+        }
+        StringBuilder top = new StringBuilder(STRIP_WIDTH * 2);
+        StringBuilder bottom = new StringBuilder(STRIP_WIDTH * 2);
+        for (int x = 0; x < STRIP_WIDTH; x++) {
+            appendHex(top, luminance[(STRIP_HEIGHT / 4) * STRIP_WIDTH + x]);
+            appendHex(bottom, luminance[((3 * STRIP_HEIGHT) / 4) * STRIP_WIDTH + x]);
+        }
+        return "finalStrip frame=" + frame
+                + " mean=" + (sum / Math.max(1, luminance.length))
+                + " thinDark=" + thin + " wideDark=" + wide
+                + " rowA=" + top + " rowB=" + bottom;
+    }
+
+    private static void appendHex(final StringBuilder out, final int value) {
+        String hex = Integer.toHexString(Math.min(255, Math.max(0, value)));
+        if (hex.length() < 2) {
+            out.append('0');
+        }
+        out.append(hex);
     }
 
     private void executeStage(final Stage stage, final IrisMetalWorldResources resources) {

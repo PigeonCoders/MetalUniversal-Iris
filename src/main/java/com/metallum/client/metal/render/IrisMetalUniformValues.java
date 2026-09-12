@@ -756,6 +756,17 @@ final class IrisMetalUniformValues implements AutoCloseable {
         }
     }
 
+    private static boolean isfinite(final Matrix4f matrix) {
+        for (int column = 0; column < 4; column++) {
+            for (int row = 0; row < 4; row++) {
+                if (!Float.isFinite(matrix.get(column, row))) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
     /** Neutral frame: identity transforms, no weather, no time. */
     private Frame neutralFrame() {
         SystemFrameTime systemTime = systemFrameTime();
@@ -779,6 +790,19 @@ final class IrisMetalUniformValues implements AutoCloseable {
 
         Matrix4f modelView = new Matrix4f(state.getGbufferModelView());
         Matrix4f projection = MetalIrisDepthConvention.projection(state.getGbufferProjection());
+        // The first level frame can observe an uninitialised projection (the
+        // window size is not known yet, so the matrix contains infinities).
+        // Feeding that into the pack makes every view-ray uniform NaN for a
+        // frame, so fall back to the live Blaze3D matrices instead.
+        if (!isfinite(modelView) || !isfinite(projection)) {
+            modelView = new Matrix4f(com.mojang.blaze3d.systems.RenderSystem.getModelViewMatrixCopy());
+            projection = new Matrix4f(state.getGbufferProjection());
+            if (!isfinite(projection)) {
+                // No finite projection is available this early in the frame;
+                // keep the pack stable with a neutral perspective instead of NaN.
+                projection = new Matrix4f().perspective((float) Math.toRadians(70.0), 1.0f, 0.05f, 256.0f);
+            }
+        }
         warnIfUnfilled(modelView, projection);
         logMatrixDiagnostic(modelView, projection);
 
