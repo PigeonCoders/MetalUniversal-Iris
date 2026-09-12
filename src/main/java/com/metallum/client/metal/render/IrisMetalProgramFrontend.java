@@ -123,6 +123,29 @@ public final class IrisMetalProgramFrontend {
         // shader down to a plain colortex0 -> main copy, removing CAS,
         // vignette, film grain and color grading. If the radiating bands
         // disappear, they are produced by one of those final effects.
+        // TEMPORARY BISECTION (iOS only, revert after one screenshot): show
+        // the raw bloom buffer (colortex1 tile sample) as the screen colour.
+        // Striped bloom -> bloom pyramid/flip is bad; clean bloom -> the mix
+        // factor / luminance path is bad.
+        if (stage == TextureStage.COMPOSITE_AND_FINAL
+                && "composite7".equals(source.getName())
+                && com.metallum.client.metal.render.bridge.MetalNativeBridge.isIOS()
+                && Boolean.parseBoolean(System.getProperty(
+                "metallum.experiment.showBloom", "true"))) {
+            Map<PatchShaderType, String> forced = new EnumMap<>(patched);
+            String fragment = forced.get(PatchShaderType.FRAGMENT);
+            String replaced = fragment.replace(
+                    "Color.rgb = mix(Color.rgb, FinalBloom, BloomFactor * BLOOM_STRENGTH);",
+                    "Color.rgb = FinalBloom;"
+            );
+            if (replaced.equals(fragment)) {
+                throw new ProgramFrontendException(
+                        source.getName(), "show-bloom pattern not found", null
+                );
+            }
+            forced.put(PatchShaderType.FRAGMENT, replaced);
+            patched = Collections.unmodifiableMap(forced);
+        }
         // TEMPORARY BISECTION (iOS only, revert after one screenshot):
         // force composite7/composite8 to a flat 0.5 grey. final is already a
         // plain colortex0 passthrough in this build, so a striped grey screen
@@ -132,7 +155,7 @@ public final class IrisMetalProgramFrontend {
                 && "composite7".equals(source.getName())
                 && com.metallum.client.metal.render.bridge.MetalNativeBridge.isIOS()
                 && Boolean.parseBoolean(System.getProperty(
-                "metallum.experiment.greyComposite7", "true"))) {
+                "metallum.experiment.greyComposite7", "false"))) {
             Map<PatchShaderType, String> forced = new EnumMap<>(patched);
             String fragment = forced.get(PatchShaderType.FRAGMENT);
             String replaced = fragment.replaceFirst(
