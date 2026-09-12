@@ -26,6 +26,7 @@ import java.util.function.Supplier;
 /** Atomically pairs one Sodium terrain draw with its Iris PSO and attachments. */
 public final class IrisMetalTerrainBridge {
     private static final ThreadLocal<TerrainContext> ACTIVE_TERRAIN = new ThreadLocal<>();
+    private static final ThreadLocal<Boolean> SUPPRESS_WATER_DRAWS = new ThreadLocal<>();
     private static final Set<String> LOGGED_KEYS = new HashSet<>();
     private static final Set<String> LOGGED_MISSES = new HashSet<>();
 
@@ -66,9 +67,25 @@ public final class IrisMetalTerrainBridge {
             drawBuffers = new int[]{0};
         }
         ACTIVE_TERRAIN.set(new TerrainContext(pipeline, key, drawBuffers));
+        boolean suppressWater = pass.isTranslucent()
+                && com.metallum.client.metal.render.bridge.MetalNativeBridge.isIOS()
+                && Boolean.parseBoolean(System.getProperty(
+                "metallum.experiment.disableWaterDraws", "true"));
+        SUPPRESS_WATER_DRAWS.set(suppressWater);
+        if (suppressWater) {
+            MetallumDebugLog.log("[metallum-iris] suppress water draws experiment active");
+        }
+    }
+
+    /** TEMPORARY BISECTION: true while the translucent terrain layer is being
+     *  executed with the iOS water-draw suppression experiment enabled. */
+    public static boolean suppressCurrentDraws() {
+        Boolean value = SUPPRESS_WATER_DRAWS.get();
+        return value != null && value;
     }
 
     public static void end() {
+        SUPPRESS_WATER_DRAWS.remove();
         ACTIVE_TERRAIN.remove();
     }
 

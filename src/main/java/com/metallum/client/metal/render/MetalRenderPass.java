@@ -385,6 +385,9 @@ final class MetalRenderPass implements RenderPassBackend {
 
     @Override
     public void drawIndexedIndirect(final @NonNull GpuBufferSlice commands, final int drawCount) {
+        if (IrisMetalTerrainBridge.suppressCurrentDraws()) {
+            return;
+        }
         MTLPrimitiveType primitiveType = primitiveTopology();
         if (primitiveType == MTLPrimitiveType.TriangleFan) {
             throw new UnsupportedOperationException("Metal backend does not support triangle fan indirect draws");
@@ -414,6 +417,9 @@ final class MetalRenderPass implements RenderPassBackend {
             final @NonNull Collection<String> dynamicUniforms,
             final @NonNull T uniformArgument
     ) {
+        if (IrisMetalTerrainBridge.suppressCurrentDraws()) {
+            return;
+        }
         IndexType fallbackIndexType = defaultIndexType == null ? IndexType.SHORT : defaultIndexType;
         MTLRenderCommandEncoder enc = renderEncoder();
 
@@ -438,6 +444,9 @@ final class MetalRenderPass implements RenderPassBackend {
 
     @Override
     public void draw(final int vertexCount, final int instanceCount, final int firstVertex, final int firstInstance) {
+        if (IrisMetalTerrainBridge.suppressCurrentDraws()) {
+            return;
+        }
         MTLPrimitiveType primitiveType = primitiveTopology();
         MTLRenderCommandEncoder enc = renderEncoder();
 
@@ -632,6 +641,9 @@ final class MetalRenderPass implements RenderPassBackend {
             final MTLIndexType indexType,
             final int baseInstance
     ) {
+        if (IrisMetalTerrainBridge.suppressCurrentDraws()) {
+            return;
+        }
         drawCount++;
         MTLPrimitiveType primitiveType = primitiveTopology();
 
