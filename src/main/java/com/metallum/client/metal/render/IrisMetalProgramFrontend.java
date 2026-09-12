@@ -124,6 +124,29 @@ public final class IrisMetalProgramFrontend {
         // vignette, film grain and color grading. If the radiating bands
         // disappear, they are produced by one of those final effects.
         // TEMPORARY BISECTION (iOS only, revert after one screenshot):
+        // show the raw bloom sample used by composite7. Stripes here mean the
+        // colortex1 pyramid content is bad; a clean image means the mix
+        // factor/BloomFactor path is bad.
+        if (stage == TextureStage.COMPOSITE_AND_FINAL
+                && "composite7".equals(source.getName())
+                && com.metallum.client.metal.render.bridge.MetalNativeBridge.isIOS()
+                && Boolean.parseBoolean(System.getProperty(
+                "metallum.experiment.showFinalBloom", "true"))) {
+            Map<PatchShaderType, String> forced = new EnumMap<>(patched);
+            String fragment = forced.get(PatchShaderType.FRAGMENT);
+            String replaced = fragment.replace(
+                    "Color = texture(colortex0, texcoord);",
+                    "Color = vec4(blur3x3(colortex1, BloomTilePos).rgb, 1.0); return;"
+            );
+            if (replaced.equals(fragment)) {
+                throw new ProgramFrontendException(
+                        source.getName(), "final-bloom pattern not found", null
+                );
+            }
+            forced.put(PatchShaderType.FRAGMENT, replaced);
+            patched = Collections.unmodifiableMap(forced);
+        }
+        // TEMPORARY BISECTION (iOS only, revert after one screenshot):
         // paint composite7 with its interpolated bloom-tile coordinate.
         // A correct tile atlas shows a stable small gradient; stripes here
         // mean the vertex uniform mapping (resolution/aspectRatio) is wrong.

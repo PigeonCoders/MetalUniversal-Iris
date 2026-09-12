@@ -688,7 +688,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             // sampler state) is the broken part of the bloom pipeline.
             boolean skipMipmaps = com.metallum.client.metal.render.bridge.MetalNativeBridge.isIOS()
                     && Boolean.parseBoolean(System.getProperty(
-                    "metallum.experiment.disableMipmaps", "true"));
+                    "metallum.experiment.disableMipmaps", "false"));
             if (!skipMipmaps) {
                 for (int target : plan.program().program().directives().getMipmappedBuffers()) {
                     targets.enableReadMipmaps(target);
