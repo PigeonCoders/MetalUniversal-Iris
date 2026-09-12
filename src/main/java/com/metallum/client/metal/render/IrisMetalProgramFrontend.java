@@ -119,6 +119,34 @@ public final class IrisMetalProgramFrontend {
                 )
         );
         AlphaTest alpha = source.getDirectives().getAlphaTestOverride().orElse(AlphaTest.ALWAYS);
+        // TEMPORARY DIAGNOSTIC (revert after one screenshot): split deferred1
+        // output into four vertical bands so one screenshot identifies which
+        // intermediate carries the radiating bands:
+        //   0-25%  raw depthtex0
+        //   25-50% reconstructed view direction (ViewPosN)
+        //   50-75% sky gradient SkyColor
+        //   75-100% cloud contribution
+        if (stage == TextureStage.DEFERRED
+                && Boolean.parseBoolean(System.getProperty(
+                "metallum.experiment.diagSkySplit", "true"))) {
+            Map<PatchShaderType, String> forced = new EnumMap<>(patched);
+            String fragment = forced.get(PatchShaderType.FRAGMENT);
+            String replaced = fragment.replace(
+                    "float Dither = dither(gl_FragCoord.xy);",
+                    "float Dither = dither(gl_FragCoord.xy);\n"
+                            + "if (gl_FragCoord.x < resolution.x * 0.25) { Color = vec4(vec3(Depth), 1.0); }\n"
+                            + "else if (gl_FragCoord.x < resolution.x * 0.5) { Color = vec4(ViewPosN * 0.5 + 0.5, 1.0); }\n"
+                            + "else if (gl_FragCoord.x < resolution.x * 0.75) { Color = vec4(SkyColor, 1.0); }\n"
+                            + "else { Color = vec4(get_clouds(ViewPosN, PlayerPos, PlayerPosN, SunGlare, vec3(0.0), Dither), 1.0); }"
+            );
+            if (replaced.equals(fragment)) {
+                throw new ProgramFrontendException(
+                        source.getName(), "sky-split diagnostic pattern not found", null
+                );
+            }
+            forced.put(PatchShaderType.FRAGMENT, replaced);
+            patched = Collections.unmodifiableMap(forced);
+        }
         return new RasterProgram(resolved, patched, alpha, source.getDirectives());
     }
 
