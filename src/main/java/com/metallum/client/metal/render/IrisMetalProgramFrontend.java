@@ -119,6 +119,28 @@ public final class IrisMetalProgramFrontend {
                 )
         );
         AlphaTest alpha = source.getDirectives().getAlphaTestOverride().orElse(AlphaTest.ALWAYS);
+        // TEMPORARY BISECTION (revert after one screenshot): strip the final
+        // shader down to a plain colortex0 -> main copy, removing CAS,
+        // vignette, film grain and color grading. If the radiating bands
+        // disappear, they are produced by one of those final effects.
+        if (stage == TextureStage.COMPOSITE_AND_FINAL
+                && "final".equals(source.getName())
+                && Boolean.parseBoolean(System.getProperty(
+                "metallum.experiment.plainFinal", "true"))) {
+            Map<PatchShaderType, String> forced = new EnumMap<>(patched);
+            String fragment = forced.get(PatchShaderType.FRAGMENT);
+            String replaced = fragment.replaceFirst(
+                    "(?s)void main\\(\\) \\{.*\\}\\s*$",
+                    "void main() {\n    Color = texture(colortex0, texcoord);\n}\n"
+            );
+            if (replaced.equals(fragment)) {
+                throw new ProgramFrontendException(
+                        source.getName(), "plain-final pattern not found", null
+                );
+            }
+            forced.put(PatchShaderType.FRAGMENT, replaced);
+            patched = Collections.unmodifiableMap(forced);
+        }
         return new RasterProgram(resolved, patched, alpha, source.getDirectives());
     }
 

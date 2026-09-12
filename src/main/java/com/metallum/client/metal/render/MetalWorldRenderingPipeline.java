@@ -423,16 +423,10 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
         }
         this.receipts.recordEvent("depthtex0.capture");
         this.executionGraph.captureFinalDepth(this.resources(), depth);
-        if (Boolean.parseBoolean(System.getProperty(
-                "metallum.experiment.rawColortexCopy", "true"))) {
-            this.receipts.recordEvent("raw-copy");
-            this.executionGraph.executeRawCopyToMain(this.resources(), colorView);
-        } else {
-            this.receipts.recordEvent("composite");
-            this.executionGraph.executeComposite(this.resources());
-            this.receipts.recordEvent("final");
-            this.executionGraph.executeFinal(this.resources(), colorView);
-        }
+        this.receipts.recordEvent("composite");
+        this.executionGraph.executeComposite(this.resources());
+        this.receipts.recordEvent("final");
+        this.executionGraph.executeFinal(this.resources(), colorView);
         MetalDevice device = MetalDeviceRegistry.getActiveDevice();
         if (device == null) {
             throw new IllegalStateException("Iris final readback has no active Metal device");

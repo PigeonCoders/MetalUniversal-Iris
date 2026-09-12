@@ -510,26 +510,6 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         resources.renderTargets().captureMainDepth(activeEncoder(), sceneDepth);
     }
 
-    /**
-     * TEMPORARY BISECTION: copy the live pre-composite colortex0 side to the
-     * main target without running any composite/final program. Uses the same
-     * state restoration as executeFinal so the source is the deferred image,
-     * not a stale ping-pong side.
-     */
-    void executeRawCopyToMain(
-            final IrisMetalWorldResources resources,
-            final GpuTextureView mainColor
-    ) {
-        ensurePrepared();
-        IrisMetalRenderTargets targets = resources.renderTargets();
-        IrisMetalPingPongTargets colors = targets.colorTargets();
-        colors.restore(state);
-        activeEncoder().copyTextureToTexture(
-                colors.readTexture(0), mainColor.texture(), 0, 0, 0, 0, 0,
-                targets.width(), targets.height()
-        );
-    }
-
     void executeFinal(
             final IrisMetalWorldResources resources,
             final GpuTextureView mainColor
