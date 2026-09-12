@@ -682,9 +682,18 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         currentResourcesForDispatch = targets;
         try {
             Set<Integer> readTargets = colorSamplerTargets(plan.program());
-            for (int target : plan.program().program().directives().getMipmappedBuffers()) {
-                targets.enableReadMipmaps(target);
-                activeEncoder().generateMipmaps(targets.colorTargets().readTexture(target));
+            // TEMPORARY BISECTION (iOS only, revert after one screenshot):
+            // skip the color mipmap generation/enabling path used by the bloom
+            // pyramid. If the radiating bands disappear, the mip chain (or its
+            // sampler state) is the broken part of the bloom pipeline.
+            boolean skipMipmaps = com.metallum.client.metal.render.bridge.MetalNativeBridge.isIOS()
+                    && Boolean.parseBoolean(System.getProperty(
+                    "metallum.experiment.disableMipmaps", "true"));
+            if (!skipMipmaps) {
+                for (int target : plan.program().program().directives().getMipmappedBuffers()) {
+                    targets.enableReadMipmaps(target);
+                    activeEncoder().generateMipmaps(targets.colorTargets().readTexture(target));
+                }
             }
             MetalCommandEncoder encoder = activeEncoder();
             IrisMetalRenderTargets.RenderPassDescriptorWithViews descriptor;
