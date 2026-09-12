@@ -2,6 +2,7 @@ package com.metallum.client.metal.render;
 
 import com.metallum.client.metal.render.bridge.MetalNativeBridge;
 import com.mojang.blaze3d.GpuFormat;
+import com.mojang.blaze3d.IndexType;
 import com.mojang.blaze3d.PrimitiveTopology;
 import com.mojang.blaze3d.buffers.GpuBuffer;
 import com.mojang.blaze3d.pipeline.ColorTargetState;
@@ -489,6 +490,225 @@ final class MetalOffscreenSkyProbeTest {
         }
     }
 
+    private static final int TOPOLOGY_SIZE = 24;
+
+    /**
+     * Vanilla draws the sky disc / sunrise fan with {@code PrimitiveTopology.TRIANGLE_FAN} and the
+     * vanilla stars / sun / moon with {@code PrimitiveTopology.QUADS} plus the sequential quad index
+     * buffer. Metal has neither topology, so the backend has to expand them. This probe renders each
+     * vanilla shape through the real {@link MetalRenderPass} path next to the geometrically identical
+     * explicit triangle list; both readbacks must match pixel for pixel.
+     */
+    @Test
+    void primitiveTopologyExpansionMatchesExplicitTriangleList() {
+        try {
+            float[][] fan = new float[6][];
+            fan[0] = new float[]{0.0F, 0.0F, 0.0F};
+            for (int ring = 0; ring < 5; ring++) {
+                double angle = Math.toRadians(ring * 72.0);
+                fan[ring + 1] = new float[]{
+                        (float) (Math.cos(angle) * 0.72),
+                        (float) (Math.sin(angle) * 0.72),
+                        0.0F
+                };
+            }
+            int[] fanTriangles = new int[(fan.length - 2) * 3];
+            for (int triangle = 0; triangle < fan.length - 2; triangle++) {
+                fanTriangles[triangle * 3] = 0;
+                fanTriangles[triangle * 3 + 1] = triangle + 1;
+                fanTriangles[triangle * 3 + 2] = triangle + 2;
+            }
+            compareTopology(
+                    "fan", positions(fan), PrimitiveTopology.TRIANGLE_FAN, fan.length, null, null,
+                    "fan-explicit", positions(fanTriangles, fan), PrimitiveTopology.TRIANGLES, fanTriangles.length,
+                    null, null
+            );
+
+            for (IndexType indexType : IndexType.values()) {
+                float[][] quads = quadVertices();
+                int[] quadIndices = sequentialQuadIndices(4);
+                int[] quadTriangles = expandQuadTriangles(4);
+                compareTopology(
+                        "indexed-quads-" + indexType,
+                        positions(quads), PrimitiveTopology.QUADS, quadIndices.length,
+                        indexData(quadIndices, indexType), indexType,
+                        "quad-explicit-" + indexType,
+                        positions(quadTriangles, quads), PrimitiveTopology.TRIANGLES, quadTriangles.length,
+                        null, null
+                );
+            }
+        } catch (Throwable failure) {
+            REPORT.append("TOPOLOGY PROBE EXCEPTION: ").append(failure).append('\n');
+        }
+    }
+
+    private void compareTopology(
+            final String labelA, final ByteBuffer vertexDataA, final PrimitiveTopology topologyA, final int vertexCountA,
+            final ByteBuffer indexDataA, final IndexType indexTypeA,
+            final String labelB, final ByteBuffer vertexDataB, final PrimitiveTopology topologyB, final int vertexCountB,
+            final ByteBuffer indexDataB, final IndexType indexTypeB
+    ) {
+        ByteBuffer pixelsA = renderPrimitive(labelA, vertexDataA, topologyA, vertexCountA, indexDataA, indexTypeA);
+        ByteBuffer pixelsB = renderPrimitive(labelB, vertexDataB, topologyB, vertexCountB, indexDataB, indexTypeB);
+        if (pixelsA == null || pixelsB == null) {
+            REPORT.append("topology probe ").append(labelA).append(" skipped\n");
+            return;
+        }
+        int mismatches = 0;
+        for (int pixel = 0; pixel < TOPOLOGY_SIZE * TOPOLOGY_SIZE; pixel++) {
+            if (pixelsA.get(pixel * 4) != pixelsB.get(pixel * 4)) {
+                mismatches++;
+            }
+        }
+        REPORT.append("topology ").append(labelA).append(" vs ").append(labelB)
+                .append(" mismatchingPixels=").append(mismatches)
+                .append(" of ").append(TOPOLOGY_SIZE * TOPOLOGY_SIZE).append('\n');
+        REPORT.append("map ").append(labelA).append('\n').append(asciiMap(pixelsA));
+        REPORT.append("map ").append(labelB).append('\n').append(asciiMap(pixelsB));
+    }
+
+    private ByteBuffer renderPrimitive(
+            final String label,
+            final ByteBuffer vertexData,
+            final PrimitiveTopology topology,
+            final int vertexCount,
+            final ByteBuffer indexData,
+            final IndexType indexType
+    ) {
+        MetalCompiledRenderPipeline pipeline = null;
+        MetalGpuBuffer vertexBuffer = null;
+        MetalGpuBuffer indexBuffer = null;
+        try (MetalGpuTexture target = (MetalGpuTexture) device.createTexture(
+                "probe-topology-" + label,
+                GpuTexture.USAGE_RENDER_ATTACHMENT | GpuTexture.USAGE_COPY_SRC,
+                GpuFormat.RGBA8_UNORM, TOPOLOGY_SIZE, TOPOLOGY_SIZE, 1, 1
+        ); MetalGpuTextureView view = new MetalGpuTextureView(target, 0, 1)) {
+            pipeline = compileSolidPipeline(label, topology);
+            vertexBuffer = createBuffer(label + " vertices",
+                    GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_COPY_DST, vertexData);
+            RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> "probe topology " + label)
+                    .withColorAttachment(view, Optional.of(new Vector4f(0.0F, 0.0F, 0.0F, 1.0F)))
+                    .withRenderArea(new RenderPass.RenderArea(0, 0, TOPOLOGY_SIZE, TOPOLOGY_SIZE));
+            MetalRenderPass pass = (MetalRenderPass) encoder.createRenderPass(descriptor);
+            pass.setCompiledPipeline(pipeline);
+            pass.setVertexBuffer(0, vertexBuffer.slice());
+            if (indexData != null) {
+                indexBuffer = createBuffer(label + " indices",
+                        GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_COPY_DST, indexData);
+                pass.setIndexBuffer(indexBuffer, indexType);
+                pass.drawIndexed(vertexCount, 1, 0, 0, 0);
+            } else {
+                pass.draw(vertexCount, 1, 0, 0);
+            }
+            encoder.submitRenderPass();
+            encoder.submit();
+            device.waitForSubmittedGpuWork();
+            return readback(target, TOPOLOGY_SIZE);
+        } catch (Throwable failure) {
+            REPORT.append("topology probe ").append(label).append(" failed: ").append(failure).append('\n');
+            return null;
+        } finally {
+            if (pipeline != null) {
+                pipeline.close();
+            }
+            if (vertexBuffer != null) {
+                vertexBuffer.close();
+            }
+            if (indexBuffer != null) {
+                indexBuffer.close();
+            }
+        }
+    }
+
+    private MetalCompiledRenderPipeline compileSolidPipeline(final String label, final PrimitiveTopology topology)
+            throws Exception {
+        String vertex = "#version 450\n"
+                + "layout(location=0) in vec3 Position;\n"
+                + "void main() { gl_Position = vec4(Position, 1.0); }\n";
+        String fragment = "#version 450\n"
+                + "layout(location=0) out vec4 Color;\n"
+                + "void main() { Color = vec4(1.0, 1.0, 0.0, 1.0); }\n";
+        return MetalCrossShaderCompiler.compileShaderpack(
+                device, "probe/topology/" + label, vertex, fragment, null,
+                Map.of("Position", GpuFormat.RGB32_FLOAT),
+                false, false, PolygonMode.FILL, topology,
+                new com.mojang.blaze3d.vertex.VertexFormat[]{DefaultVertexFormat.POSITION},
+                null,
+                new ColorTargetState[]{
+                        new ColorTargetState(Optional.empty(), GpuFormat.RGBA8_UNORM, ColorTargetState.WRITE_ALL)
+                }
+        );
+    }
+
+    /** Four screen quads in the four-vertices-per-quad layout the sequential buffer expects. */
+    private static float[][] quadVertices() {
+        return new float[][]{
+                {-0.95F, -0.9F, 0.0F}, {-0.95F, -0.1F, 0.0F}, {-0.05F, -0.1F, 0.0F}, {-0.05F, -0.9F, 0.0F},
+                {0.05F, -0.9F, 0.0F}, {0.05F, -0.1F, 0.0F}, {0.95F, -0.1F, 0.0F}, {0.95F, -0.9F, 0.0F},
+                {-0.95F, 0.1F, 0.0F}, {-0.95F, 0.9F, 0.0F}, {-0.05F, 0.9F, 0.0F}, {-0.05F, 0.1F, 0.0F},
+                {0.05F, 0.1F, 0.0F}, {0.05F, 0.9F, 0.0F}, {0.95F, 0.9F, 0.0F}, {0.95F, 0.1F, 0.0F}
+        };
+    }
+
+    private static int[] sequentialQuadIndices(final int quadCount) {
+        int[] indices = new int[quadCount * 6];
+        for (int quad = 0; quad < quadCount; quad++) {
+            int base = quad * 4;
+            indices[quad * 6] = base;
+            indices[quad * 6 + 1] = base + 1;
+            indices[quad * 6 + 2] = base + 2;
+            indices[quad * 6 + 3] = base;
+            indices[quad * 6 + 4] = base + 2;
+            indices[quad * 6 + 5] = base + 3;
+        }
+        return indices;
+    }
+
+    private static int[] expandQuadTriangles(final int quadCount) {
+        return sequentialQuadIndices(quadCount);
+    }
+
+    private static ByteBuffer positions(final float[][] vertices) {
+        ByteBuffer data = ByteBuffer.allocateDirect(vertices.length * 12).order(ByteOrder.nativeOrder());
+        for (float[] vertex : vertices) {
+            data.putFloat(vertex[0]).putFloat(vertex[1]).putFloat(vertex[2]);
+        }
+        data.flip();
+        return data;
+    }
+
+    private static ByteBuffer positions(final int[] indices, final float[][] vertices) {
+        float[][] expanded = new float[indices.length][];
+        for (int index = 0; index < indices.length; index++) {
+            expanded[index] = vertices[indices[index]];
+        }
+        return positions(expanded);
+    }
+
+    private static ByteBuffer indexData(final int[] indices, final IndexType indexType) {
+        ByteBuffer data = ByteBuffer.allocateDirect(indexType.bytes * indices.length).order(ByteOrder.nativeOrder());
+        for (int index : indices) {
+            if (indexType == IndexType.INT) {
+                data.putInt(index);
+            } else {
+                data.putShort((short) index);
+            }
+        }
+        data.flip();
+        return data;
+    }
+
+    private static String asciiMap(final ByteBuffer pixels) {
+        StringBuilder map = new StringBuilder();
+        for (int y = 0; y < TOPOLOGY_SIZE; y++) {
+            for (int x = 0; x < TOPOLOGY_SIZE; x++) {
+                map.append(pixels.get((y * TOPOLOGY_SIZE + x) * 4) == 0 ? '.' : '#');
+            }
+            map.append('\n');
+        }
+        return map.toString();
+    }
+
     private void clearTarget(final MetalGpuTextureView view) {
         RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> "probe source clear")
                 .withColorAttachment(view, Optional.of(new Vector4f(0.0F, 0.0F, 0.0F, 1.0F)))
@@ -518,7 +738,11 @@ final class MetalOffscreenSkyProbeTest {
     }
 
     private ByteBuffer readback(final MetalGpuTexture texture) {
-        int bytes = SIZE * SIZE * texture.pixelSize();
+        return readback(texture, SIZE);
+    }
+
+    private ByteBuffer readback(final MetalGpuTexture texture, final int size) {
+        int bytes = size * size * texture.pixelSize();
         try (MetalGpuBuffer buffer = (MetalGpuBuffer) device.createBuffer(
                 () -> "probe readback", GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST, bytes
         )) {
