@@ -671,13 +671,20 @@ public final class GlslangBridge {
     /**
      * iOS: {@link MetalNativeBridge#ensureGlslangLibraryConfigured()} (invoked
      * in the static initializer) has already extracted and {@code System.load}ed
-     * the bundled {@code libglslang.dylib} from {@code /natives/ios/} into a
-     * writable directory (via Amethyst's hooked {@code dlopen}). Additionally
-     * try the app bundle's {@code Frameworks/} directory through
+     * the bundled glslang dylibs from {@code /natives/ios/} into a writable
+     * directory (via Amethyst's hooked {@code dlopen}). Additionally try the
+     * app bundle's {@code Frameworks/} directory through
      * {@code java.library.path}, then resolve symbols via
      * {@link SymbolLookup#loaderLookup()}.
      */
     private static SymbolLookup createIOSGlslangLookup() {
+        try {
+            // glslang_default_resource lives in the resource-limits sibling,
+            // so load that Frameworks library first when it is embedded.
+            System.loadLibrary("glslang-default-resource-limits");
+        } catch (UnsatisfiedLinkError ignored) {
+            // Not in Frameworks/; rely on the dylib loaded by ensureGlslangLibraryConfigured().
+        }
         try {
             System.loadLibrary("glslang");
         } catch (UnsatisfiedLinkError ignored) {

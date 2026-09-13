@@ -1,9 +1,11 @@
 package com.metallum.mixin.iris;
 
+import com.metallum.Metallum;
 import com.metallum.client.metal.render.MetalActive;
 import com.metallum.client.metal.render.MetalIrisProgram;
 import com.metallum.client.metal.render.MetalIrisProgramRegistry;
 import com.metallum.client.metal.render.MetalIrisProgramsToClear;
+import com.metallum.client.metal.render.MetalWorldRenderingPipeline;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
@@ -16,6 +18,9 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * Metal-side Iris render-dispatch mixin: detect when a vanilla/sodium
@@ -77,6 +82,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Environment(EnvType.CLIENT)
 @Mixin(targets = "com.metallum.client.metal.render.MetalRenderPass")
 public class MetalIrisPipelineMixin {
+    private static final Set<String> LOGGED_VANILLA_PASSES = new HashSet<>();
+
     @Inject(method = "setPipeline", at = @At("RETURN"))
     private void metallum$irisSetupState(final RenderPipeline pipeline, final CallbackInfo ci) {
         if (!MetalActive.isMetalActive()) {
@@ -84,6 +91,22 @@ public class MetalIrisPipelineMixin {
         }
 
         final WorldRenderingPipeline worldPipeline = Iris.getPipelineManager().getPipelineNullable();
+        if (worldPipeline instanceof MetalWorldRenderingPipeline) {
+            String location = pipeline.getLocation().toString();
+            if (!location.contains("sodium")) {
+                if (LOGGED_VANILLA_PASSES.add(location)) {
+                    Metallum.LOGGER.info(
+                            "[metallum-iris] vanilla pipeline reached MetalRenderPass without iris override: {}",
+                            location
+                    );
+                }
+                com.metallum.client.metal.render.IrisMetalFrameDiagnostics.logOnce(
+                        "vanilla:" + location,
+                        "vanilla pipeline " + location
+                );
+            }
+            return;
+        }
         if (!(worldPipeline instanceof IrisRenderingPipeline irisPipeline)
                 || !irisPipeline.shouldOverrideShaders()) {
             return;
@@ -92,6 +115,12 @@ public class MetalIrisPipelineMixin {
         final ShaderKey shaderKey = IrisPipelines.getPipeline(irisPipeline, pipeline);
         if (shaderKey == null) {
             return;
+        }
+        if (LOGGED_VANILLA_PASSES.add("key:" + shaderKey.getName())) {
+            Metallum.LOGGER.info(
+                    "[metallum-iris] iris override candidate key={} pipeline={}",
+                    shaderKey.getName(), pipeline.getLocation()
+            );
         }
 
         // The registry key is the ShaderKey's lowercased enum name (e.g.

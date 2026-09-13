@@ -1,29 +1,51 @@
 package com.metallum.client.metal.render;
 
 import com.mojang.blaze3d.GpuFormat;
+import net.irisshaders.iris.shaderpack.loading.ProgramArrayId;
+import net.irisshaders.iris.shaderpack.loading.ProgramId;
 import net.irisshaders.iris.shaderpack.properties.PackDirectives;
 import net.irisshaders.iris.shaderpack.properties.PackRenderTargetDirectives.RenderTargetSettings;
+import net.irisshaders.iris.shaderpack.programs.ComputeSource;
+import net.irisshaders.iris.shaderpack.programs.ProgramSet;
+import net.irisshaders.iris.shaderpack.programs.ProgramSource;
 
 import java.util.Arrays;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /** Iris logical render-target formats lowered to renderable Metal formats. */
 final class IrisMetalRenderTargetFormats {
     static final int MAX_LOGICAL_TARGETS = 32;
     static final GpuFormat DEFAULT_FORMAT = GpuFormat.RGBA8_UNORM;
 
+    private static final Pattern COLORTEX = Pattern.compile("\\bcolortex(\\d+)\\b");
+    private static final Pattern COLORIMG = Pattern.compile("\\bcolorimg(\\d+)\\b");
+    private static final Pattern LEGACY = Pattern.compile("\\b(gcolor|gdepth|gnormal|composite|gaux([1-4]))\\b");
+
     private IrisMetalRenderTargetFormats() {
     }
 
+    /**
+     * Allocates only the logical targets the pack can actually reference.
+     * {@code PackRenderTargetDirectives} always carries entries for all 32
+     * indices, so using its key set made the backend allocate 32 main+alt
+     * textures (~250 MB at 1180x820 RGBA8) even for packs that only use
+     * colortex0..7 — enough to exhaust the iPad's GPU budget.
+     */
+    static GpuFormat[] from(final PackDirectives directives, final ProgramSet programSet) {
+        return allocate(directives, highestReferencedTarget(programSet));
+    }
+
     static GpuFormat[] from(final PackDirectives directives) {
+        return allocate(directives, highestReferencedTarget(directives));
+    }
+
+    private static GpuFormat[] allocate(final PackDirectives directives, final int highestReferenced) {
         Map<Integer, RenderTargetSettings> settings = directives
                 .getRenderTargetDirectives()
                 .getRenderTargetSettings();
-        int highest = settings.keySet().stream()
-                .filter(index -> index != null && index >= 0)
-                .mapToInt(Integer::intValue)
-                .max()
-                .orElse(0);
+        int highest = Math.max(0, highestReferenced);
         if (highest >= MAX_LOGICAL_TARGETS) {
             throw new IllegalArgumentException(
                     "Iris render target colortex" + highest + " exceeds the supported 0.."
@@ -36,7 +58,7 @@ final class IrisMetalRenderTargetFormats {
         for (Map.Entry<Integer, RenderTargetSettings> entry : settings.entrySet()) {
             int index = entry.getKey();
             if (index < 0 || index >= formats.length) {
-                throw new IllegalArgumentException("Invalid Iris render-target index " + index);
+                continue;
             }
             RenderTargetSettings target = entry.getValue();
             if (target.getInternalFormat() != null) {
@@ -44,6 +66,89 @@ final class IrisMetalRenderTargetFormats {
             }
         }
         return formats;
+    }
+
+    private static int highestReferencedTarget(final PackDirectives directives) {
+        return directives.getRenderTargetDirectives()
+                .getRenderTargetSettings().keySet().stream()
+                .filter(index -> index != null && index >= 0)
+                .mapToInt(Integer::intValue)
+                .max()
+                .orElse(0);
+    }
+
+    /** Highest colortex/legacy index referenced by any raster or compute source. */
+    static int highestReferencedTarget(final ProgramSet programSet) {
+        int highest = -1;
+        for (ProgramId id : ProgramId.values()) {
+            ProgramSource source = programSet.get(id).orElse(null);
+            highest = considerSource(highest, source);
+        }
+        for (ProgramArrayId array : ProgramArrayId.values()) {
+            for (ProgramSource source : programSet.getComposite(array)) {
+                highest = considerSource(highest, source);
+            }
+            for (ComputeSource[] computeArray : programSet.getCompute(array)) {
+                if (computeArray == null) {
+                    continue;
+                }
+                for (ComputeSource compute : computeArray) {
+                    if (compute != null && compute.getSource().isPresent()) {
+                        highest = considerText(highest, compute.getSource().orElseThrow());
+                    }
+                }
+            }
+        }
+        ProgramSource finalSource = programSet.get(ProgramId.Final).orElse(null);
+        highest = considerSource(highest, finalSource);
+        for (ComputeSource compute : programSet.getFinalCompute()) {
+            if (compute != null && compute.getSource().isPresent()) {
+                highest = considerText(highest, compute.getSource().orElseThrow());
+            }
+        }
+        for (ComputeSource compute : programSet.getShadowCompute()) {
+            if (compute != null && compute.getSource().isPresent()) {
+                highest = considerText(highest, compute.getSource().orElseThrow());
+            }
+        }
+        return Math.max(0, highest);
+    }
+
+    private static int considerSource(int highest, ProgramSource source) {
+        if (source == null || !source.isValid()) {
+            return highest;
+        }
+        int[] drawBuffers = source.getDirectives().getDrawBuffers();
+        for (int target : drawBuffers) {
+            highest = Math.max(highest, target);
+        }
+        highest = considerText(highest, source.getVertexSource().orElse(""));
+        highest = considerText(highest, source.getFragmentSource().orElse(""));
+        return highest;
+    }
+
+    private static int considerText(int highest, String text) {
+        Matcher color = COLORTEX.matcher(text);
+        while (color.find()) {
+            highest = Math.max(highest, Integer.parseInt(color.group(1)));
+        }
+        Matcher image = COLORIMG.matcher(text);
+        while (image.find()) {
+            highest = Math.max(highest, Integer.parseInt(image.group(1)));
+        }
+        Matcher legacy = LEGACY.matcher(text);
+        while (legacy.find()) {
+            String name = legacy.group(1);
+            int target = switch (name) {
+                case "gcolor" -> 0;
+                case "gdepth" -> 1;
+                case "gnormal" -> 2;
+                case "composite" -> 3;
+                default -> 4 + Integer.parseInt(legacy.group(2)) - 1;
+            };
+            highest = Math.max(highest, target);
+        }
+        return highest;
     }
 
     static GpuFormat fromInternalName(final String name) {

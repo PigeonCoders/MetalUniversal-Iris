@@ -119,6 +119,149 @@ public final class IrisMetalProgramFrontend {
                 )
         );
         AlphaTest alpha = source.getDirectives().getAlphaTestOverride().orElse(AlphaTest.ALWAYS);
+        // TEMPORARY BISECTION (revert after one screenshot): strip the final
+        // shader down to a plain colortex0 -> main copy, removing CAS,
+        // vignette, film grain and color grading. If the radiating bands
+        // disappear, they are produced by one of those final effects.
+        // iOS bloom mitigation: composite7 mixes the colortex1 pyramid into
+        // the final image, and that pyramid is proven to carry the radiating
+        // bands on this backend. Keep the pass' colour copy but return before
+        // the bloom mix until the pyramid generation is fixed.
+        if (stage == TextureStage.COMPOSITE_AND_FINAL
+                && "composite7".equals(source.getName())
+                && Boolean.getBoolean("metallum.compat.disableBloom")) {
+            Map<PatchShaderType, String> forced = new EnumMap<>(patched);
+            String fragment = forced.get(PatchShaderType.FRAGMENT);
+            String replaced = fragment.replace(
+                    "Color = texture(colortex0, texcoord);",
+                    "Color = texture(colortex0, texcoord); return;"
+            );
+            if (replaced.equals(fragment)) {
+                throw new ProgramFrontendException(
+                        source.getName(), "bloom-skip pattern not found", null
+                );
+            }
+            forced.put(PatchShaderType.FRAGMENT, replaced);
+            patched = Collections.unmodifiableMap(forced);
+        }
+        // TEMPORARY BISECTION (iOS only): remove deferred1 stars only.
+        if (stage == TextureStage.DEFERRED
+                && Boolean.getBoolean("metallum.experiment.disableStars")) {
+            Map<PatchShaderType, String> forced = new EnumMap<>(patched);
+            String fragment = forced.get(PatchShaderType.FRAGMENT);
+            String replaced = fragment.replaceAll(
+                    "(?s)Color\\.rgb\\s*\\+=\\s*get_stars\\s*\\(.*?\\);",
+                    "Color.rgb += 0.0;"
+            );
+            if (replaced.equals(fragment)) {
+                throw new ProgramFrontendException(
+                        source.getName(), "disable-stars pattern not found", null
+                );
+            }
+            forced.put(PatchShaderType.FRAGMENT, replaced);
+            patched = Collections.unmodifiableMap(forced);
+        }
+        // TEMPORARY BISECTION (iOS only, revert after one screenshot):
+        // remove the deferred1 cloud contribution while keeping the sky
+        // gradient, stars and aurora. If the radiating bands disappear, the
+        // cloud noise path is the source.
+        if (stage == TextureStage.DEFERRED
+                && Boolean.getBoolean("metallum.experiment.disableClouds")) {
+            Map<PatchShaderType, String> forced = new EnumMap<>(patched);
+            String fragment = forced.get(PatchShaderType.FRAGMENT);
+            String replaced = fragment.replaceAll(
+                    "(?s)Color\\.rgb\\s*=\\s*get_clouds\\s*\\(.*?\\);",
+                    "Color.rgb = Color.rgb;"
+            );
+            if (replaced.equals(fragment)) {
+                throw new ProgramFrontendException(
+                        source.getName(), "disable-clouds pattern not found", null
+                );
+            }
+            forced.put(PatchShaderType.FRAGMENT, replaced);
+            patched = Collections.unmodifiableMap(forced);
+        }
+        // TEMPORARY BISECTION (iOS only, revert after one screenshot):
+        // show the raw bloom sample used by composite7. Stripes here mean the
+        // colortex1 pyramid content is bad; a clean image means the mix
+        // factor/BloomFactor path is bad.
+        if (stage == TextureStage.COMPOSITE_AND_FINAL
+                && "composite7".equals(source.getName())
+                && Boolean.getBoolean("metallum.experiment.showFinalBloom")) {
+            Map<PatchShaderType, String> forced = new EnumMap<>(patched);
+            String fragment = forced.get(PatchShaderType.FRAGMENT);
+            String replaced = fragment.replace(
+                    "Color = texture(colortex0, texcoord);",
+                    "Color = vec4(blur3x3(colortex1, BloomTilePos).rgb, 1.0); return;"
+            );
+            if (replaced.equals(fragment)) {
+                throw new ProgramFrontendException(
+                        source.getName(), "final-bloom pattern not found", null
+                );
+            }
+            forced.put(PatchShaderType.FRAGMENT, replaced);
+            patched = Collections.unmodifiableMap(forced);
+        }
+        // TEMPORARY BISECTION (iOS only, revert after one screenshot):
+        // paint composite7 with its interpolated bloom-tile coordinate.
+        // A correct tile atlas shows a stable small gradient; stripes here
+        // mean the vertex uniform mapping (resolution/aspectRatio) is wrong.
+        if (stage == TextureStage.COMPOSITE_AND_FINAL
+                && "composite7".equals(source.getName())
+                && Boolean.getBoolean("metallum.experiment.showBloomTile")) {
+            Map<PatchShaderType, String> forced = new EnumMap<>(patched);
+            String fragment = forced.get(PatchShaderType.FRAGMENT);
+            String replaced = fragment.replace(
+                    "Color = texture(colortex0, texcoord);",
+                    "Color = vec4(BloomTilePos, 0.0, 1.0); return;"
+            );
+            if (replaced.equals(fragment)) {
+                throw new ProgramFrontendException(
+                        source.getName(), "bloom-tile pattern not found", null
+                );
+            }
+            forced.put(PatchShaderType.FRAGMENT, replaced);
+            patched = Collections.unmodifiableMap(forced);
+        }
+        // TEMPORARY BISECTION (iOS only, revert after one screenshot):
+        // force composite7/composite8 to a flat 0.5 grey. final is already a
+        // plain colortex0 passthrough in this build, so a striped grey screen
+        // means the bands are added after composite8 (final/display), while a
+        // flat grey screen means composite7/8 generate them.
+        if (stage == TextureStage.COMPOSITE_AND_FINAL
+                && "composite7".equals(source.getName())
+                && Boolean.getBoolean("metallum.experiment.greyComposite7")) {
+            Map<PatchShaderType, String> forced = new EnumMap<>(patched);
+            String fragment = forced.get(PatchShaderType.FRAGMENT);
+            String replaced = fragment.replaceFirst(
+                    "(?s)void main\\(\\) \\{.*\\}\\s*$",
+                    "void main() {\n    Color = vec4(0.5, 0.5, 0.5, 1.0);\n    return;\n}\n"
+            );
+            if (replaced.equals(fragment)) {
+                throw new ProgramFrontendException(
+                        source.getName(), "grey-composite pattern not found", null
+                );
+            }
+            forced.put(PatchShaderType.FRAGMENT, replaced);
+            patched = Collections.unmodifiableMap(forced);
+        }
+        if (stage == TextureStage.COMPOSITE_AND_FINAL
+                && "final".equals(source.getName())
+                && Boolean.getBoolean("metallum.experiment.plainFinal")) {
+            Map<PatchShaderType, String> forced = new EnumMap<>(patched);
+            String fragment = forced.get(PatchShaderType.FRAGMENT);
+            String replaced = fragment.replaceFirst(
+                    "(?s)void main\\(\\) \\{.*\\}\\s*$",
+                    "void main() {\n    Color = texture(colortex0, texcoord);\n}\n"
+            );
+            if (replaced.equals(fragment)) {
+                throw new ProgramFrontendException(
+                        source.getName(), "plain-final pattern not found", null
+                );
+            }
+            forced.put(PatchShaderType.FRAGMENT, replaced);
+            patched = Collections.unmodifiableMap(forced);
+        }
         return new RasterProgram(resolved, patched, alpha, source.getDirectives());
     }
 

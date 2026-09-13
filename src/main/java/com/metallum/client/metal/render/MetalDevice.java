@@ -340,7 +340,13 @@ final class MetalDevice implements GpuDeviceBackend {
                         0,
                         ColorTargetState.MAX_COLOR_TARGETS
                 ),
-                new DeviceFeatures(false, false, true, true, true, false, true),
+                // persistentMapping=false: Sodium's UniformBufferManager would
+                // otherwise keep a JVM ByteBuffer over MTLBuffer.contents and
+                // call MemoryUtil.memPutInt on it from chunk-builder threads.
+                // On the memory-constrained Amethyst build that path SIGSEGVed
+                // (memPutInt on an invalid address); the staging writeToBuffer
+                // fallback is correct and avoids persistent host pointers.
+                new DeviceFeatures(false, false, true, true, true, false, false),
                 underlyingExtensions,
                 new HintsAndWorkarounds(false, false),
                 type

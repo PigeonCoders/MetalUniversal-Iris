@@ -1,5 +1,6 @@
 package com.metallum.client.metal.render;
 
+import com.metallum.Metallum;
 import it.unimi.dsi.fastutil.objects.Object2ObjectMap;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
@@ -9,6 +10,7 @@ import net.irisshaders.iris.helpers.Tri;
 import net.irisshaders.iris.pipeline.VanillaRenderingPipeline;
 import net.irisshaders.iris.pipeline.WorldRenderingPhase;
 import net.irisshaders.iris.shaderpack.ShaderPack;
+import net.irisshaders.iris.shaderpack.materialmap.BlockMaterialMapping;
 import net.irisshaders.iris.shaderpack.materialmap.WorldRenderingSettings;
 import net.irisshaders.iris.shaderpack.programs.ProgramSet;
 import net.irisshaders.iris.shaderpack.properties.CloudSetting;
@@ -23,6 +25,7 @@ import net.irisshaders.iris.uniforms.custom.CustomUniforms;
 import net.irisshaders.iris.pipeline.programs.ShaderKey;
 import com.mojang.blaze3d.buffers.GpuBufferSlice;
 import com.mojang.blaze3d.pipeline.RenderTarget;
+import com.mojang.blaze3d.systems.RenderPassDescriptor;
 import com.mojang.blaze3d.shaders.ShaderSource;
 import com.mojang.blaze3d.textures.GpuTexture;
 import com.mojang.blaze3d.textures.GpuTextureView;
@@ -36,8 +39,10 @@ import org.joml.Vector3d;
 import org.joml.Vector4f;
 
 import java.util.BitSet;
+import java.util.HashSet;
 import java.util.Objects;
 import java.util.OptionalInt;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -67,8 +72,17 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
     private IrisMetalWorldResources resources;
     private @Nullable IrisMetalCenterDepthSampler centerDepthSampler;
     private MetalDevice centerDepthDevice;
+    private boolean initializedBlockIds;
     private int receiptWidth = -1;
     private int receiptHeight = -1;
+    private final Set<String> loggedHooks = new HashSet<>();
+
+    private void debugHook(final String hook) {
+        if (loggedHooks.add(hook)) {
+            Metallum.LOGGER.info("[metallum-iris] hook {}", hook);
+            MetallumDebugLog.log("[metallum-iris] hook " + hook);
+        }
+    }
 
     public MetalWorldRenderingPipeline(final ProgramSet programSet) {
         this.generation = GENERATIONS.incrementAndGet();
@@ -78,7 +92,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
                 this.generation,
                 this.programSet,
                 this.programs,
-                IrisMetalRenderTargetFormats.from(this.programSet.getPackDirectives()).length
+                IrisMetalRenderTargetFormats.from(this.programSet.getPackDirectives(), this.programSet).length
         );
         this.receipts = IrisMetalRuntimeReceipts.open(this.generation);
         this.pack = programSet.getPack();
@@ -160,6 +174,10 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
         return this.resources;
     }
 
+    IrisMetalUniformValues uniformValues() {
+        return this.uniformValues;
+    }
+
     /** Returns the generation-owned pack uniform block for a terrain shader key. */
     GpuBufferSlice uniformSlice(final ShaderKey key) {
         GpuBufferSlice slice = this.uniformValues.slice(key);
@@ -182,7 +200,27 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
 
     @Override
     public void beginLevelRendering() {
+        debugHook("beginLevelRendering");
+        if (!this.initializedBlockIds) {
+            // IrisRenderingPipeline publishes these maps on the first world
+            // frame; IrisExclusiveUniforms.getCurrentSelectedBlockId reads
+            // them from WorldRenderingSettings during the uniform-graph update.
+            WorldRenderingSettings settings = WorldRenderingSettings.INSTANCE;
+            settings.setBlockStateIds(BlockMaterialMapping.createBlockStateIdMap(
+                    this.pack.getIdMap().getBlockProperties(),
+                    this.pack.getIdMap().getTagEntries()
+            ));
+            settings.setBlockTypeIds(BlockMaterialMapping.createBlockTypeMap(
+                    this.pack.getIdMap().getBlockRenderTypeMap()
+            ));
+            Minecraft minecraft = Minecraft.getInstance();
+            if (minecraft != null) {
+                minecraft.levelExtractor.allChanged();
+            }
+            this.initializedBlockIds = true;
+        }
         this.receipts.recordEvent("frame.begin");
+        IrisMetalFrameDiagnostics.beginFrame(this.frameState.phase().name());
         prepareResources();
         prepareTerrainUniforms();
         Vector3d fog = CapturedRenderingState.INSTANCE.getFogColor();
@@ -190,6 +228,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
                 this.resources(), new Vector4f((float) fog.x, (float) fog.y, (float) fog.z, 1.0F)
         );
         this.frameState.beginWorldRendering();
+        IrisMetalDescriptorRedirect.set(this::redirectVanillaDescriptor);
         this.receipts.recordEvent("setup");
         this.executionGraph.executeSetup(this.resources());
         this.receipts.recordEvent("begin");
@@ -213,8 +252,37 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
         if (device == null) {
             throw new IllegalStateException("Iris Metal terrain uniforms have no active Metal device");
         }
+        prepareVanillaUniforms();
         this.uniformValues.prewarm(device);
         this.uniformValues.updateFrame();
+    }
+
+    private @Nullable RenderPassDescriptor redirectVanillaDescriptor(
+            final RenderPassDescriptor descriptor
+    ) {
+        return IrisMetalVanillaBridge.redirectDescriptor(this, descriptor);
+    }
+
+    private void prepareVanillaUniforms() {
+        for (ShaderKey key : new ShaderKey[]{
+                ShaderKey.SKY_BASIC,
+                ShaderKey.SKY_BASIC_COLOR,
+                ShaderKey.SKY_TEXTURED,
+                ShaderKey.HAND_CUTOUT,
+                ShaderKey.HAND_CUTOUT_DIFFUSE,
+                ShaderKey.HAND_WATER_DIFFUSE
+        }) {
+            IrisMetalGlslLinker.LinkedRasterProgram linked =
+                    IrisMetalVanillaBridge.linkedProgram(this, key);
+            if (linked != null) {
+                this.uniformValues.register(key, "vanilla_" + key.getName(), linked);
+            }
+        }
+    }
+
+    /** The Iris rendering phase for vanilla pass redirection. */
+    WorldRenderingPhase phase() {
+        return this.frameState.phase();
     }
 
     private void prepareResources() {
@@ -245,7 +313,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
                     device,
                     this.generation,
                     this.programs,
-                    IrisMetalRenderTargetFormats.from(this.directives)
+                    IrisMetalRenderTargetFormats.from(this.directives, this.programSet)
             );
         } else if (!this.compiledPrograms.isOwnedBy(device)) {
             throw new IllegalStateException("Iris Metal compiled generation crossed Metal device ownership");
@@ -292,6 +360,8 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
 
     @Override
     public void beginTranslucents() {
+        debugHook("beginTranslucents");
+        IrisMetalFrameDiagnostics.logOnce("hook:beginTranslucents", "hook beginTranslucents");
         RenderTarget target = Minecraft.getInstance().gameRenderer.mainRenderTarget();
         GpuTexture depth = target.getDepthTexture();
         if (depth == null) {
@@ -305,6 +375,8 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
 
     @Override
     public void beginHand() {
+        debugHook("beginHand");
+        IrisMetalFrameDiagnostics.logOnce("hook:beginHand", "hook beginHand");
         RenderTarget target = Minecraft.getInstance().gameRenderer.mainRenderTarget();
         GpuTexture depth = target.getDepthTexture();
         GpuTextureView depthView = target.getDepthTextureView();
@@ -323,6 +395,8 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
             final Camera camera,
             final CameraRenderState cameraRenderState
     ) {
+        debugHook("renderShadows");
+        IrisMetalFrameDiagnostics.logOnce("hook:renderShadows", "hook renderShadows");
         if (this.directives.isPrepareBeforeShadow()) {
             this.receipts.recordEvent("prepare");
             this.executionGraph.executePrepare(this.resources());
@@ -340,6 +414,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
 
     @Override
     public void finalizeLevelRendering() {
+        debugHook("finalizeLevelRendering");
         RenderTarget target = Minecraft.getInstance().gameRenderer.mainRenderTarget();
         GpuTexture depth = target.getDepthTexture();
         GpuTextureView colorView = target.getColorTextureView();
@@ -362,10 +437,14 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
                 colorView
         );
         this.frameState.endWorldRendering();
+        IrisMetalDescriptorRedirect.set(null);
+        IrisMetalFrameDiagnostics.endFrame(this.frameState.phase().name());
     }
 
     @Override
     public void destroy() {
+        debugHook("destroy");
+        IrisMetalDescriptorRedirect.set(null);
         IrisMetalPackLifecycle.onSemanticPipelineDestroyed();
         this.frameState.endWorldRendering();
         this.receipts.recordEvent("generation.destroy");

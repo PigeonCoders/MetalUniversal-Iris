@@ -55,10 +55,13 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
     private final MTLTriangleFillMode fillMode;
     private final float depthBiasScaleFactor;
     private final float depthBiasConstant;
+    private final float conventionalDepthBiasScaleFactor;
+    private final float conventionalDepthBiasConstant;
     private final MTLPrimitiveType topology;
     private final int vertexBufferCount;
 
     private final MemorySegment depthStencilState;
+    private final MemorySegment conventionalDepthStencilState;
     private final boolean hasDepthStencilState;
     private final MTLPixelFormat[] colorFormats;
     private final Map<PipelineSignature, MemorySegment> pipelineStates;
@@ -128,24 +131,38 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
         }
 
         MTLCompareFunction depthCompareOp;
+        MTLCompareFunction conventionalDepthCompareOp;
         int depthWrite;
         var depthStencilState = info.getDepthStencilState();
         this.hasDepthStencilState = depthStencilState != null;
         if (depthStencilState == null) {
             depthCompareOp = MTLCompareFunction.Always;
+            conventionalDepthCompareOp = MTLCompareFunction.Always;
             depthWrite = 0;
             this.depthBiasScaleFactor = 0.0f;
             this.depthBiasConstant = 0.0f;
+            this.conventionalDepthBiasScaleFactor = 0.0f;
+            this.conventionalDepthBiasConstant = 0.0f;
         } else {
             depthCompareOp = MTLCompareFunction.from(depthStencilState.depthTest());
+            conventionalDepthCompareOp = MTLCompareFunction.from(
+                    MetalIrisDepthConvention.invertForConventionalDepth(depthStencilState.depthTest())
+            );
             depthWrite = depthStencilState.writeDepth() ? 1 : 0;
             this.depthBiasScaleFactor = depthStencilState.depthBiasScaleFactor();
             this.depthBiasConstant = depthStencilState.depthBiasConstant();
+            this.conventionalDepthBiasScaleFactor = -depthStencilState.depthBiasScaleFactor();
+            this.conventionalDepthBiasConstant = -depthStencilState.depthBiasConstant();
         }
 
         this.depthStencilState = MetalNativeBridge.MTLDevice_makeDepthStencilState(
                 device.metalDeviceHandle(),
                 depthCompareOp,
+                depthWrite
+        );
+        this.conventionalDepthStencilState = MetalNativeBridge.MTLDevice_makeDepthStencilState(
+                device.metalDeviceHandle(),
+                conventionalDepthCompareOp,
                 depthWrite
         );
 
@@ -291,23 +308,37 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
         }
 
         MTLCompareFunction depthCompareOp;
+        MTLCompareFunction conventionalDepthCompareOp;
         int depthWrite;
         this.hasDepthStencilState = depthStencilState != null;
         if (depthStencilState == null) {
             depthCompareOp = MTLCompareFunction.Always;
+            conventionalDepthCompareOp = MTLCompareFunction.Always;
             depthWrite = 0;
             this.depthBiasScaleFactor = 0.0f;
             this.depthBiasConstant = 0.0f;
+            this.conventionalDepthBiasScaleFactor = 0.0f;
+            this.conventionalDepthBiasConstant = 0.0f;
         } else {
             depthCompareOp = MTLCompareFunction.from(depthStencilState.depthTest());
+            conventionalDepthCompareOp = MTLCompareFunction.from(
+                    MetalIrisDepthConvention.invertForConventionalDepth(depthStencilState.depthTest())
+            );
             depthWrite = depthStencilState.writeDepth() ? 1 : 0;
             this.depthBiasScaleFactor = depthStencilState.depthBiasScaleFactor();
             this.depthBiasConstant = depthStencilState.depthBiasConstant();
+            this.conventionalDepthBiasScaleFactor = -depthStencilState.depthBiasScaleFactor();
+            this.conventionalDepthBiasConstant = -depthStencilState.depthBiasConstant();
         }
 
         this.depthStencilState = MetalNativeBridge.MTLDevice_makeDepthStencilState(
                 device.metalDeviceHandle(),
                 depthCompareOp,
+                depthWrite
+        );
+        this.conventionalDepthStencilState = MetalNativeBridge.MTLDevice_makeDepthStencilState(
+                device.metalDeviceHandle(),
+                conventionalDepthCompareOp,
                 depthWrite
         );
 
@@ -486,16 +517,16 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
         return this.firstAvailableVertexBufferSlot;
     }
 
-    float depthBiasScaleFactor() {
-        return this.depthBiasScaleFactor;
+    float depthBiasScaleFactor(final boolean conventionalDepth) {
+        return conventionalDepth ? this.conventionalDepthBiasScaleFactor : this.depthBiasScaleFactor;
     }
 
-    float depthBiasConstant() {
-        return this.depthBiasConstant;
+    float depthBiasConstant(final boolean conventionalDepth) {
+        return conventionalDepth ? this.conventionalDepthBiasConstant : this.depthBiasConstant;
     }
 
-    MemorySegment getDepthStencilState() {
-        return this.depthStencilState;
+    MemorySegment getDepthStencilState(final boolean conventionalDepth) {
+        return conventionalDepth ? this.conventionalDepthStencilState : this.depthStencilState;
     }
 
     MemorySegment getNativePipeline(final MTLPixelFormat depthFormat, final MTLPixelFormat stencilFormat) {

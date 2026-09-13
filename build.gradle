@@ -69,6 +69,8 @@ test {
 	exclude "**/IrisMetalPingPongTargetsIntegrationTest.class"
 	exclude "**/MetalIrisCustomTexturesIntegrationTest.class"
 	exclude "**/MetalIrisNoiseTextureIntegrationTest.class"
+	exclude "**/MetalIrisPbrDefaultsIntegrationTest.class"
+	exclude "**/MellowMetalMslCompileIntegrationTest.class"
 	exclude "**/IrisMetalCenterDepthSamplerTest.class"
 }
 
@@ -189,6 +191,8 @@ tasks.register("metalIrisTexturesIntegrationTest", Test) {
 		includeTestsMatching "com.metallum.client.metal.render.MetalIrisCustomTexturesIntegrationTest"
 		includeTestsMatching "com.metallum.client.metal.render.MetalIrisNoiseTextureIntegrationTest"
 		includeTestsMatching "com.metallum.client.metal.render.IrisMetalCenterDepthSamplerTest"
+		includeTestsMatching "com.metallum.client.metal.render.MetalIrisPbrDefaultsIntegrationTest"
+		includeTestsMatching "com.metallum.client.metal.render.MellowMetalMslCompileIntegrationTest"
 	}
 	jvmArgs "--enable-native-access=ALL-UNNAMED"
 	environment "MTL_DEBUG_LAYER", "1"
@@ -407,26 +411,34 @@ def verifyDylibPlatform = { File dylib, boolean expectIOS, String tag = "native"
 	}
 }
 
-// Verify at least one of the copied glslang dylibs exports a glslang_ symbol
-// (e.g. glslang_initialize_process / glslang_default_resource), proving the
-// glslang C API is present for runtime symbol resolution.
+// Verify the copied glslang dylib set exports both the C API symbols
+// (glslang_initialize_process, ...) and glslang_default_resource. The latter
+// is built into libglslang-default-resource-limits.dylib, so this check also
+// proves the resource-limits sibling survived the copy — without it
+// GlslangBridge fails at runtime with "Symbol not found: glslang_default_resource".
 def verifyGlslangSymbol = { List<File> dylibs, String tag = "native" ->
 	try {
-		boolean found = false
+		boolean foundApi = false
+		boolean foundDefaultResource = false
 		for (File f : dylibs) {
 			def out = new ByteArrayOutputStream()
 			def proc = ["nm", "-gU", f.absolutePath].execute()
 			proc.waitForProcessOutput(out, null)
-			if (out.toString().contains("glslang_")) {
-				found = true
-				logger.lifecycle("[${tag}] glslang_ symbol found in ${f.name}")
-				break
+			def nmOutput = out.toString()
+			if (nmOutput.contains("glslang_initialize_process")) {
+				foundApi = true
+				logger.lifecycle("[${tag}] glslang C API symbol found in ${f.name}")
+			}
+			if (nmOutput.contains("glslang_default_resource")) {
+				foundDefaultResource = true
+				logger.lifecycle("[${tag}] glslang_default_resource found in ${f.name}")
 			}
 		}
-		if (!found) {
+		if (!foundApi || !foundDefaultResource) {
 			throw new GradleException(
-					"[${tag}] FATAL: no glslang_ symbol found in any output dylib. " +
-					"The glslang C API will not resolve at runtime."
+					"[${tag}] FATAL: copied glslang dylibs are incomplete. " +
+					"glslang C API present: ${foundApi}, glslang_default_resource present: ${foundDefaultResource}. " +
+					"GlslangBridge will fail to resolve symbols at runtime."
 			)
 		}
 	} catch (IOException ignored) {

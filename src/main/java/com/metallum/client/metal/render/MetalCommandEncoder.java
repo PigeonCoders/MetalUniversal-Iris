@@ -265,7 +265,13 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
 
     @Override
     public @NonNull RenderPassBackend createRenderPass(final RenderPassDescriptor descriptor) {
-        List<RenderPassDescriptor.Attachment<Optional<Vector4fc>>> colorAttachments = descriptor.colorAttachments();
+        // Iris vanilla sky/hand pass redirector. Empty outside world rendering.
+        RenderPassDescriptor effectiveDescriptor = descriptor;
+        RenderPassDescriptor redirected = IrisMetalDescriptorRedirect.redirect(descriptor);
+        if (redirected != null) {
+            effectiveDescriptor = redirected;
+        }
+        List<RenderPassDescriptor.Attachment<Optional<Vector4fc>>> colorAttachments = effectiveDescriptor.colorAttachments();
         int maxColorAttachments = Math.min(
                 com.mojang.blaze3d.pipeline.ColorTargetState.MAX_COLOR_TARGETS,
                 device.getDeviceInfo().limits().maxColorAttachments()
@@ -276,7 +282,7 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
                             + " color slots but the backend limit is " + maxColorAttachments
             );
         }
-        RenderPassDescriptor.Attachment<OptionalDouble> depthAttachment = descriptor.depthAttachment();
+        RenderPassDescriptor.Attachment<OptionalDouble> depthAttachment = effectiveDescriptor.depthAttachment();
         if (colorAttachments.isEmpty() && depthAttachment == null) {
             throw new IllegalArgumentException("Metal render pass has no color or depth attachment");
         }
@@ -340,7 +346,13 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         }
 
         GpuTextureView depthTexture = depthAttachment == null ? null : depthAttachment.textureView();
-        OptionalDouble depthClear = depthAttachment == null ? OptionalDouble.empty() : depthAttachment.clearValue();
+        OptionalDouble depthClear = depthAttachment == null
+                ? OptionalDouble.empty()
+                : depthAttachment.clearValue().isPresent()
+                ? OptionalDouble.of(MetalIrisDepthConvention.conventionalClearDepth(
+                        depthAttachment.clearValue().getAsDouble()
+                ))
+                : OptionalDouble.empty();
         if (depthAttachment != null) {
             if (depthTexture.isClosed()) {
                 throw new IllegalStateException("Depth texture is closed");
@@ -370,8 +382,8 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
             metalDepth.markContentsDirty();
         }
 
-        assert descriptor.renderArea != null;
-        RenderPass.RenderArea renderArea = descriptor.renderArea;
+        assert effectiveDescriptor.renderArea != null;
+        RenderPass.RenderArea renderArea = effectiveDescriptor.renderArea;
         if (renderArea == null) {
             throw new IllegalArgumentException("RenderPassDescriptor.renderArea must be provided");
         }
@@ -389,7 +401,7 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         MetalRenderPass renderPass = new MetalRenderPass(
                 device,
                 this,
-                descriptor.label(),
+                effectiveDescriptor.label(),
                 colorTextureViews,
                 depthTexture,
                 renderArea,
@@ -405,6 +417,11 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
     @Override
     public void submitRenderPass() {
         if (currentRenderPass != null) {
+            IrisMetalFrameDiagnostics.pass(
+                    currentRenderPass.label(),
+                    currentRenderPass.drawCount(),
+                    currentRenderPass.attachmentSummary()
+            );
             currentRenderPass.materializePendingClear();
             currentRenderPass.popDebugGroup();
             currentRenderPass = null;
@@ -448,7 +465,7 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         MetalGpuTexture color = (MetalGpuTexture) colorTexture;
         MetalGpuTexture depth = (MetalGpuTexture) depthTexture;
         pendingColorClears.put(color, new Vector4f(clearColor));
-        pendingDepthClears.put(depth, clearDepth);
+        pendingDepthClears.put(depth, MetalIrisDepthConvention.conventionalClearDepth(clearDepth));
     }
 
     @Override
@@ -465,9 +482,10 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         MetalGpuTexture color = (MetalGpuTexture) colorTexture;
         MetalGpuTexture depth = (MetalGpuTexture) depthTexture;
         Vector4fc clearColorCopy = new Vector4f(clearColor);
+        double conventionalClearDepth = MetalIrisDepthConvention.conventionalClearDepth(clearDepth);
         if (isFullTextureRegion(color, depth, regionX, regionY, regionWidth, regionHeight)) {
             pendingColorClears.put(color, clearColorCopy);
-            pendingDepthClears.put(depth, clearDepth);
+            pendingDepthClears.put(depth, conventionalClearDepth);
             return;
         }
         color.markContentsDirty();
@@ -481,7 +499,7 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
                 clearColorCopy.z(),
                 clearColorCopy.w(),
                 depth.nativeHandle(),
-                clearDepth,
+                conventionalClearDepth,
                 regionX,
                 regionY,
                 regionWidth,
@@ -492,7 +510,10 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
 
     @Override
     public void clearDepthTexture(final @NonNull GpuTexture depthTexture, final double clearDepth) {
-        pendingDepthClears.put((MetalGpuTexture) depthTexture, clearDepth);
+        pendingDepthClears.put(
+                (MetalGpuTexture) depthTexture,
+                MetalIrisDepthConvention.conventionalClearDepth(clearDepth)
+        );
     }
 
     @Override

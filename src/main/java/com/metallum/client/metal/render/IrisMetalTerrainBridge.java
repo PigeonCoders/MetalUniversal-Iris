@@ -1,5 +1,6 @@
 package com.metallum.client.metal.render;
 
+import com.metallum.Metallum;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.mojang.blaze3d.systems.CommandEncoder;
 import com.mojang.blaze3d.systems.RenderPass;
@@ -15,14 +16,20 @@ import org.joml.Vector4fc;
 import org.jspecify.annotations.Nullable;
 
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalDouble;
+import java.util.Set;
 import java.util.function.Supplier;
 
 /** Atomically pairs one Sodium terrain draw with its Iris PSO and attachments. */
 public final class IrisMetalTerrainBridge {
     private static final ThreadLocal<TerrainContext> ACTIVE_TERRAIN = new ThreadLocal<>();
+    private static final ThreadLocal<Boolean> SUPPRESS_WATER_DRAWS = new ThreadLocal<>();
+    private static final ThreadLocal<int[]> SUPPRESSED_DRAWS = new ThreadLocal<>();
+    private static final Set<String> LOGGED_KEYS = new HashSet<>();
+    private static final Set<String> LOGGED_MISSES = new HashSet<>();
 
     private IrisMetalTerrainBridge() {
     }
@@ -38,18 +45,112 @@ public final class IrisMetalTerrainBridge {
         Optional<IrisMetalGlslLinker.LinkedRasterProgram> linked =
                 pipeline.programs().sodium(key.getProgram(), key.getAlphaTest());
         if (linked.isEmpty()) {
+            if (LOGGED_MISSES.add(key.toString())) {
+                Metallum.LOGGER.warn("[metallum-iris] terrain key has no linked program: {}", key);
+                MetallumDebugLog.log("[metallum-iris] terrain key MISS " + key);
+            }
             ACTIVE_TERRAIN.remove();
             return;
         }
+        if (LOGGED_KEYS.add(key.toString())) {
+            Metallum.LOGGER.info(
+                    "[metallum-iris] terrain begin key={} program={} drawBuffers={}",
+                    key, linked.orElseThrow().name(), java.util.Arrays.toString(linked.orElseThrow().program().drawBuffers())
+            );
+            MetallumDebugLog.log("[metallum-iris] terrain begin " + key + " -> " + linked.orElseThrow().name());
+        }
+        IrisMetalFrameDiagnostics.logOnce(
+                "terrain:" + key,
+                "terrain begin " + key + " -> " + linked.orElseThrow().name()
+        );
+        IrisMetalFrameDiagnostics.logOnce("terrain-matrix", terrainMatrixDiagnostic());
         int[] drawBuffers = linked.orElseThrow().program().drawBuffers();
         if (drawBuffers.length == 0) {
             drawBuffers = new int[]{0};
         }
         ACTIVE_TERRAIN.set(new TerrainContext(pipeline, key, drawBuffers));
+        // TEMPORARY BISECTION: hide every Sodium terrain draw (solid, cutout and
+        // translucent) so one device run shows whether the radiating bands come
+        // from terrain at all. The window alternates every 450 frames (~8-15s)
+        // so the answer is visible in a single session instead of requiring a
+        // rebuild per state; the debug log records which window was active.
+        boolean experiment = Boolean.getBoolean("metallum.experiment.disableTerrainDraws");
+        int frame = IrisMetalFrameDiagnostics.frame();
+        boolean terrainHiddenWindow = (frame / 450) % 2 == 1;
+        boolean suppressTerrain = experiment && terrainHiddenWindow;
+        SUPPRESS_WATER_DRAWS.set(suppressTerrain);
+        if (experiment) {
+            IrisMetalFrameDiagnostics.logOnce(
+                    "terrain-window",
+                    "terrain suppression window=" + (suppressTerrain ? "HIDDEN" : "VISIBLE")
+            );
+        }
     }
 
-    public static void end() {
+    /** TEMPORARY BISECTION: true while a terrain layer is being executed with the
+     *  iOS terrain-draw suppression experiment enabled. */
+    public static boolean suppressCurrentDraws() {
+        Boolean value = SUPPRESS_WATER_DRAWS.get();
+        return value != null && value;
+    }
+
+    /**
+     * TEMPORARY BISECTION: Mellow's WAVY_PLANTS path rebuilds gl_Position from the
+     * pack's gbufferModelView/gbufferProjection uniforms, while every other terrain
+     * vertex goes through Sodium's u_ModelViewMatrix/u_ProjectionMatrix. If the
+     * captured gbuffer matrices drift from the live ones used for the draw, only the
+     * waving quads end up somewhere else — exactly the thin sliver signature.
+     */
+    private static String terrainMatrixDiagnostic() {
+        try {
+            org.joml.Matrix4f captured = new org.joml.Matrix4f(
+                    net.irisshaders.iris.uniforms.CapturedRenderingState.INSTANCE.getGbufferModelView()
+            );
+            org.joml.Matrix4f live = new org.joml.Matrix4f(
+                    com.mojang.blaze3d.systems.RenderSystem.getModelViewMatrixCopy()
+            );
+            org.joml.Matrix4f capturedProj = new org.joml.Matrix4f(
+                    net.irisshaders.iris.uniforms.CapturedRenderingState.INSTANCE.getGbufferProjection()
+            );
+            return "terrain matrices capturedMV[3]=" + captured.m30() + "," + captured.m31() + "," + captured.m32()
+                    + " liveMV[3]=" + live.m30() + "," + live.m31() + "," + live.m32()
+                    + " capturedProjDiag=" + capturedProj.m00() + "," + capturedProj.m11() + ","
+                    + capturedProj.m22() + "," + capturedProj.m23()
+                    + " differs=" + !captured.equals(live, 0.05f);
+        } catch (Throwable failure) {
+            return "terrain matrices unavailable: " + failure;
+        }
+    }
+
+    /** Counts skipped terrain draws so a bisection build can prove the switch worked. */
+    public static void recordSuppressedDraws(final int count) {
+        if (count <= 0) {
+            return;
+        }
+        ThreadLocal<int[]> counter = SUPPRESSED_DRAWS;
+        int[] value = counter.get();
+        if (value == null) {
+            value = new int[1];
+            counter.set(value);
+        }
+        value[0] += count;
+    }
+
+    public static void end(final TerrainRenderPass pass) {
+        Integer suppressed = null;
+        int[] value = SUPPRESSED_DRAWS.get();
+        if (value != null && value[0] > 0) {
+            suppressed = value[0];
+        }
+        SUPPRESSED_DRAWS.remove();
+        SUPPRESS_WATER_DRAWS.remove();
         ACTIVE_TERRAIN.remove();
+        if (suppressed != null) {
+            IrisMetalFrameDiagnostics.logOnce(
+                    "suppressed:" + suppressed,
+                    "terrain draws suppressed=" + suppressed
+            );
+        }
     }
 
     public static @Nullable RenderPass createRenderPass(
@@ -101,9 +202,12 @@ public final class IrisMetalTerrainBridge {
             return null;
         }
         if (!source.getLocation().getNamespace().contains("sodium")) {
-            throw new IllegalArgumentException(
-                    "Iris Metal terrain received a non-Sodium pipeline " + source.getLocation()
-            );
+            // A terrain context can outlive an aborted Sodium draw while the
+            // game unwinds an exception (e.g. texture atlas animation during
+            // crash handling). Never hijack a non-Sodium pipeline; clear the
+            // stale context so vanilla compilation can proceed.
+            ACTIVE_TERRAIN.remove();
+            return null;
         }
         if (!context.pipeline().compiledPrograms().isOwnedBy(device)) {
             throw new IllegalStateException("Iris Metal terrain PSO crossed Metal device ownership");
@@ -239,7 +343,7 @@ public final class IrisMetalTerrainBridge {
         }
     }
 
-    private static int renderTargetIndex(final String name) {
+    static int renderTargetIndex(final String name) {
         if (name.startsWith("colortex")) {
             try {
                 return Integer.parseInt(name.substring("colortex".length()));

@@ -59,6 +59,7 @@ final class MetalRenderPass implements RenderPassBackend {
     private GpuBuffer indexBuffer;
     private MTLIndexType indexType = MTLIndexType.UInt16;
     private int pushedDebugGroups = 0;
+    private int drawCount = 0;
     private boolean scissorDirty = true;
     private boolean vertexBuffersDirty = true;
     private boolean pipelineDirty = true;
@@ -76,7 +77,9 @@ final class MetalRenderPass implements RenderPassBackend {
     ) {
         this.device = device;
         this.commandEncoder = encoder;
-        this.label = device.useLabels() ? label.get() : null;
+        // Always evaluate the label: the per-frame diagnostics need it even
+        // when MTL labels are disabled on this device.
+        this.label = label.get();
         this.colorTextures = colorTextures.clone();
         this.depthTexture = depthTexture;
         this.renderArea = renderArea;
@@ -91,6 +94,37 @@ final class MetalRenderPass implements RenderPassBackend {
         if (device.useLabels()) {
             commandEncoder.commandBuffer().pushDebugGroup(label.get());
         }
+    }
+
+    int drawCount() {
+        return drawCount;
+    }
+
+    @Nullable
+    String label() {
+        return label;
+    }
+
+    /** Color/depth attachment summary for per-frame diagnostics. */
+    String attachmentSummary() {
+        StringBuilder summary = new StringBuilder("attachments=[");
+        for (GpuTextureView view : colorTextures) {
+            summary.append(view.texture().getFormat())
+                    .append(' ')
+                    .append(view.getWidth(0))
+                    .append('x')
+                    .append(view.getHeight(0))
+                    .append(' ');
+        }
+        summary.setLength(Math.max(summary.length(), "attachments=[".length()));
+        if (summary.charAt(summary.length() - 1) == ' ') {
+            summary.setLength(summary.length() - 1);
+        }
+        summary.append(']');
+        if (depthTexture != null) {
+            summary.append(" depth=").append(depthTexture.texture().getFormat());
+        }
+        return summary.toString();
     }
 
     @Override
@@ -209,6 +243,47 @@ final class MetalRenderPass implements RenderPassBackend {
     public void setUniform(final @NonNull String name, final @NonNull GpuBufferSlice value) {
         uniforms.put(name, value);
         markDescriptorDirty(name);
+        aliasIrisVanillaUniform(name, value);
+    }
+
+    /**
+     * Iris's vanilla patch prefixes the Mojang core bind-group names
+     * ({@code DynamicTransforms}, {@code Projection}, {@code Globals},
+     * {@code Fog}, {@code Lighting}) as {@code iris_*} in shaderpack GLSL.
+     * Vanilla callers keep setting the unprefixed names after
+     * {@code setPipeline} has already installed the pack pipeline, so mirror
+     * those bindings under the prefixed resource names as they arrive.
+     */
+    private void aliasIrisVanillaUniform(final String name, final GpuBufferSlice value) {
+        if (compiledPipeline == null) {
+            return;
+        }
+        String irisName = switch (name) {
+            case "DynamicTransforms", "Projection", "Globals", "Fog", "Lighting" -> "iris_" + name;
+            default -> null;
+        };
+        if (irisName == null) {
+            return;
+        }
+        if (compiledPipeline.resource(irisName) != null) {
+            uniforms.put(irisName, value);
+            markDescriptorDirty(irisName);
+        }
+    }
+
+    /** Mirrors uniforms bound before the pack pipeline was installed. */
+    void aliasExistingIrisVanillaUniforms() {
+        if (compiledPipeline == null) {
+            return;
+        }
+        for (String name : new String[]{
+                "DynamicTransforms", "Projection", "Globals", "Fog", "Lighting"
+        }) {
+            GpuBufferSlice value = uniforms.get(name);
+            if (value != null) {
+                aliasIrisVanillaUniform(name, value);
+            }
+        }
     }
 
     @Override
@@ -250,6 +325,13 @@ final class MetalRenderPass implements RenderPassBackend {
         setIndexBuffer(indexBuffer, MTLIndexType.from(indexType));
     }
 
+    /** TEMPORARY BISECTION: let the vanilla-sky experiment drop a pass' draws entirely. */
+    private boolean skipDraws;
+
+    void setSkipDraws(final boolean skip) {
+        this.skipDraws = skip;
+    }
+
     private void setIndexBuffer(@Nullable final GpuBuffer indexBuffer, final MTLIndexType indexType) {
         if (this.indexBuffer != indexBuffer || this.indexType != indexType) {
             this.indexBuffer = indexBuffer;
@@ -259,6 +341,9 @@ final class MetalRenderPass implements RenderPassBackend {
 
     @Override
     public void drawIndexed(final int indexCount, final int instanceCount, final int firstIndex, final int vertexOffset, final int firstInstance) {
+        if (this.skipDraws) {
+            return;
+        }
         MetalGpuBuffer nativeIndexBuffer = (MetalGpuBuffer) indexBuffer;
         MTLRenderCommandEncoder enc = renderEncoder();
 
@@ -268,6 +353,9 @@ final class MetalRenderPass implements RenderPassBackend {
 
     @Override
     public void multiDrawIndexed(@NonNull IntBuffer drawParameters, int instanceCount, int firstInstance, int drawCount) {
+        if (this.skipDraws) {
+            return;
+        }
         MetalGpuBuffer nativeIndexBuffer = (MetalGpuBuffer) indexBuffer;
         MTLRenderCommandEncoder enc = renderEncoder();
         bindDrawState(enc);
@@ -284,6 +372,9 @@ final class MetalRenderPass implements RenderPassBackend {
 
     @Override
     public void multiDrawIndexed(@NonNull PointerBuffer firstIndexOffsets, @NonNull IntBuffer indexCounts, @NonNull IntBuffer vertexOffsets, int drawCount) {
+        if (this.skipDraws) {
+            return;
+        }
         MTLPrimitiveType primitiveType = primitiveTopology();
         if (primitiveType == MTLPrimitiveType.TriangleFan) {
             throw new UnsupportedOperationException("Metal backend does not support triangle fan multiDrawIndexed");
@@ -293,6 +384,11 @@ final class MetalRenderPass implements RenderPassBackend {
         MTLRenderCommandEncoder enc = renderEncoder();
         bindDrawState(enc);
 
+        if (IrisMetalTerrainBridge.suppressCurrentDraws()) {
+            IrisMetalTerrainBridge.recordSuppressedDraws(drawCount);
+            return;
+        }
+        this.drawCount += drawCount;
         MetalNativeBridge.MTLRenderCommandEncoder_multiDrawIndexed(
                 enc.handle(),
                 primitiveType.value,
@@ -309,6 +405,13 @@ final class MetalRenderPass implements RenderPassBackend {
 
     @Override
     public void drawIndexedIndirect(final @NonNull GpuBufferSlice commands, final int drawCount) {
+        if (this.skipDraws) {
+            return;
+        }
+        if (IrisMetalTerrainBridge.suppressCurrentDraws()) {
+            IrisMetalTerrainBridge.recordSuppressedDraws(drawCount);
+            return;
+        }
         MTLPrimitiveType primitiveType = primitiveTopology();
         if (primitiveType == MTLPrimitiveType.TriangleFan) {
             throw new UnsupportedOperationException("Metal backend does not support triangle fan indirect draws");
@@ -318,6 +421,7 @@ final class MetalRenderPass implements RenderPassBackend {
         MTLRenderCommandEncoder enc = renderEncoder();
         bindDrawState(enc);
 
+        this.drawCount += drawCount;
         enc.drawIndexedPrimitivesIndirect(
                 primitiveType,
                 indexType,
@@ -337,6 +441,9 @@ final class MetalRenderPass implements RenderPassBackend {
             final @NonNull Collection<String> dynamicUniforms,
             final @NonNull T uniformArgument
     ) {
+        if (IrisMetalTerrainBridge.suppressCurrentDraws()) {
+            return;
+        }
         IndexType fallbackIndexType = defaultIndexType == null ? IndexType.SHORT : defaultIndexType;
         MTLRenderCommandEncoder enc = renderEncoder();
 
@@ -361,6 +468,12 @@ final class MetalRenderPass implements RenderPassBackend {
 
     @Override
     public void draw(final int vertexCount, final int instanceCount, final int firstVertex, final int firstInstance) {
+        if (this.skipDraws) {
+            return;
+        }
+        if (IrisMetalTerrainBridge.suppressCurrentDraws()) {
+            return;
+        }
         MTLPrimitiveType primitiveType = primitiveTopology();
         MTLRenderCommandEncoder enc = renderEncoder();
 
@@ -370,6 +483,7 @@ final class MetalRenderPass implements RenderPassBackend {
             drawTriangleFan(enc, firstVertex, vertexCount, instanceCount, firstInstance);
         } else {
             enc.drawPrimitives(primitiveType, firstVertex, vertexCount, Math.max(1, instanceCount), firstInstance);
+            drawCount++;
         }
     }
 
@@ -385,6 +499,13 @@ final class MetalRenderPass implements RenderPassBackend {
 
     @Override
     public void drawIndirect(final @NonNull GpuBufferSlice commands, final int drawCount) {
+        if (this.skipDraws) {
+            return;
+        }
+        if (IrisMetalTerrainBridge.suppressCurrentDraws()) {
+            IrisMetalTerrainBridge.recordSuppressedDraws(drawCount);
+            return;
+        }
         MTLPrimitiveType primitiveType = primitiveTopology();
         if (primitiveType == MTLPrimitiveType.TriangleFan) {
             throw new UnsupportedOperationException("Metal backend does not support triangle fan indirect draws");
@@ -518,6 +639,7 @@ final class MetalRenderPass implements RenderPassBackend {
     }
 
     private void drawTriangleFan(MTLRenderCommandEncoder encoder, final int firstVertex, final int vertexCount, final int instanceCount, final int baseInstance) {
+        drawCount++;
         int triangleCount = vertexCount - 2;
         int indexCount = triangleCount * 3;
         MTLIndexType fanIndexType = vertexCount - 1 <= 0xFFFF ? MTLIndexType.UInt16 : MTLIndexType.UInt32;
@@ -553,6 +675,11 @@ final class MetalRenderPass implements RenderPassBackend {
             final MTLIndexType indexType,
             final int baseInstance
     ) {
+        if (IrisMetalTerrainBridge.suppressCurrentDraws()) {
+            IrisMetalTerrainBridge.recordSuppressedDraws(1);
+            return;
+        }
+        drawCount++;
         MTLPrimitiveType primitiveType = primitiveTopology();
 
         long indexOffsetBytes = (long) firstIndex * indexType.bytes;
@@ -597,15 +724,16 @@ final class MetalRenderPass implements RenderPassBackend {
             enc.setRenderPipelineState(pipelineHandle);
             pipelineDirty = false;
 
-            MemorySegment depthState = compiledPipeline.getDepthStencilState();
+            boolean conventionalDepth = MetalIrisDepthConvention.conventionalDepthActive();
+            MemorySegment depthState = compiledPipeline.getDepthStencilState(conventionalDepth);
             if (MetalNativeBridge.isNullHandle(depthState)) {
                 throw new IllegalStateException("Native depth state is unavailable");
             }
             enc.setDepthStencilState(depthState);
             if (hasAttachment && compiledPipeline.hasDepthStencilState()) {
                 enc.setDepthBias(
-                        compiledPipeline.depthBiasConstant(),
-                        compiledPipeline.depthBiasScaleFactor(),
+                        compiledPipeline.depthBiasConstant(conventionalDepth),
+                        compiledPipeline.depthBiasScaleFactor(conventionalDepth),
                         0.0f
                 );
             } else {
@@ -690,6 +818,15 @@ final class MetalRenderPass implements RenderPassBackend {
             TextureViewAndSampler textureBinding = samplers.get(binding.name());
             if (textureBinding == null) {
                 textureBinding = IrisMetalTerrainBridge.fallbackSampler(binding.name(), samplers);
+            }
+            if (textureBinding == null) {
+                net.irisshaders.iris.pipeline.WorldRenderingPipeline pipeline =
+                        net.irisshaders.iris.Iris.getPipelineManager().getPipelineNullable();
+                if (pipeline instanceof MetalWorldRenderingPipeline metalWorld) {
+                    textureBinding = IrisMetalVanillaBridge.fallbackSampler(
+                            metalWorld, binding.name(), samplers
+                    );
+                }
             }
             if (textureBinding == null) {
                 throw new IllegalStateException("Missing sampler " + binding.name());

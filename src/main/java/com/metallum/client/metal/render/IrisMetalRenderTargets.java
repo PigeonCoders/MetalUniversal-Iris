@@ -103,6 +103,20 @@ final class IrisMetalRenderTargets implements AutoCloseable {
     boolean clearForFrame(final MetalCommandEncoder encoder, final Vector4fc fogColor) {
         ensureOpen();
         Vector4f fog = new Vector4f(fogColor.x(), fogColor.y(), fogColor.z(), 1.0F);
+        // TEMPORARY BISECTION: while the vanilla sky draws are skipped, reproduce
+        // the black base they normally write (gbuffers_skybasic writes black) so
+        // the only difference between windows is whether those passes run.
+        if (MetalExperimentGate.enabled("metallum.experiment.hideVanillaSky")
+                && (IrisMetalFrameDiagnostics.frame() / 450) % 2 == 1) {
+            encoder.clearColorTexture(colorTargets.mainTexture(0), new Vector4f(0.0F));
+            encoder.clearColorTexture(colorTargets.altTexture(0), new Vector4f(0.0F));
+        }
+        if (Boolean.getBoolean("metallum.experiment.clearColor01")) {
+            for (int index = 0; index <= 1; index++) {
+                encoder.clearColorTexture(colorTargets.mainTexture(index), new Vector4f(0.0F));
+                encoder.clearColorTexture(colorTargets.altTexture(index), new Vector4f(0.0F));
+            }
+        }
         boolean fullClear = this.fullClearRequired;
         for (int index = 0; index < colorTargets.targetCount(); index++) {
             RenderTargetSettings settings = targetSettings.get(index);

@@ -21,6 +21,9 @@ import net.irisshaders.iris.shaderpack.programs.ComputeSource;
 import net.irisshaders.iris.shaderpack.programs.ProgramSet;
 import net.irisshaders.iris.shaderpack.programs.ProgramSource;
 import net.irisshaders.iris.shaderpack.texture.TextureStage;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.texture.AbstractTexture;
+import net.minecraft.client.renderer.texture.TextureAtlas;
 import net.minecraft.resources.Identifier;
 import org.joml.Vector4fc;
 import org.jspecify.annotations.Nullable;
@@ -536,6 +539,128 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                 );
             }
         }
+        captureFinalStrip(mainColor);
+    }
+
+    // ------------------------------------------------------------------
+    // TEMPORARY BISECTION: final-image strip readback
+    // ------------------------------------------------------------------
+    private static final int STRIP_WIDTH = 128;
+    private static final int STRIP_HEIGHT = 8;
+
+    private GpuBuffer[] stripBuffers;
+    private int stripCaptures;
+
+    /**
+     * Copies a small strip of the final image into a CPU-visible staging buffer two
+     * frames before reading it, then logs a dark-sliver metric plus two raw luminance
+     * rows. This makes bisections answerable from {@code metallum-debug.log} alone
+     * instead of depending on a screenshot description. Only runs in diagnostic
+     * builds (same gate as the terrain hide/show experiment).
+     */
+    private void captureFinalStrip(final GpuTextureView mainColor) {
+        if (!MetalExperimentGate.enabled("metallum.experiment.hideVanillaSky")) {
+            return;
+        }
+        try {
+            int frame = IrisMetalFrameDiagnostics.frame();
+            int width = mainColor.getWidth(0);
+            int height = mainColor.getHeight(0);
+            if (frame <= 0 || width < STRIP_WIDTH || height < STRIP_HEIGHT) {
+                return;
+            }
+            MetalDevice device = MetalDeviceRegistry.getActiveDevice();
+            if (device == null) {
+                return;
+            }
+            int slot = frame % 2;
+            if (this.stripBuffers == null) {
+                this.stripBuffers = new GpuBuffer[2];
+                for (int index = 0; index < 2; index++) {
+                    final int stripIndex = index;
+                    this.stripBuffers[index] = device.createBuffer(
+                            () -> "metallum final strip " + stripIndex,
+                            GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST,
+                            (long) STRIP_WIDTH * STRIP_HEIGHT * 4
+                    );
+                }
+            }
+            if (this.stripCaptures >= 2) {
+                IrisMetalFrameDiagnostics.logOnce(
+                        "final-strip",
+                        describeFinalStrip((MetalGpuBuffer) this.stripBuffers[slot], frame)
+                );
+            }
+            int x = Math.max(0, width / 2 - STRIP_WIDTH / 2);
+            int y = Math.min(height - STRIP_HEIGHT, Math.max(0, (int) (height * 0.18F)));
+            activeEncoder().copyTextureToBuffer(
+                    mainColor.texture(), this.stripBuffers[slot], 0L, () -> {
+                    }, 0, x, y, STRIP_WIDTH, STRIP_HEIGHT
+            );
+            this.stripCaptures++;
+        } catch (Throwable failure) {
+            IrisMetalFrameDiagnostics.logOnce(
+                    "final-strip-failure",
+                    "final strip readback failed: " + failure
+            );
+        }
+    }
+
+    private static String describeFinalStrip(final MetalGpuBuffer buffer, final int frame) {
+        int bytes = STRIP_WIDTH * STRIP_HEIGHT * 4;
+        java.nio.ByteBuffer storage = buffer.currentStorage();
+        if (storage == null) {
+            return "finalStrip frame=" + frame + " unavailable";
+        }
+        java.nio.ByteBuffer pixels = storage.duplicate().order(java.nio.ByteOrder.nativeOrder());
+        if (pixels.capacity() < bytes) {
+            return "finalStrip frame=" + frame + " short buffer=" + pixels.capacity();
+        }
+        int[] luminance = new int[STRIP_WIDTH * STRIP_HEIGHT];
+        long sum = 0L;
+        for (int pixel = 0; pixel < luminance.length; pixel++) {
+            int offset = pixel * 4;
+            int red = pixels.get(offset) & 0xFF;
+            int green = pixels.get(offset + 1) & 0xFF;
+            int blue = pixels.get(offset + 2) & 0xFF;
+            luminance[pixel] = (red * 30 + green * 59 + blue * 11) / 100;
+            sum += luminance[pixel];
+        }
+        int thin = 0;
+        int wide = 0;
+        int row = STRIP_HEIGHT / 2;
+        int run = 0;
+        for (int x = 0; x <= STRIP_WIDTH; x++) {
+            boolean dark = x < STRIP_WIDTH && luminance[row * STRIP_WIDTH + x] < 24;
+            if (dark) {
+                run++;
+            } else if (run > 0) {
+                if (run <= 4) {
+                    thin += run;
+                } else {
+                    wide += run;
+                }
+                run = 0;
+            }
+        }
+        StringBuilder top = new StringBuilder(STRIP_WIDTH * 2);
+        StringBuilder bottom = new StringBuilder(STRIP_WIDTH * 2);
+        for (int x = 0; x < STRIP_WIDTH; x++) {
+            appendHex(top, luminance[(STRIP_HEIGHT / 4) * STRIP_WIDTH + x]);
+            appendHex(bottom, luminance[((3 * STRIP_HEIGHT) / 4) * STRIP_WIDTH + x]);
+        }
+        return "finalStrip frame=" + frame
+                + " mean=" + (sum / Math.max(1, luminance.length))
+                + " thinDark=" + thin + " wideDark=" + wide
+                + " rowA=" + top + " rowB=" + bottom;
+    }
+
+    private static void appendHex(final StringBuilder out, final int value) {
+        String hex = Integer.toHexString(Math.min(255, Math.max(0, value)));
+        if (hex.length() < 2) {
+            out.append('0');
+        }
+        out.append(hex);
     }
 
     private void executeStage(final Stage stage, final IrisMetalWorldResources resources) {
@@ -679,9 +804,16 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         currentResourcesForDispatch = targets;
         try {
             Set<Integer> readTargets = colorSamplerTargets(plan.program());
-            for (int target : plan.program().program().directives().getMipmappedBuffers()) {
-                targets.enableReadMipmaps(target);
-                activeEncoder().generateMipmaps(targets.colorTargets().readTexture(target));
+            // TEMPORARY BISECTION (iOS only, revert after one screenshot):
+            // skip the color mipmap generation/enabling path used by the bloom
+            // pyramid. If the radiating bands disappear, the mip chain (or its
+            // sampler state) is the broken part of the bloom pipeline.
+            boolean skipMipmaps = Boolean.getBoolean("metallum.experiment.disableMipmaps");
+            if (!skipMipmaps) {
+                for (int target : plan.program().program().directives().getMipmappedBuffers()) {
+                    targets.enableReadMipmaps(target);
+                    activeEncoder().generateMipmaps(targets.colorTargets().readTexture(target));
+                }
             }
             MetalCommandEncoder encoder = activeEncoder();
             IrisMetalRenderTargets.RenderPassDescriptorWithViews descriptor;
@@ -738,23 +870,23 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                 );
             }
         }
-        for (IrisMetalGlslLinker.SamplerDecl sampler : plan.program().samplers()) {
-            if (!sampler.sampled()) {
-                continue;
-            }
-            MetalRenderPass.TextureViewAndSampler binding = textureBinding(
-                    sampler.name(), plan.stage().textureStage, targets, resources, plan.readsFromAlt()
-            );
-            if (binding == null) {
-                throw new IllegalStateException(
-                        "Iris pass " + plan.name() + " is missing required sampler '" + sampler.name() + "'"
-                );
-            }
-            pass.bindTexture(sampler.name(), binding.textureView(), binding.sampler());
-        }
         IrisMetalComputeResources computeResources = resources.computeResources();
         for (MetalCompiledRenderPipeline.ResourceBinding binding : pipeline.resources()) {
-            if (binding.kind() == MetalCompiledRenderPipeline.ResourceKind.STORAGE_BUFFER) {
+            if (binding.kind() == MetalCompiledRenderPipeline.ResourceKind.SAMPLED_IMAGE) {
+                // Only samplers that survived GLSL->SPIR-V->MSL compilation
+                // need a binding; declarations guarded by optional features
+                // (PBR/DH/Voxy) are not in the compiled pipeline and must not
+                // fail the pass.
+                MetalRenderPass.TextureViewAndSampler sampled = textureBinding(
+                        binding.name(), plan.stage().textureStage, targets, resources, plan.readsFromAlt()
+                );
+                if (sampled == null) {
+                    throw new IllegalStateException(
+                            "Iris pass " + plan.name() + " is missing required sampler '" + binding.name() + "'"
+                    );
+                }
+                pass.bindTexture(binding.name(), sampled.textureView(), sampled.sampler());
+            } else if (binding.kind() == MetalCompiledRenderPipeline.ResourceKind.STORAGE_BUFFER) {
                 if (computeResources == null) {
                     throw new IllegalStateException(
                             "Iris pass " + plan.name() + " requires generation-owned SSBO resources"
@@ -860,6 +992,18 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             standard = centerDepthSampler == null ? null : centerDepthSampler.binding();
         } else if (name.equals("noisetex")) {
             standard = resources.noiseTexture().binding();
+        } else if (name.equals("normals")) {
+            standard = resources.pbrNormals();
+        } else if (name.equals("specular")) {
+            standard = resources.pbrSpecular();
+        } else if (name.equals("vxDepthTexTrans") || name.equals("vxDepthTexOpaque")
+                || name.equals("dhDepthTex0") || name.equals("dhDepthTex1")) {
+            // Optional Voxy / Distant Horizons depth inputs. Their declarations
+            // still reach the compiled pipeline; without those mods GL leaves
+            // them at defaults, so bind a neutral 1x1 color texture.
+            standard = resources.pbrSpecular();
+        } else if (name.equals("gtexture") || name.equals("texture") || name.equals("tex")) {
+            standard = vanillaBlockAtlas();
         } else if (name.equals("depthtex0")) {
             standard = new MetalRenderPass.TextureViewAndSampler(targets.mainDepthView(), targets.depthSampler());
         } else if (name.equals("depthtex1")) {
@@ -884,6 +1028,9 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             }
         } else {
             int color = parseSuffix(name, "colortex");
+            if (color < 0) {
+                color = legacyColorTarget(name);
+            }
             if (color >= 0) {
                 if (color >= targets.colorTargets().targetCount()) {
                     throw new IllegalStateException("Iris sampler target out of range: " + name);
@@ -909,6 +1056,20 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         MetalRenderPass.TextureViewAndSampler override = resources.customTextures()
                 .resolve(stage, name);
         return override == null ? standard : override;
+    }
+
+    /** Borrows the vanilla block atlas for Iris's {@code gtexture} sampler alias. */
+    private MetalRenderPass.@Nullable TextureViewAndSampler vanillaBlockAtlas() {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft == null) {
+            return null;
+        }
+        try {
+            AbstractTexture atlas = minecraft.getTextureManager().getTexture(TextureAtlas.LOCATION_BLOCKS);
+            return new MetalRenderPass.TextureViewAndSampler(atlas.getTextureView(), atlas.getSampler());
+        } catch (RuntimeException ignored) {
+            return null;
+        }
     }
 
     private @Nullable GpuTextureView storageImageBinding(
@@ -1084,6 +1245,24 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         } catch (NumberFormatException ignored) {
             return -1;
         }
+    }
+
+    /**
+     * Maps Iris's legacy gbuffer sampler aliases to their colortex indices.
+     * Mirrors {@code PackRenderTargetDirectives.LEGACY_RENDER_TARGETS}.
+     */
+    static int legacyColorTarget(final String name) {
+        return switch (name) {
+            case "gcolor" -> 0;
+            case "gdepth" -> 1;
+            case "gnormal" -> 2;
+            case "composite" -> 3;
+            case "gaux1" -> 4;
+            case "gaux2" -> 5;
+            case "gaux3" -> 6;
+            case "gaux4" -> 7;
+            default -> -1;
+        };
     }
 
     private int shadowTargetCount() {
