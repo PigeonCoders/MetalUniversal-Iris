@@ -74,7 +74,7 @@ public final class IrisMetalTerrainBridge {
         // from terrain at all. The window alternates every 450 frames (~8-15s)
         // so the answer is visible in a single session instead of requiring a
         // rebuild per state; the debug log records which window was active.
-        boolean experiment = MetalExperimentGate.enabled("metallum.experiment.disableTerrainDraws");
+        boolean experiment = Boolean.getBoolean("metallum.experiment.disableTerrainDraws");
         int frame = IrisMetalFrameDiagnostics.frame();
         boolean terrainHiddenWindow = (frame / 450) % 2 == 1;
         boolean suppressTerrain = experiment && terrainHiddenWindow;

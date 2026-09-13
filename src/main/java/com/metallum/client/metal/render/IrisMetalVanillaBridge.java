@@ -299,6 +299,23 @@ public final class IrisMetalVanillaBridge {
         }
         metalPass.setCompiledPipeline(compiled);
         metalPass.aliasExistingIrisVanillaUniforms();
+        // TEMPORARY BISECTION: alternate "vanilla sky draws on/off" in 450-frame
+        // windows so one device run shows whether the black sky slivers belong to
+        // the vanilla sky passes (sky disc / sunrise / sun / moon / stars).
+        boolean skyKey = key == ShaderKey.SKY_BASIC
+                || key == ShaderKey.SKY_BASIC_COLOR
+                || key == ShaderKey.SKY_TEXTURED;
+        boolean hideWindow = (IrisMetalFrameDiagnostics.frame() / 450) % 2 == 1;
+        boolean experiment = MetalExperimentGate.enabled("metallum.experiment.hideVanillaSky");
+        if (skyKey && experiment && hideWindow) {
+            metalPass.setSkipDraws(true);
+        }
+        if (skyKey && experiment) {
+            IrisMetalFrameDiagnostics.logOnce(
+                    "vanilla-sky-window",
+                    "vanilla sky draws=" + (hideWindow ? "SKIPPED" : "DRAWN") + " key=" + key
+            );
+        }
         if (compiled.resource(IrisMetalGlslLinker.UNIFORM_BLOCK_NAME) != null) {
             int dynamicSize = pipeline.uniformValues().coreDrawBlockSize(key);
             GpuBufferSlice slice;

@@ -559,7 +559,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
      * builds (same gate as the terrain hide/show experiment).
      */
     private void captureFinalStrip(final GpuTextureView mainColor) {
-        if (!MetalExperimentGate.enabled("metallum.experiment.disableTerrainDraws")) {
+        if (!MetalExperimentGate.enabled("metallum.experiment.hideVanillaSky")) {
             return;
         }
         try {
@@ -592,7 +592,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                 );
             }
             int x = Math.max(0, width / 2 - STRIP_WIDTH / 2);
-            int y = Math.min(height - STRIP_HEIGHT, Math.max(0, (int) (height * 0.42F)));
+            int y = Math.min(height - STRIP_HEIGHT, Math.max(0, (int) (height * 0.18F)));
             activeEncoder().copyTextureToBuffer(
                     mainColor.texture(), this.stripBuffers[slot], 0L, () -> {
                     }, 0, x, y, STRIP_WIDTH, STRIP_HEIGHT

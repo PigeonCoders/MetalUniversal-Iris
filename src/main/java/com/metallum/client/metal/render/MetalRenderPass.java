@@ -325,6 +325,13 @@ final class MetalRenderPass implements RenderPassBackend {
         setIndexBuffer(indexBuffer, MTLIndexType.from(indexType));
     }
 
+    /** TEMPORARY BISECTION: let the vanilla-sky experiment drop a pass' draws entirely. */
+    private boolean skipDraws;
+
+    void setSkipDraws(final boolean skip) {
+        this.skipDraws = skip;
+    }
+
     private void setIndexBuffer(@Nullable final GpuBuffer indexBuffer, final MTLIndexType indexType) {
         if (this.indexBuffer != indexBuffer || this.indexType != indexType) {
             this.indexBuffer = indexBuffer;
@@ -334,6 +341,9 @@ final class MetalRenderPass implements RenderPassBackend {
 
     @Override
     public void drawIndexed(final int indexCount, final int instanceCount, final int firstIndex, final int vertexOffset, final int firstInstance) {
+        if (this.skipDraws) {
+            return;
+        }
         MetalGpuBuffer nativeIndexBuffer = (MetalGpuBuffer) indexBuffer;
         MTLRenderCommandEncoder enc = renderEncoder();
 
@@ -343,6 +353,9 @@ final class MetalRenderPass implements RenderPassBackend {
 
     @Override
     public void multiDrawIndexed(@NonNull IntBuffer drawParameters, int instanceCount, int firstInstance, int drawCount) {
+        if (this.skipDraws) {
+            return;
+        }
         MetalGpuBuffer nativeIndexBuffer = (MetalGpuBuffer) indexBuffer;
         MTLRenderCommandEncoder enc = renderEncoder();
         bindDrawState(enc);
@@ -359,6 +372,9 @@ final class MetalRenderPass implements RenderPassBackend {
 
     @Override
     public void multiDrawIndexed(@NonNull PointerBuffer firstIndexOffsets, @NonNull IntBuffer indexCounts, @NonNull IntBuffer vertexOffsets, int drawCount) {
+        if (this.skipDraws) {
+            return;
+        }
         MTLPrimitiveType primitiveType = primitiveTopology();
         if (primitiveType == MTLPrimitiveType.TriangleFan) {
             throw new UnsupportedOperationException("Metal backend does not support triangle fan multiDrawIndexed");
@@ -389,6 +405,9 @@ final class MetalRenderPass implements RenderPassBackend {
 
     @Override
     public void drawIndexedIndirect(final @NonNull GpuBufferSlice commands, final int drawCount) {
+        if (this.skipDraws) {
+            return;
+        }
         if (IrisMetalTerrainBridge.suppressCurrentDraws()) {
             IrisMetalTerrainBridge.recordSuppressedDraws(drawCount);
             return;
@@ -449,6 +468,9 @@ final class MetalRenderPass implements RenderPassBackend {
 
     @Override
     public void draw(final int vertexCount, final int instanceCount, final int firstVertex, final int firstInstance) {
+        if (this.skipDraws) {
+            return;
+        }
         if (IrisMetalTerrainBridge.suppressCurrentDraws()) {
             return;
         }
@@ -477,6 +499,9 @@ final class MetalRenderPass implements RenderPassBackend {
 
     @Override
     public void drawIndirect(final @NonNull GpuBufferSlice commands, final int drawCount) {
+        if (this.skipDraws) {
+            return;
+        }
         if (IrisMetalTerrainBridge.suppressCurrentDraws()) {
             IrisMetalTerrainBridge.recordSuppressedDraws(drawCount);
             return;
