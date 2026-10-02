@@ -519,6 +519,11 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         } finally {
             descriptor.close();
         }
+        // shadowtex1 (no translucents) is a separate depth texture and the
+        // clear pass above only touches shadowtex0. Packs sample both, so the
+        // second one must be initialized to the same far value instead of
+        // holding undefined contents.
+        shadows.captureNoTranslucentsDepth(encoder);
     }
 
     private static final Vector4fc NO_SHADOW_CLEAR_COLOR = new Vector4f(1.0F, 1.0F, 1.0F, 1.0F);
