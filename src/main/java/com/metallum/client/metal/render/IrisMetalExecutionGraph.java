@@ -22,6 +22,7 @@ import net.irisshaders.iris.shaderpack.programs.ProgramSet;
 import net.irisshaders.iris.shaderpack.programs.ProgramSource;
 import net.irisshaders.iris.shaderpack.texture.TextureStage;
 import net.minecraft.resources.Identifier;
+import org.joml.Vector4f;
 import org.joml.Vector4fc;
 import org.jspecify.annotations.Nullable;
 
@@ -450,12 +451,18 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
     void executeShadowComposite(final IrisMetalWorldResources resources) {
         ensurePrepared();
         IrisMetalShadowTargets shadows = resources.shadowTargets();
-        if ((!shadowRasterPlans.isEmpty() || !computePlans.get(Stage.SHADOW_COMPOSITE).isEmpty())
-                && shadows == null) {
-            throw new IllegalStateException(
-                    "Iris generation " + generation + " has shadow passes but no shadow targets"
-            );
+        if (shadows == null) {
+            // Shadows are disabled (pack directive or the in-game SHADOW
+            // toggle) or the pack has no shadow solid program. The stage must
+            // be a no-op, not an exception, even if shadowcomp programs exist.
+            return;
         }
+        // Shadow casters are not rendered yet (the Metal shadow pass is still
+        // unwired), so shadowtex/shadowcolor would hold undefined contents.
+        // BSL's shadowcomp consumes them every frame and mixes the result
+        // into the scene, which showed up as persistent streaking artifacts.
+        // Clear the targets to "no shadow" until the real shadow pass exists.
+        clearEmptyShadowTargets(shadows);
         currentResourcesForDispatch = resources.renderTargets();
         try {
             for (OrderedOperation operation : orderedOperations.get(Stage.SHADOW_COMPOSITE)) {
@@ -464,9 +471,6 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                     continue;
                 }
                 RasterPlan plan = operation.raster();
-                if (shadows == null) {
-                    throw new IllegalStateException("Shadow raster plan has no shadow targets");
-                }
                 shadows.publishFlipState(plan.readsFromAlt());
                 shadowState = plan.readsFromAlt();
                 executeShadowRaster(
@@ -482,6 +486,36 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             currentResourcesForDispatch = null;
         }
     }
+
+    /**
+     * Clears every shadow attachment to the "nothing occludes" state.
+     *
+     * <p>Only used while the real shadow-caster pass is not implemented: the
+     * clear makes the shadow resources deterministic (previously they were
+     * never initialized, so packs sampled undefined memory). The depth value
+     * {@code 0.0} is the engine's reverse-z far value; the encoder's
+     * {@code irisDepthClear} complement turns it into {@code 1.0} (standard-z
+     * far) while a pack is active.
+     */
+    private void clearEmptyShadowTargets(final IrisMetalShadowTargets shadows) {
+        MetalCommandEncoder encoder = activeEncoder();
+        int targetCount = shadows.colorTargets().targetCount();
+        int[] drawBuffers = new int[targetCount];
+        Vector4fc[] clearColors = new Vector4fc[targetCount];
+        for (int index = 0; index < targetCount; index++) {
+            drawBuffers[index] = index;
+            clearColors[index] = NO_SHADOW_CLEAR_COLOR;
+        }
+        try (IrisMetalRenderTargets.RenderPassDescriptorWithViews descriptor =
+                     shadows.createShadowWriteDescriptor(
+                             "Iris shadow-empty-clear", drawBuffers, clearColors, 0.0)) {
+            encoder.createRenderPass(descriptor.descriptor());
+        } finally {
+            encoder.submitRenderPass();
+        }
+    }
+
+    private static final Vector4fc NO_SHADOW_CLEAR_COLOR = new Vector4f(1.0F, 1.0F, 1.0F, 1.0F);
 
     void captureNoTranslucentsDepth(final IrisMetalWorldResources resources, final GpuTexture sceneDepth) {
         IrisMetalRenderTargets targets = resources.renderTargets();
