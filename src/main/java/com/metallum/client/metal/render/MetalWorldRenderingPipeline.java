@@ -9,6 +9,7 @@ import net.irisshaders.iris.helpers.Tri;
 import net.irisshaders.iris.pipeline.VanillaRenderingPipeline;
 import net.irisshaders.iris.pipeline.WorldRenderingPhase;
 import net.irisshaders.iris.shaderpack.ShaderPack;
+import net.irisshaders.iris.shaderpack.materialmap.BlockMaterialMapping;
 import net.irisshaders.iris.shaderpack.materialmap.WorldRenderingSettings;
 import net.irisshaders.iris.shaderpack.programs.ProgramSet;
 import net.irisshaders.iris.shaderpack.properties.CloudSetting;
@@ -69,6 +70,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
     private MetalDevice centerDepthDevice;
     private int receiptWidth = -1;
     private int receiptHeight = -1;
+    private boolean blockIdsInitialized;
 
     public MetalWorldRenderingPipeline(final ProgramSet programSet) {
         this.generation = GENERATIONS.incrementAndGet();
@@ -183,6 +185,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
     @Override
     public void beginLevelRendering() {
         this.receipts.recordEvent("frame.begin");
+        initializeBlockIds();
         prepareResources();
         prepareTerrainUniforms();
         Vector3d fog = CapturedRenderingState.INSTANCE.getFogColor();
@@ -194,6 +197,31 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
         this.executionGraph.executeSetup(this.resources());
         this.receipts.recordEvent("begin");
         this.executionGraph.executeBegin(this.resources());
+    }
+
+    /**
+     * One-time per-generation mirror of {@code IrisRenderingPipeline}'s block-id
+     * initialization. The Metal pipeline does not construct the GL pipeline, so
+     * without this {@code WorldRenderingSettings.getBlockStateIds()} stays null
+     * and {@code IrisExclusiveUniforms.getCurrentSelectedBlockId()} NPEs as soon
+     * as the player looks at a block.
+     */
+    private void initializeBlockIds() {
+        if (this.blockIdsInitialized) {
+            return;
+        }
+        WorldRenderingSettings.INSTANCE.setBlockStateIds(BlockMaterialMapping.createBlockStateIdMap(
+                this.pack.getIdMap().getBlockProperties(),
+                this.pack.getIdMap().getTagEntries()
+        ));
+        WorldRenderingSettings.INSTANCE.setBlockTypeIds(BlockMaterialMapping.createBlockTypeMap(
+                this.pack.getIdMap().getBlockRenderTypeMap()
+        ));
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft != null && minecraft.levelExtractor != null) {
+            minecraft.levelExtractor.allChanged();
+        }
+        this.blockIdsInitialized = true;
     }
 
     private void prepareTerrainUniforms() {
