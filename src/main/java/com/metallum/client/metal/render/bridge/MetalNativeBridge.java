@@ -19,7 +19,18 @@ import java.nio.file.StandardCopyOption;
 public final class MetalNativeBridge {
     private static final String MACOS_RESOURCE_PATH = "/natives/macos/libmetallum.dylib";
     private static final String IOS_RESOURCE_PATH = "/natives/ios/libmetallum.dylib";
-    private static final String IOS_GLSLANG_RESOURCE_PATH = "/natives/ios/libglslang.dylib";
+    /**
+     * Bundled iOS glslang dylibs, dependencies first and the primary dylib
+     * last (mirrors the macOS resource list in {@code GlslangBridge}).
+     * {@code libglslang-default-resource-limits.dylib} exports
+     * {@code glslang_default_resource}, which the primary dylib does not.
+     */
+    private static final String IOS_GLSLANG_PRIMARY_RESOURCE = "/natives/ios/libglslang.dylib";
+    private static final String[] IOS_GLSLANG_RESOURCES = {
+            "/natives/ios/libSPIRV.dylib",
+            "/natives/ios/libglslang-default-resource-limits.dylib",
+            IOS_GLSLANG_PRIMARY_RESOURCE,
+    };
     private static final ValueLayout.OfInt INT = ValueLayout.JAVA_INT;
     private static final ValueLayout.OfLong LONG = ValueLayout.JAVA_LONG;
     private static final ValueLayout.OfFloat FLOAT = ValueLayout.JAVA_FLOAT;
@@ -92,8 +103,8 @@ public final class MetalNativeBridge {
     /**
      * iOS-only backstop for the glslang native library, mirroring
      * {@link #ensureSpvcLibraryConfigured()}. On iOS, extracts the bundled
-     * {@code libglslang.dylib} from {@code /natives/ios/} into a writable
-     * directory and {@code System.load}s it (via Amethyst's hooked
+     * glslang dylibs from {@code /natives/ios/} into a writable
+     * directory and {@code System.load}s them (via Amethyst's hooked
      * {@code dlopen}) so that {@link GlslangBridge}'s
      * {@link SymbolLookup#loaderLookup()} can find the {@code glslang_*}
      * symbols. On macOS this is a no-op: {@code GlslangBridge} performs its own
@@ -168,8 +179,9 @@ public final class MetalNativeBridge {
      * {@link SymbolLookup#loaderLookup()}. Mirrors
      * {@link #ensureSpvcLibraryConfigured()}: it is a no-op on non-iOS (on
      * macOS, {@code GlslangBridge} extracts and loads the macOS dylib(s)
-     * itself), and on iOS extracts {@code /natives/ios/libglslang.dylib} to a
-     * writable directory and {@code System.load}s it (via Amethyst's hooked
+     * itself), and on iOS extracts the bundled glslang dylibs (including
+     * {@code libglslang-default-resource-limits.dylib}) to a writable
+     * directory and {@code System.load}s them (via Amethyst's hooked
      * {@code dlopen}). Unlike the Spvc path there is no LWJGL
      * {@code Configuration} to set, because glslang is accessed purely through
      * FFM rather than through LWJGL's {@code Spvc} class.
@@ -197,41 +209,85 @@ public final class MetalNativeBridge {
     }
 
     /**
-     * 从 jar 中抽取 {@code /natives/ios/libglslang.dylib} 到可写目录并
+     * 从 jar 中抽取 {@code /natives/ios/} 下的全部 glslang dylib（依赖在前、
+     * 主库 {@code libglslang.dylib} 在后）到可写目录并逐个
      * {@code System.load} 加载（与 {@link #configureBundledSpvcLibrary} 相同的
      * 可写目录迭代策略），使 {@link GlslangBridge} 的
-     * {@link SymbolLookup#loaderLookup()} 能找到 {@code glslang_*} 符号。
+     * {@link SymbolLookup#loaderLookup()} 能找到 {@code glslang_*} 与
+     * {@code glslang_default_resource} 符号。
+     *
+     * <p>与 macOS 的 {@code GlslangBridge} 加载器一致：缺失的兄弟库直接跳过，
+     * 只有主库是必须成功加载的。此前仅加载主库，导致 iOS 上
+     * {@code glslang_default_resource}（位于
+     * {@code libglslang-default-resource-limits.dylib}）解析失败、启用光影时
+     * {@code GlslangBridge} 静态初始化崩溃。
      */
     private static void configureBundledGlslangLibrary() throws IOException {
-        try (InputStream stream = MetalNativeBridge.class.getResourceAsStream(IOS_GLSLANG_RESOURCE_PATH)) {
-            if (stream == null) {
-                return;
-            }
-            Path tempLib = null;
-            IOException lastError = null;
-            for (String dirProperty : new String[]{"pojav.launcher.home", "POJAV_HOME", "user.home", "java.io.tmpdir"}) {
-                String dir = System.getProperty(dirProperty);
-                if (dir == null || dir.isBlank()) continue;
-                Path dirPath = Path.of(dir);
-                if (!Files.isDirectory(dirPath)) continue;
-                try {
-                    tempLib = dirPath.resolve("libglslang_metallum.dylib");
-                    Files.copy(stream, tempLib, StandardCopyOption.REPLACE_EXISTING);
-                    break;
-                } catch (IOException e) {
-                    lastError = e;
-                    tempLib = null;
+        boolean primaryLoaded = false;
+        for (String resourcePath : IOS_GLSLANG_RESOURCES) {
+            boolean primary = resourcePath.equals(IOS_GLSLANG_PRIMARY_RESOURCE);
+            Path extracted = extractBundledNativeLibrary(
+                    resourcePath, resourcePath.substring(resourcePath.lastIndexOf('/') + 1));
+            if (extracted == null) {
+                if (primary) {
+                    throw new IOException("Missing native library resource: " + resourcePath);
                 }
+                continue; // sibling not bundled in this build
             }
-            if (tempLib == null) {
-                if (lastError != null) throw lastError;
-                throw new IOException("No writable directory available for libglslang.dylib extraction");
+            try {
+                // System.load via Amethyst's hooked dlopen so the symbols are
+                // available to SymbolLookup.loaderLookup() used by GlslangBridge.
+                System.load(extracted.toString());
+            } catch (UnsatisfiedLinkError e) {
+                if (primary) {
+                    throw e;
+                }
+                // A sibling may fail if its own deps are unsatisfiable; only the
+                // primary dylib is mandatory (mirrors GlslangBridge's macOS path).
             }
-            tempLib.toFile().deleteOnExit();
-            // System.load via Amethyst's hooked dlopen so the glslang_* symbols
-            // are available to SymbolLookup.loaderLookup() used by GlslangBridge.
-            System.load(tempLib.toString());
+            if (primary) {
+                primaryLoaded = true;
+            }
         }
+        if (!primaryLoaded) {
+            throw new IOException("Could not load " + IOS_GLSLANG_PRIMARY_RESOURCE);
+        }
+    }
+
+    /**
+     * 将 {@code resourcePath} 抽取为带 {@code _metallum.dylib} 后缀的可写文件，
+     * 依次尝试 {@code pojav.launcher.home} / {@code POJAV_HOME} / {@code user.home}
+     * / {@code java.io.tmpdir}；资源不存在时返回 {@code null}。
+     */
+    private static Path extractBundledNativeLibrary(String resourcePath, String fileName) throws IOException {
+        byte[] bytes;
+        try (InputStream stream = MetalNativeBridge.class.getResourceAsStream(resourcePath)) {
+            if (stream == null) {
+                return null;
+            }
+            bytes = stream.readAllBytes();
+        }
+        String stem = fileName.endsWith(".dylib")
+                ? fileName.substring(0, fileName.length() - ".dylib".length())
+                : fileName;
+        String targetName = stem + "_metallum.dylib";
+        IOException lastError = null;
+        for (String dirProperty : new String[]{"pojav.launcher.home", "POJAV_HOME", "user.home", "java.io.tmpdir"}) {
+            String dir = System.getProperty(dirProperty);
+            if (dir == null || dir.isBlank()) continue;
+            Path dirPath = Path.of(dir);
+            if (!Files.isDirectory(dirPath)) continue;
+            try {
+                Path target = dirPath.resolve(targetName);
+                Files.write(target, bytes);
+                target.toFile().deleteOnExit();
+                return target;
+            } catch (IOException e) {
+                lastError = e;
+            }
+        }
+        if (lastError != null) throw lastError;
+        throw new IOException("No writable directory available for " + resourcePath);
     }
 
     static {

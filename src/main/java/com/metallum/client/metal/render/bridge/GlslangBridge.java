@@ -27,7 +27,7 @@ import java.util.function.Function;
  * <p>This mirrors the FFM pattern established by {@link MetalNativeBridge}: a
  * static initializer first ensures the bundled native library is loaded (via
  * {@link MetalNativeBridge#ensureGlslangLibraryConfigured()}, which is a no-op
- * on macOS and extracts/loads {@code libglslang.dylib} on iOS), obtains a
+ * on macOS and extracts/loads the bundled glslang dylibs on iOS), obtains a
  * {@link SymbolLookup}, and resolves every glslang downcall to a
  * {@link MethodHandle}. The one-shot process initialization
  * ({@code glslang_initialize_process}) is deferred to a lazy, idempotent method
@@ -41,8 +41,8 @@ import java.util.function.Function;
  *       temp directory, {@code System.load} each (dependencies first), and look
  *       the symbols up via {@link SymbolLookup#loaderLookup()}.</li>
  *   <li>iOS: {@link MetalNativeBridge#ensureGlslangLibraryConfigured()} extracts
- *       {@code /natives/ios/libglslang.dylib} to a writable directory and
- *       {@code System.load}s it (via Amethyst's hooked {@code dlopen}); a
+ *       the bundled glslang dylibs to a writable directory and
+ *       {@code System.load}s them (via Amethyst's hooked {@code dlopen}); a
  *       best-effort {@code System.loadLibrary("glslang")} handles the app
  *       bundle's {@code Frameworks/} deployment path. Symbols are then exposed
  *       through {@link SymbolLookup#loaderLookup()}.</li>
