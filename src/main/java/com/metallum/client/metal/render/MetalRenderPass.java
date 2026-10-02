@@ -15,6 +15,7 @@ import com.mojang.blaze3d.textures.GpuSampler;
 import com.mojang.blaze3d.textures.GpuTextureView;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
+import net.irisshaders.iris.Iris;
 import net.minecraft.SharedConstants;
 import org.joml.Vector4fc;
 import org.jspecify.annotations.NonNull;
@@ -603,11 +604,15 @@ final class MetalRenderPass implements RenderPassBackend {
             }
             enc.setDepthStencilState(depthState);
             if (hasAttachment && compiledPipeline.hasDepthStencilState()) {
-                enc.setDepthBias(
-                        compiledPipeline.depthBiasConstant(),
-                        compiledPipeline.depthBiasScaleFactor(),
-                        0.0f
-                );
+                float biasConstant = compiledPipeline.depthBiasConstant();
+                float biasScale = compiledPipeline.depthBiasScaleFactor();
+                if (Iris.isPackInUseQuick()) {
+                    // Mirror Iris's UndoReverseZFive polygon-offset negation for
+                    // shaderpack rendering (the GL backend negates factor/units).
+                    biasConstant = -biasConstant;
+                    biasScale = -biasScale;
+                }
+                enc.setDepthBias(biasConstant, biasScale, 0.0f);
             } else {
                 enc.setDepthBias(0.0f, 0.0f, 0.0f);
             }

@@ -11,6 +11,7 @@ import com.mojang.blaze3d.textures.GpuTextureView;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
+import net.irisshaders.iris.Iris;
 import org.joml.Vector4f;
 import org.joml.Vector4fc;
 import org.jspecify.annotations.NonNull;
@@ -242,6 +243,15 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         return encoder;
     }
 
+    /**
+     * Mirrors Iris's {@code UndoReverseZFive}: while a shaderpack is in use,
+     * shaderpack rendering runs in standard z, so depth clear values must be
+     * complemented. The GL backend does this in {@code GlCommandEncoder}.
+     */
+    private static double irisDepthClear(final double clearDepth) {
+        return Iris.isPackInUseQuick() ? 1.0 - Math.clamp(clearDepth, 0.0, 1.0) : clearDepth;
+    }
+
     private static boolean hasClearColor(final int[] clearColorEnabled) {
         for (int enabled : clearColorEnabled) {
             if (enabled != 0) {
@@ -340,7 +350,11 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         }
 
         GpuTextureView depthTexture = depthAttachment == null ? null : depthAttachment.textureView();
-        OptionalDouble depthClear = depthAttachment == null ? OptionalDouble.empty() : depthAttachment.clearValue();
+        OptionalDouble depthClear = depthAttachment == null
+                ? OptionalDouble.empty()
+                : (depthAttachment.clearValue().isPresent()
+                        ? OptionalDouble.of(irisDepthClear(depthAttachment.clearValue().getAsDouble()))
+                        : OptionalDouble.empty());
         if (depthAttachment != null) {
             if (depthTexture.isClosed()) {
                 throw new IllegalStateException("Depth texture is closed");
@@ -448,7 +462,7 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         MetalGpuTexture color = (MetalGpuTexture) colorTexture;
         MetalGpuTexture depth = (MetalGpuTexture) depthTexture;
         pendingColorClears.put(color, new Vector4f(clearColor));
-        pendingDepthClears.put(depth, clearDepth);
+        pendingDepthClears.put(depth, irisDepthClear(clearDepth));
     }
 
     @Override
@@ -467,7 +481,7 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         Vector4fc clearColorCopy = new Vector4f(clearColor);
         if (isFullTextureRegion(color, depth, regionX, regionY, regionWidth, regionHeight)) {
             pendingColorClears.put(color, clearColorCopy);
-            pendingDepthClears.put(depth, clearDepth);
+            pendingDepthClears.put(depth, irisDepthClear(clearDepth));
             return;
         }
         color.markContentsDirty();
@@ -481,7 +495,7 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
                 clearColorCopy.z(),
                 clearColorCopy.w(),
                 depth.nativeHandle(),
-                clearDepth,
+                irisDepthClear(clearDepth),
                 regionX,
                 regionY,
                 regionWidth,
@@ -492,7 +506,7 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
 
     @Override
     public void clearDepthTexture(final @NonNull GpuTexture depthTexture, final double clearDepth) {
-        pendingDepthClears.put((MetalGpuTexture) depthTexture, clearDepth);
+        pendingDepthClears.put((MetalGpuTexture) depthTexture, irisDepthClear(clearDepth));
     }
 
     @Override

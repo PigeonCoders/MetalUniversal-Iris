@@ -8,6 +8,7 @@ import com.mojang.blaze3d.pipeline.BlendFunction;
 import com.mojang.blaze3d.pipeline.ColorTargetState;
 import com.mojang.blaze3d.pipeline.CompiledRenderPipeline;
 import com.mojang.blaze3d.pipeline.DepthStencilState;
+import net.irisshaders.iris.Iris;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.mojang.blaze3d.platform.PolygonMode;
 import com.mojang.blaze3d.vertex.VertexFormat;
@@ -59,6 +60,7 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
     private final int vertexBufferCount;
 
     private final MemorySegment depthStencilState;
+    private final @Nullable MemorySegment reverseDepthStencilState;
     private final boolean hasDepthStencilState;
     private final MTLPixelFormat[] colorFormats;
     private final Map<PipelineSignature, MemorySegment> pipelineStates;
@@ -148,6 +150,17 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
                 depthCompareOp,
                 depthWrite
         );
+        // Iris "undoes" Minecraft's reverse-z convention for shaderpacks in the
+        // GL backend (UndoReverseZThree) by flipping the compare op per draw.
+        // Metal bakes the compare op into a depth-stencil state, so keep a
+        // second, flipped state and select it while an Iris pack is in use.
+        this.reverseDepthStencilState = this.hasDepthStencilState
+                ? MetalNativeBridge.MTLDevice_makeDepthStencilState(
+                        device.metalDeviceHandle(),
+                        flipDepthCompare(depthCompareOp),
+                        depthWrite
+                )
+                : null;
 
         ColorTargetState[] colorTargets = info.getColorTargetStates();
         validateColorTargets(info.getLocation().toString(), colorTargets);
@@ -310,6 +323,17 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
                 depthCompareOp,
                 depthWrite
         );
+        // Iris "undoes" Minecraft's reverse-z convention for shaderpacks in the
+        // GL backend (UndoReverseZThree) by flipping the compare op per draw.
+        // Metal bakes the compare op into a depth-stencil state, so keep a
+        // second, flipped state and select it while an Iris pack is in use.
+        this.reverseDepthStencilState = this.hasDepthStencilState
+                ? MetalNativeBridge.MTLDevice_makeDepthStencilState(
+                        device.metalDeviceHandle(),
+                        flipDepthCompare(depthCompareOp),
+                        depthWrite
+                )
+                : null;
 
         validateColorTargets(location, colorTargets);
         this.colorFormats = colorFormats(colorTargets);
@@ -495,7 +519,27 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
     }
 
     MemorySegment getDepthStencilState() {
-        return this.depthStencilState;
+        if (!this.hasDepthStencilState
+                || this.reverseDepthStencilState == null
+                || !Iris.isPackInUseQuick()) {
+            return this.depthStencilState;
+        }
+        return this.reverseDepthStencilState;
+    }
+
+    /**
+     * Mirrors Iris's {@code UndoReverseZThree}: while a shaderpack is in use the
+     * engine's reverse-z compare ops must be flipped back to standard z
+     * (LESS_THAN &harr; GREATER_THAN, *_OR_EQUAL likewise; the rest unchanged).
+     */
+    private static MTLCompareFunction flipDepthCompare(final MTLCompareFunction op) {
+        return switch (op) {
+            case Less -> MTLCompareFunction.Greater;
+            case LessEqual -> MTLCompareFunction.GreaterEqual;
+            case Greater -> MTLCompareFunction.Less;
+            case GreaterEqual -> MTLCompareFunction.LessEqual;
+            case Never, Equal, NotEqual, Always -> op;
+        };
     }
 
     MemorySegment getNativePipeline(final MTLPixelFormat depthFormat, final MTLPixelFormat stencilFormat) {
