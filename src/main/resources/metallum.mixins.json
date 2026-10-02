@@ -26,7 +26,8 @@
     "iris.GLDebugMixin",
     "iris.IrisMetalValidationMixin",
     "iris.MetalIrisPipelineMixin",
-    "iris.MetalIrisClearMixin"
+    "iris.MetalIrisClearMixin",
+    "iris.ProjectionDepthRemapMixin"
   ],
   "injectors": {
     "defaultRequire": 1
