@@ -506,12 +506,18 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             drawBuffers[index] = index;
             clearColors[index] = NO_SHADOW_CLEAR_COLOR;
         }
-        try (IrisMetalRenderTargets.RenderPassDescriptorWithViews descriptor =
-                     shadows.createShadowWriteDescriptor(
-                             "Iris shadow-empty-clear", drawBuffers, clearColors, 0.0)) {
+        IrisMetalRenderTargets.RenderPassDescriptorWithViews descriptor =
+                shadows.createShadowWriteDescriptor(
+                        "Iris shadow-empty-clear", drawBuffers, clearColors, 0.0);
+        try {
             encoder.createRenderPass(descriptor.descriptor());
-        } finally {
+            // This pass performs no draws, so its encoder is only materialized
+            // by submitRenderPass. Submit while the descriptor's views are
+            // still open: a try-with-resources would close them first and the
+            // deferred materialization would then read a closed view.
             encoder.submitRenderPass();
+        } finally {
+            descriptor.close();
         }
     }
 
