@@ -29,6 +29,9 @@ final class IrisMetalRenderTargets implements AutoCloseable {
             | GpuTexture.USAGE_COPY_SRC
             | GpuTexture.USAGE_COPY_DST;
 
+    /** {@code metallum.iris.debug.magentaClear}: colortex0 clear color for unwritten-region bisection. */
+    private static final Vector4fc MAGENTA_CLEAR_COLOR = new Vector4f(1.0F, 0.0F, 1.0F, 1.0F);
+
     private final MetalDevice device;
     private final IrisMetalPingPongTargets colorTargets;
     private final Map<Integer, RenderTargetSettings> targetSettings;
@@ -112,6 +115,9 @@ final class IrisMetalRenderTargets implements AutoCloseable {
             Vector4fc clear = settings == null || settings.getClearColor().isEmpty()
                     ? defaultClearColor(index, fog)
                     : settings.getClearColor().get();
+            if (MetalDebugSwitches.MAGENTA_CLEAR && index == 0) {
+                clear = MAGENTA_CLEAR_COLOR;
+            }
             encoder.clearColorTexture(colorTargets.mainTexture(index), clear);
             encoder.clearColorTexture(colorTargets.altTexture(index), clear);
         }

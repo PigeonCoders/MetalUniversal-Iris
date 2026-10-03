@@ -18,6 +18,8 @@ public final class MetalDebugSwitches {
     public static final boolean ZERO_BLOOM = Boolean.getBoolean("metallum.iris.debug.zeroBloom");
     public static final boolean NO_VANILLA_SKY = Boolean.getBoolean("metallum.iris.debug.noVanillaSky");
     public static final boolean NO_VANILLA_CLOUDS = Boolean.getBoolean("metallum.iris.debug.noVanillaClouds");
+    public static final boolean NO_CLOUDS_HARD = Boolean.getBoolean("metallum.iris.debug.noCloudsHard");
+    public static final boolean MAGENTA_CLEAR = Boolean.getBoolean("metallum.iris.debug.magentaClear");
     public static final List<StripEntry> STAGE_STRIP = parseStageStrip(
             System.getProperty("metallum.iris.debug.stageStrip", "").trim()
     );
@@ -74,11 +76,11 @@ public final class MetalDebugSwitches {
     static {
         if (SKIP_DEFERRED || SKIP_POST || !VIEW.isEmpty() || !SKIP_PASS_NAMES.isEmpty()
                 || NO_SHADOW_MATRICES || ZERO_VL || ZERO_BLOOM || !STAGE_STRIP.isEmpty()
-                || NO_VANILLA_SKY || NO_VANILLA_CLOUDS) {
-            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: skipDeferred={} skipPost={} view={} skipPass={} noShadowMatrices={} zeroVl={} zeroBloom={} stageStrip={} noVanillaSky={} noVanillaClouds={}",
+                || NO_VANILLA_SKY || NO_VANILLA_CLOUDS || NO_CLOUDS_HARD || MAGENTA_CLEAR) {
+            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: skipDeferred={} skipPost={} view={} skipPass={} noShadowMatrices={} zeroVl={} zeroBloom={} stageStrip={} noVanillaSky={} noVanillaClouds={} noCloudsHard={} magentaClear={}",
                     SKIP_DEFERRED, SKIP_POST, VIEW, SKIP_PASS, NO_SHADOW_MATRICES, ZERO_VL, ZERO_BLOOM,
                     System.getProperty("metallum.iris.debug.stageStrip", ""),
-                    NO_VANILLA_SKY, NO_VANILLA_CLOUDS);
+                    NO_VANILLA_SKY, NO_VANILLA_CLOUDS, NO_CLOUDS_HARD, MAGENTA_CLEAR);
         }
     }
 }
