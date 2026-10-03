@@ -35,6 +35,13 @@ import java.util.function.Supplier;
 final class MetalRenderPass implements RenderPassBackend {
     static final boolean VALIDATION = SharedConstants.IS_RUNNING_IN_IDE;
     static final int MAX_VERTEX_BUFFERS = RenderPass.MAX_VERTEX_BUFFERS;
+    /**
+     * Prefix Iris' vanilla-core transformer adds to the engine's built-in UBO
+     * names in patched programs (eg {@code Fog} becomes {@code iris_Fog}).
+     * The engine still binds the values under the plain names, so descriptor
+     * lookups fall back to them.
+     */
+    private static final String IRIS_UNIFORM_PREFIX = "iris_";
     private final MetalDevice device;
     private final MetalCommandEncoder commandEncoder;
     @Nullable
@@ -678,13 +685,52 @@ final class MetalRenderPass implements RenderPassBackend {
         }
     }
 
+    /**
+     * Marks the descriptor(s) backed by {@code name} dirty. Besides the exact
+     * resource, an {@code iris_}-renamed built-in UBO is marked too: the engine
+     * updates {@code Fog}/{@code DynamicTransforms}/... under the plain name
+     * while an Iris-patched program binds them as {@code iris_Fog} etc. Without
+     * this the renamed binding would keep the first pushed slice forever.
+     */
     private void markDescriptorDirty(final String name) {
-        if (compiledPipeline != null) {
-            MetalCompiledRenderPipeline.ResourceBinding binding = compiledPipeline.resource(name);
-            if (binding != null) {
-                dirtyDescriptorMask |= 1L << binding.bindingIndex();
+        if (compiledPipeline == null) {
+            return;
+        }
+        markDescriptorDirty(compiledPipeline.resource(name));
+        if (!name.startsWith(IRIS_UNIFORM_PREFIX)) {
+            MetalCompiledRenderPipeline.ResourceBinding renamed =
+                    compiledPipeline.resource(IRIS_UNIFORM_PREFIX + name);
+            // Only uniform buffers can be renamed built-ins; never dirty a
+            // sampler/image an engine texture bind happens to alias.
+            if (renamed != null
+                    && renamed.kind() == MetalCompiledRenderPipeline.ResourceKind.UNIFORM_BUFFER) {
+                markDescriptorDirty(renamed);
             }
         }
+    }
+
+    private void markDescriptorDirty(final MetalCompiledRenderPipeline.@Nullable ResourceBinding binding) {
+        if (binding != null) {
+            dirtyDescriptorMask |= 1L << binding.bindingIndex();
+        }
+    }
+
+    /**
+     * Resolves a uniform buffer slice under the exact resource name, falling
+     * back to the plain engine name for Iris' renamed built-in blocks (eg
+     * {@code iris_Fog} &rarr; the engine-bound {@code Fog} slice). Returns
+     * {@code null} when neither name is bound, so callers keep their original
+     * missing-uniform error.
+     */
+    private @Nullable GpuBufferSlice uniformSlice(final String name) {
+        GpuBufferSlice slice = uniforms.get(name);
+        if (slice != null) {
+            return slice;
+        }
+        if (name.startsWith(IRIS_UNIFORM_PREFIX)) {
+            return uniforms.get(name.substring(IRIS_UNIFORM_PREFIX.length()));
+        }
+        return null;
     }
 
     private void pushDescriptor(
@@ -731,13 +777,13 @@ final class MetalRenderPass implements RenderPassBackend {
             return;
         }
 
-        GpuBufferSlice uniformSlice = uniforms.get(binding.name());
-        if (uniformSlice == null
+        GpuBufferSlice uniformBinding = uniformSlice(binding.name());
+        if (uniformBinding == null
                 && binding.kind() == MetalCompiledRenderPipeline.ResourceKind.STORAGE_BUFFER) {
             int logicalBinding = MetalCrossShaderCompiler.storageBufferLogicalBinding(binding.name());
-            uniformSlice = storageBuffers.get(logicalBinding);
+            uniformBinding = storageBuffers.get(logicalBinding);
         }
-        if (uniformSlice == null) {
+        if (uniformBinding == null) {
             throw new IllegalStateException(
                     "Missing "
                             + (binding.kind() == MetalCompiledRenderPipeline.ResourceKind.STORAGE_BUFFER
@@ -745,16 +791,16 @@ final class MetalRenderPass implements RenderPassBackend {
                             + binding.name()
             );
         }
-        if (VALIDATION && uniformSlice.buffer().isClosed()) {
+        if (VALIDATION && uniformBinding.buffer().isClosed()) {
             throw new IllegalStateException("Uniform " + binding.name() + " buffer has been closed");
         }
 
-        MetalGpuBuffer uniformBuffer = (MetalGpuBuffer) uniformSlice.buffer();
-        enc.setBuffer(uniformBuffer.nativeHandle(), uniformSlice.offset(), binding.bindingIndex(), binding.stageMask());
+        MetalGpuBuffer uniformBuffer = (MetalGpuBuffer) uniformBinding.buffer();
+        enc.setBuffer(uniformBuffer.nativeHandle(), uniformBinding.offset(), binding.bindingIndex(), binding.stageMask());
     }
 
     private void pushTexelBufferDescriptor(final MTLRenderCommandEncoder enc, final MetalCompiledRenderPipeline.ResourceBinding binding) {
-        GpuBufferSlice texelSlice = uniforms.get(binding.name());
+        GpuBufferSlice texelSlice = uniformSlice(binding.name());
         if (texelSlice == null) {
             throw new IllegalStateException("Missing texel buffer " + binding.name());
         }
