@@ -547,6 +547,16 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         targets.captureNoTranslucentsDepth(encoder, targets.mainDepthTexture());
     }
 
+    /**
+     * M1: captures depthtex1 from the Iris mainDepth only (the vanilla depth
+     * was folded into it by {@link IrisMetalWorldBridge}'s first frame rewrite).
+     */
+    void captureNoTranslucentsDepthOnly(final IrisMetalWorldResources resources) {
+        IrisMetalRenderTargets targets = resources.renderTargets();
+        MetalCommandEncoder encoder = activeEncoder();
+        targets.captureNoTranslucentsDepth(encoder, targets.mainDepthTexture());
+    }
+
     void sampleCenterDepth(final GpuTextureView sceneDepth, final float frameTime) {
         if (centerDepthSampler != null) {
             centerDepthSampler.sample(sceneDepth, frameTime);
@@ -557,6 +567,16 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         IrisMetalRenderTargets targets = resources.renderTargets();
         MetalCommandEncoder encoder = activeEncoder();
         targets.captureMainDepth(encoder, sceneDepth);
+        targets.captureNoHandDepth(encoder, targets.mainDepthTexture());
+    }
+
+    /**
+     * M1: captures depthtex2 from the Iris mainDepth only; see
+     * {@link #captureNoTranslucentsDepthOnly}.
+     */
+    void captureNoHandDepthOnly(final IrisMetalWorldResources resources) {
+        IrisMetalRenderTargets targets = resources.renderTargets();
+        MetalCommandEncoder encoder = activeEncoder();
         targets.captureNoHandDepth(encoder, targets.mainDepthTexture());
     }
 

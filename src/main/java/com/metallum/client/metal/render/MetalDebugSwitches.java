@@ -22,6 +22,12 @@ public final class MetalDebugSwitches {
     public static final boolean NO_VANILLA_CLOUDS = Boolean.getBoolean("metallum.iris.debug.noVanillaClouds");
     public static final boolean NO_CLOUDS_HARD = Boolean.getBoolean("metallum.iris.debug.noCloudsHard");
     public static final boolean MAGENTA_CLEAR = Boolean.getBoolean("metallum.iris.debug.magentaClear");
+    /** Non-terrain world-program override; on by default, {@code -Dmetallum.iris.worldPass=off} disables it. */
+    public static final boolean WORLD_PASS = !"off".equalsIgnoreCase(
+            System.getProperty("metallum.iris.worldPass", "on").trim()
+    );
+    /** Logs the sampler keys of the first non-terrain world pass once per process. */
+    public static final boolean LOG_SAMPLERS = Boolean.getBoolean("metallum.iris.worldPass.logSamplers");
     public static final List<StripEntry> STAGE_STRIP = parseStageStrip(
             System.getProperty("metallum.iris.debug.stageStrip", "").trim()
     );

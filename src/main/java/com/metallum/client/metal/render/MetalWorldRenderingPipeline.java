@@ -186,9 +186,10 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
     @Override
     public void beginLevelRendering() {
         this.receipts.recordEvent("frame.begin");
+        IrisMetalWorldBridge.beginFrame();
         initializeBlockIds();
         prepareResources();
-        prepareTerrainUniforms();
+        prepareWorldUniforms();
         Vector3d fog = CapturedRenderingState.INSTANCE.getFogColor();
         this.executionGraph.beginFrame(
                 this.resources(), new Vector4f((float) fog.x, (float) fog.y, (float) fog.z, 1.0F)
@@ -225,7 +226,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
         this.blockIdsInitialized = true;
     }
 
-    private void prepareTerrainUniforms() {
+    private void prepareWorldUniforms() {
         for (ShaderKey key : new ShaderKey[]{
                 ShaderKey.SODIUM_TERRAIN_SOLID,
                 ShaderKey.SODIUM_TERRAIN_CUTOUT,
@@ -237,6 +238,16 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
             this.programs.sodium(key.getProgram(), key.getAlphaTest()).ifPresent(
                     linked -> this.uniformValues.register(key, "sodium_" + key.getName(), linked)
             );
+        }
+        // M1: pack uniform blocks for every non-terrain world key the world
+        // bridge can install, so uniformSlice(key) succeeds at draw time.
+        for (ShaderKey key : IrisMetalWorldBridge.M1_WORLD_KEYS) {
+            IrisMetalWorldBridge.ProgramRequest request = IrisMetalWorldBridge.shaderKeyToProgramRequest(key);
+            this.programs.vanilla(
+                    request.program(), request.alphaTest(), request.lines(), request.clouds(), request.inputs()
+            ).ifPresent(linked -> this.uniformValues.register(
+                    key, "vanilla_" + key.getName(), linked
+            ));
         }
         MetalDevice device = MetalDeviceRegistry.getActiveDevice();
         if (device == null) {
@@ -321,13 +332,12 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
 
     @Override
     public void beginTranslucents() {
-        RenderTarget target = Minecraft.getInstance().gameRenderer.mainRenderTarget();
-        GpuTexture depth = target.getDepthTexture();
-        if (depth == null) {
-            throw new IllegalStateException("Iris translucent boundary has no main depth texture");
-        }
         this.receipts.recordEvent("depthtex1.capture");
-        this.executionGraph.captureNoTranslucentsDepth(this.resources(), depth);
+        // M1: the vanilla depth was already folded into depthtex0 by the world
+        // bridge's first rewrite of this frame, so the translucent boundary
+        // only needs mainDepth -> noTranslucents. Nothing is captured from the
+        // vanilla depth here anymore.
+        this.executionGraph.captureNoTranslucentsDepthOnly(this.resources());
         this.receipts.recordEvent("deferred");
         if (!MetalDebugSwitches.SKIP_DEFERRED) {
             this.executionGraph.executeDeferred(this.resources());
@@ -337,15 +347,17 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
     @Override
     public void beginHand() {
         RenderTarget target = Minecraft.getInstance().gameRenderer.mainRenderTarget();
-        GpuTexture depth = target.getDepthTexture();
         GpuTextureView depthView = target.getDepthTextureView();
-        if (depth == null || depthView == null) {
+        if (depthView == null) {
             throw new IllegalStateException("Iris hand boundary has no main depth texture view");
         }
         this.receipts.recordEvent("center-depth.sample");
         this.executionGraph.sampleCenterDepth(depthView, 1.0F / 60.0F);
         this.receipts.recordEvent("depthtex2.capture");
-        this.executionGraph.captureNoHandDepth(this.resources(), depth);
+        // M1: same reasoning as beginTranslucents; hand and particles still
+        // draw into the vanilla depth, so depthtex2 comes from the Iris
+        // mainDepth that already contains terrain + entities.
+        this.executionGraph.captureNoHandDepthOnly(this.resources());
     }
 
     @Override
@@ -378,6 +390,9 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
             throw new IllegalStateException("Iris final boundary has no main target textures");
         }
         this.receipts.recordEvent("depthtex0.capture");
+        // M1: captureFinalDepth still folds the vanilla depth back into
+        // depthtex0 because hand/particles/weather draw into the vanilla depth
+        // until M2/M3 wire them up; their depth must not be lost.
         this.executionGraph.captureFinalDepth(this.resources(), depth);
         this.receipts.recordEvent("composite");
         if (!MetalDebugSwitches.SKIP_POST) {

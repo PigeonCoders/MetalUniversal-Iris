@@ -694,6 +694,9 @@ final class MetalRenderPass implements RenderPassBackend {
         if (binding.kind() == MetalCompiledRenderPipeline.ResourceKind.SAMPLED_IMAGE) {
             TextureViewAndSampler textureBinding = samplers.get(binding.name());
             if (textureBinding == null) {
+                textureBinding = IrisMetalWorldBridge.fallbackSampler(binding.name(), samplers);
+            }
+            if (textureBinding == null) {
                 textureBinding = IrisMetalTerrainBridge.fallbackSampler(binding.name(), samplers);
             }
             if (textureBinding == null) {

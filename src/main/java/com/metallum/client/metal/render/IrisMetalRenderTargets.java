@@ -353,6 +353,34 @@ final class IrisMetalRenderTargets implements AutoCloseable {
         return descriptor;
     }
 
+    RenderPassDescriptor createWorldWriteDescriptor(
+            final String label,
+            final int[] drawBuffers,
+            final RenderPass.@Nullable RenderArea renderArea
+    ) {
+        ensureOpen();
+        if (drawBuffers.length == 0) {
+            throw new IllegalArgumentException("A world gbuffer pass must write at least one draw buffer");
+        }
+        RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> label);
+        boolean[] written = new boolean[colorTargets.targetCount()];
+        for (int logicalTarget : drawBuffers) {
+            if (logicalTarget < 0 || logicalTarget >= colorTargets.targetCount()) {
+                throw new IllegalArgumentException("World DRAWBUFFERS target out of range: " + logicalTarget);
+            }
+            if (written[logicalTarget]) {
+                throw new IllegalArgumentException("World DRAWBUFFERS repeats logical target " + logicalTarget);
+            }
+            written[logicalTarget] = true;
+            descriptor.withColorAttachment(colorTargets.readView(logicalTarget), Optional.empty());
+        }
+        descriptor.withDepthAttachment(mainDepthView(), OptionalDouble.empty());
+        descriptor.withRenderArea(renderArea == null
+                ? new RenderPass.RenderArea(0, 0, width, height)
+                : renderArea);
+        return descriptor;
+    }
+
     void resize(final int newWidth, final int newHeight) {
         ensureOpen();
         if (newWidth == width && newHeight == height) {

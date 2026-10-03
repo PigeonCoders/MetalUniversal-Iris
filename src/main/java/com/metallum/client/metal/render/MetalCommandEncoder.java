@@ -274,7 +274,8 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
     }
 
     @Override
-    public @NonNull RenderPassBackend createRenderPass(final RenderPassDescriptor descriptor) {
+    public @NonNull RenderPassBackend createRenderPass(RenderPassDescriptor descriptor) {
+        descriptor = IrisMetalWorldBridge.rewriteWorldDescriptor(this.device, descriptor);
         List<RenderPassDescriptor.Attachment<Optional<Vector4fc>>> colorAttachments = descriptor.colorAttachments();
         int maxColorAttachments = Math.min(
                 com.mojang.blaze3d.pipeline.ColorTargetState.MAX_COLOR_TARGETS,

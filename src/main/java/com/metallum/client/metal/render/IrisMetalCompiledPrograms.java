@@ -15,6 +15,7 @@ import net.irisshaders.iris.gl.blending.AlphaTest;
 import net.irisshaders.iris.gl.blending.BlendMode;
 import net.irisshaders.iris.gl.blending.BlendModeFunction;
 import net.irisshaders.iris.gl.blending.BlendModeOverride;
+import net.irisshaders.iris.gl.state.ShaderAttributeInputs;
 import net.irisshaders.iris.shaderpack.loading.ProgramId;
 import org.jspecify.annotations.Nullable;
 
@@ -40,6 +41,7 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
     private final IrisMetalWorldPrograms sources;
     private final GpuFormat[] targetFormats;
     private final Map<SodiumKey, MetalCompiledRenderPipeline> sodiumPipelines = new HashMap<>();
+    private final Map<VanillaKey, MetalCompiledRenderPipeline> vanillaPipelines = new HashMap<>();
     private boolean closed;
 
     IrisMetalCompiledPrograms(
@@ -98,8 +100,33 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
         ));
     }
 
+    synchronized Optional<MetalCompiledRenderPipeline> vanilla(
+            final ProgramId requested,
+            final AlphaTest fallbackAlpha,
+            final boolean lines,
+            final boolean clouds,
+            final ShaderAttributeInputs inputs,
+            final RasterState state
+    ) {
+        ensureOpen();
+        Objects.requireNonNull(requested, "requested");
+        Objects.requireNonNull(fallbackAlpha, "fallbackAlpha");
+        Objects.requireNonNull(inputs, "inputs");
+        Objects.requireNonNull(state, "state");
+        Optional<IrisMetalGlslLinker.LinkedRasterProgram> linked =
+                this.sources.vanilla(requested, fallbackAlpha, lines, clouds, inputs);
+        if (linked.isEmpty()) {
+            return Optional.empty();
+        }
+        VanillaKey key = new VanillaKey(requested, fallbackAlpha, lines, clouds, inputs, state);
+        return Optional.of(this.vanillaPipelines.computeIfAbsent(
+                key,
+                ignored -> compile("vanilla_" + requested.getSourceName(), linked.orElseThrow(), state)
+        ));
+    }
+
     synchronized int cachedPipelineCount() {
-        return this.sodiumPipelines.size();
+        return this.sodiumPipelines.size() + this.vanillaPipelines.size();
     }
 
     private MetalCompiledRenderPipeline compile(
@@ -303,6 +330,8 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
         this.device.waitForSubmittedGpuWork();
         this.sodiumPipelines.values().forEach(MetalCompiledRenderPipeline::close);
         this.sodiumPipelines.clear();
+        this.vanillaPipelines.values().forEach(MetalCompiledRenderPipeline::close);
+        this.vanillaPipelines.clear();
     }
 
     record RasterState(
@@ -350,5 +379,15 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
     }
 
     private record SodiumKey(ProgramId requested, AlphaTest fallbackAlpha, RasterState state) {
+    }
+
+    private record VanillaKey(
+            ProgramId requested,
+            AlphaTest fallbackAlpha,
+            boolean lines,
+            boolean clouds,
+            ShaderAttributeInputs inputs,
+            RasterState state
+    ) {
     }
 }
