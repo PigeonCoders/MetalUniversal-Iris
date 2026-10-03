@@ -1,6 +1,7 @@
 package com.metallum.client.metal.render;
 
 import com.mojang.blaze3d.pipeline.RenderPipeline;
+import com.mojang.blaze3d.vertex.VertexFormat;
 import com.metallum.client.metal.render.bridge.GlslangBridge;
 import net.irisshaders.iris.gl.blending.AlphaTests;
 import net.irisshaders.iris.gl.shader.StandardMacros;
@@ -194,7 +195,9 @@ final class MetalIrisPipelinesTest {
             assertNotNull(patched.fragmentSource());
             IrisMetalGlslLinker.LinkedRasterProgram linked = IrisMetalGlslLinker.linkDefault(patched);
 
-            MetalCrossShaderCompiler.ShaderpackMslResult result =
+            // Dry path (no physicalInputNames): must compile, but by design it
+            // maps every vertex input generically and emits no [[attribute(N)]].
+            MetalCrossShaderCompiler.ShaderpackMslResult dryResult =
                     MetalCrossShaderCompiler.tryCompileShaderpackMsl(
                             linked.name(),
                             linked.vertexGlsl(),
@@ -204,18 +207,46 @@ final class MetalIrisPipelinesTest {
                             linked.fragmentGlsl(),
                             null
                     );
-            assertNotNull(result.vertexMsl());
-            assertNotNull(result.fragmentMsl());
+            assertNotNull(dryResult.vertexMsl());
+            assertNotNull(dryResult.fragmentMsl());
+
+            // Attribute-mapped path: the same physical input names the
+            // production compileShaderpack derives from the vertex format
+            // binding, passed through to spirvToMsl so the ENTITY vertex MSL
+            // carries real [[attribute(N)]] locations.
+            List<String> physicalInputNames = MetalCrossShaderCompiler.vertexInputNames(
+                    new VertexFormat[]{IrisVertexFormats.ENTITY}
+            );
+            MetalCrossShaderCompiler.ShaderpackMslResult boundResult =
+                    MetalCrossShaderCompiler.tryCompileShaderpackMsl(
+                            linked.name(),
+                            linked.vertexGlsl(),
+                            linked.fragmentGlsl(),
+                            null,
+                            physicalInputNames
+                    );
+            assertNotNull(boundResult.vertexMsl());
 
             Matcher attributes = Pattern.compile("\\[\\[attribute\\((\\d+)\\)]]")
-                    .matcher(result.vertexMsl());
+                    .matcher(boundResult.vertexMsl());
             Set<Integer> locations = new LinkedHashSet<>();
             while (attributes.find()) {
                 locations.add(Integer.parseInt(attributes.group(1)));
             }
             assertFalse(
                     locations.isEmpty(),
-                    "ENTITY vertex MSL carries no attribute locations: " + result.vertexMsl()
+                    "ENTITY vertex MSL carries no attribute locations: " + boundResult.vertexMsl()
+            );
+            assertTrue(
+                    locations.contains(0),
+                    "ENTITY vertex MSL lacks attribute(0): " + locations
+            );
+            assertEquals(
+                    physicalInputNames.size(),
+                    locations.size(),
+                    "ENTITY vertex MSL attribute count does not match the physical input count; "
+                            + "inputs=" + physicalInputNames + ", locations=" + locations
+                            + ", msl=" + boundResult.vertexMsl()
             );
         }
     }

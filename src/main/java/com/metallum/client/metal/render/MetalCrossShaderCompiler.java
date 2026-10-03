@@ -380,6 +380,54 @@ public final class MetalCrossShaderCompiler {
             final @Nullable String fragmentGlsl,
             final @Nullable String defines
     ) throws ShaderCompileException {
+        return tryCompileShaderpackMsl(
+                name, vertexGlsl, geometryGlsl, tessControlGlsl, tessEvalGlsl,
+                fragmentGlsl, defines, null, true
+        );
+    }
+
+    /**
+     * Device-free dry compile that additionally maps the vertex stage inputs to
+     * explicit MSL {@code [[attribute(N)]]} locations, mirroring the production
+     * path's {@code physicalInputNames} wiring ({@link #compileShaderpack}).
+     *
+     * <p>Used by tests to verify the entity attribute mapping without a Metal
+     * device. The result is <b>not</b> cached: the production dry-compile cache
+     * is keyed by name only, and mixing attribute-mapped and generic results
+     * under one key would make the cached entry depend on call order.</p>
+     *
+     * @param name               program name (diagnostics only).
+     * @param vertexGlsl         vertex GLSL source (non-null, declares {@code #version}).
+     * @param fragmentGlsl       fragment GLSL source (non-null, declares {@code #version}).
+     * @param defines            optional preprocessor defines (may be {@code null}).
+     * @param physicalInputNames vertex input names in physical attribute order,
+     *                           as produced by {@link #vertexInputNames(VertexFormat[])}.
+     * @return the dry-compiled MSL result.
+     * @throws ShaderCompileException if GLSL&#8594;SPIR-V or SPIR-V&#8594;MSL fails.
+     */
+    static ShaderpackMslResult tryCompileShaderpackMsl(
+            final String name,
+            final String vertexGlsl,
+            final String fragmentGlsl,
+            final @Nullable String defines,
+            final @Nullable List<String> physicalInputNames
+    ) throws ShaderCompileException {
+        return tryCompileShaderpackMsl(
+                name, vertexGlsl, null, null, null, fragmentGlsl, defines, physicalInputNames, false
+        );
+    }
+
+    private static ShaderpackMslResult tryCompileShaderpackMsl(
+            final String name,
+            final @Nullable String vertexGlsl,
+            final @Nullable String geometryGlsl,
+            final @Nullable String tessControlGlsl,
+            final @Nullable String tessEvalGlsl,
+            final @Nullable String fragmentGlsl,
+            final @Nullable String defines,
+            final @Nullable List<String> physicalInputNames,
+            final boolean cacheResult
+    ) throws ShaderCompileException {
         if (vertexGlsl == null || fragmentGlsl == null) {
             throw new ShaderCompileException(
                     "Cannot dry-compile shaderpack program '" + name + "': vertex or fragment GLSL is null "
@@ -419,11 +467,11 @@ public final class MetalCrossShaderCompiler {
         final int pushConstantBinding = entries.size();
         final MslShader vertexMsl = spirvToMsl(
                 spirvWordsToByteBuffer(vertexSpvWords), pushConstantBinding,
-                Map.of(), false, Map.of(), resourceBindings
+                Map.of(), false, Map.of(), resourceBindings, physicalInputNames
         );
         final MslShader fragmentMsl = spirvToMsl(
                 spirvWordsToByteBuffer(fragmentSpvWords), pushConstantBinding,
-                Map.of(), true, Map.of(), resourceBindings
+                Map.of(), true, Map.of(), resourceBindings, null
         );
 
         final String vertexEntryPoint = extractEntryPoint(vertexMsl.source(), VERTEX_ENTRY_PATTERN, "main0");
@@ -432,7 +480,9 @@ public final class MetalCrossShaderCompiler {
         final ShaderpackMslResult result = new ShaderpackMslResult(
                 name, vertexMsl.source(), fragmentMsl.source(), vertexEntryPoint, fragmentEntryPoint
         );
-        SHADERPACK_MSL_CACHE.put(name, result);
+        if (cacheResult) {
+            SHADERPACK_MSL_CACHE.put(name, result);
+        }
         return result;
     }
 
@@ -977,7 +1027,7 @@ public final class MetalCrossShaderCompiler {
     record VertexInputLayout(List<String> names, Map<String, GpuFormat> formats) {
     }
 
-    private static List<String> vertexInputNames(final VertexFormat[] bindings) {
+    static List<String> vertexInputNames(final VertexFormat[] bindings) {
         List<String> names = new ArrayList<>();
         for (VertexFormat binding : bindings) {
             if (binding == null) {
