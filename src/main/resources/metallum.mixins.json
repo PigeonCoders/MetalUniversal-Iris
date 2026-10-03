@@ -9,6 +9,8 @@
     "render.PreferredGraphicsApiMixin",
     "render.NoVanillaSkyMixin",
     "render.NoVanillaCloudsMixin",
+    "render.NoVanillaCloudRendererMixin",
+    "render.ForceCloudStatusOffMixin",
     "sodium.DrawBackendMixin",
     "sodium.DrawContextMixin",
     "sodium.SodiumPreferredGraphicsApiMixin",

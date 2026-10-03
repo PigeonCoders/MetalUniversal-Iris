@@ -2,9 +2,8 @@ package com.metallum.mixin.render;
 
 import com.metallum.Metallum;
 import com.metallum.client.metal.render.MetalDebugSwitches;
-import com.mojang.blaze3d.framegraph.FrameGraphBuilder;
 import net.minecraft.client.CloudStatus;
-import net.minecraft.client.renderer.LevelRenderer;
+import net.minecraft.client.renderer.CloudRenderer;
 import net.minecraft.world.phys.Vec3;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
@@ -13,28 +12,26 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * Hard cloud kill for the bisection probes: MC 26.2 renders clouds through its
- * own frame-graph pass ({@code LevelRenderer.addCloudsPass}) into a dedicated
- * clouds target that the pack's final pass never touches, so the pack-level
- * {@code CloudSetting} override cannot suppress them. Cancelling the pass
- * registration itself is the only reliable way to drop the engine clouds.
- * Inactive by default.
+ * Second hard cloud kill for the bisection probes, backing up
+ * {@link NoVanillaCloudsMixin}: cancels the cloud renderer's own
+ * {@code render} entry point so nothing reaches the GPU even if some other
+ * path (e.g. the frame-graph pass being registered without
+ * {@code addCloudsPass}) still submits cloud work. Inactive by default.
  */
-@Mixin(LevelRenderer.class)
-abstract class NoVanillaCloudsMixin {
+@Mixin(CloudRenderer.class)
+abstract class NoVanillaCloudRendererMixin {
     @Unique
     private static boolean metallum$reported;
 
-    @Inject(method = "addCloudsPass", at = @At("HEAD"), cancellable = true)
-    private void metallum$skipCloudsPass(
-            final FrameGraphBuilder builder,
+    @Inject(method = "render", at = @At("HEAD"), cancellable = true)
+    private void metallum$skipCloudRender(
+            final int i,
             final CloudStatus cloudStatus,
+            final float f,
+            final int j,
             final Vec3 vec3,
             final long l,
-            final float f,
-            final int i,
             final float g,
-            final int j,
             final CallbackInfo ci
     ) {
         boolean cancelling = MetalDebugSwitches.NO_CLOUDS_HARD
@@ -42,7 +39,7 @@ abstract class NoVanillaCloudsMixin {
                 || MetalDebugSwitches.NO_VANILLA_SKY;
         if (!metallum$reported) {
             metallum$reported = true;
-            Metallum.LOGGER.warn("[metallum-iris][debug] addCloudsPass seen; cancelling={}", cancelling);
+            Metallum.LOGGER.warn("[metallum-iris][debug] cloudRenderer.render seen; cancelling={}", cancelling);
         }
         if (cancelling) {
             ci.cancel();
