@@ -7,6 +7,7 @@ import com.mojang.blaze3d.buffers.GpuBuffer;
 import com.mojang.blaze3d.buffers.GpuBufferSlice;
 import com.mojang.blaze3d.pipeline.ColorTargetState;
 import com.mojang.blaze3d.pipeline.DepthStencilState;
+import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.systems.RenderPass;
 import com.mojang.blaze3d.systems.RenderPassDescriptor;
 import com.mojang.blaze3d.systems.RenderSystem;
@@ -22,6 +23,7 @@ import net.irisshaders.iris.shaderpack.programs.ComputeSource;
 import net.irisshaders.iris.shaderpack.programs.ProgramSet;
 import net.irisshaders.iris.shaderpack.programs.ProgramSource;
 import net.irisshaders.iris.shaderpack.texture.TextureStage;
+import net.minecraft.client.Minecraft;
 import net.minecraft.resources.Identifier;
 import org.joml.Vector4f;
 import org.joml.Vector4fc;
@@ -181,7 +183,10 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
     private BitSet state = new BitSet();
     private BitSet shadowState = new BitSet();
     private final Set<String> skippedPasses = new HashSet<>();
+    private final Set<String> stripPassesHitThisFrame = new HashSet<>();
+    private int stripIndex;
     private boolean warnedZeroVl;
+    private boolean warnedZeroBloom;
     private boolean prepared;
     private boolean closed;
 
@@ -563,7 +568,16 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             final IrisMetalWorldResources resources,
             final GpuTextureView mainColor
     ) {
+        // Stage-strip tiles are indexed per frame; reset at the frame's last
+        // boundary so the next frame's first stage pass starts at entry 0.
+        this.stripIndex = 0;
+        this.stripPassesHitThisFrame.clear();
         ensurePrepared();
+        if (!MetalDebugSwitches.STAGE_STRIP.isEmpty()) {
+            // Stage-strip mode: the stage passes tiled their outputs onto the
+            // main target; leave those tiles untouched.
+            return;
+        }
         IrisMetalRenderTargets targets = resources.renderTargets();
         IrisMetalPingPongTargets colors = targets.colorTargets();
         colors.restore(state);
@@ -706,6 +720,8 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                 resources.renderTargets().colorTargets().restore(plan.stateAfter());
                 state = plan.stateAfter();
                 zeroCompositeLightmap(plan, resources);
+                zeroBloom(plan, resources);
+                stripTile(plan, resources);
             }
         } finally {
             currentResourcesForDispatch = null;
@@ -742,6 +758,94 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             this.warnedZeroVl = true;
             Metallum.LOGGER.warn("[metallum-iris][debug] zeroVl probe: cleared colortex1 after '{}'", plan.name());
         }
+    }
+
+    /**
+     * {@code metallum.iris.debug.zeroBloom} probe: after composite4 writes
+     * colortex1, clear both ping-pong sides to (0,0,0,1) so every later pass
+     * sees an empty bloom buffer regardless of flip side. On-device artifact
+     * bisection only; a no-op when the switch is off or the pack has a single
+     * color target.
+     */
+    private void zeroBloom(final RasterPlan plan, final IrisMetalWorldResources resources) {
+        if (!MetalDebugSwitches.ZERO_BLOOM || !"composite4".equals(plan.name())) {
+            return;
+        }
+        IrisMetalRenderTargets targets = resources.renderTargets();
+        IrisMetalPingPongTargets colors = targets.colorTargets();
+        if (colors.targetCount() <= 1) {
+            return;
+        }
+        Vector4fc clearColor = new Vector4f(0.0F, 0.0F, 0.0F, 1.0F);
+        MetalGpuTextureView readSide = new MetalGpuTextureView(colors.readTexture(1), 0, 1);
+        MetalGpuTextureView writeSide = new MetalGpuTextureView(colors.writeTexture(1), 0, 1);
+        RenderPassDescriptor descriptor = RenderPassDescriptor.create(
+                () -> "Iris zeroBloom probe: " + plan.name()
+        ).withColorAttachment(readSide, Optional.of(clearColor))
+                .withColorAttachment(writeSide, Optional.of(clearColor))
+                .withRenderArea(new RenderPass.RenderArea(0, 0, targets.width(), targets.height()));
+        MetalCommandEncoder encoder = activeEncoder();
+        // No draws: submit while the descriptor's views are still open.
+        encoder.createRenderPass(descriptor);
+        encoder.submitRenderPass();
+        if (!this.warnedZeroBloom) {
+            this.warnedZeroBloom = true;
+            Metallum.LOGGER.warn("[metallum-iris][debug] zeroBloom probe: cleared both colortex1 sides after '{}'", plan.name());
+        }
+    }
+
+    /**
+     * {@code metallum.iris.debug.stageStrip} probe: copy a center crop of each
+     * listed pass's chosen target into a 2x3 grid of tiles on the main target,
+     * in list order, one tile per frame occurrence. The frame's final blit is
+     * suppressed in {@link #executeFinal}, so the tiles stay visible.
+     */
+    private void stripTile(final RasterPlan plan, final IrisMetalWorldResources resources) {
+        List<MetalDebugSwitches.StripEntry> entries = MetalDebugSwitches.STAGE_STRIP;
+        if (entries.isEmpty() || this.stripIndex >= entries.size()) {
+            return;
+        }
+        IrisMetalRenderTargets targets = resources.renderTargets();
+        int width = targets.width();
+        int height = targets.height();
+        if (width < 4 || height < 3) {
+            return;
+        }
+        MetalDebugSwitches.StripEntry entry = entries.get(this.stripIndex);
+        if (!entry.passName().equals(plan.name()) || !this.stripPassesHitThisFrame.add(plan.name())) {
+            return;
+        }
+        // Consume the entry even if the copy itself cannot run, so the tile
+        // cursor never stalls on an unusable entry.
+        int tile = this.stripIndex;
+        this.stripIndex++;
+        IrisMetalPingPongTargets colors = targets.colorTargets();
+        if (entry.targetIndex() >= colors.targetCount()) {
+            return;
+        }
+        GpuTexture main = mainTargetTexture();
+        if (main == null) {
+            return;
+        }
+        int cropWidth = width / 2;
+        int cropHeight = height / 3;
+        // 2 columns x 3 rows; crop the center band of the source target.
+        activeEncoder().copyTextureToTexture(
+                colors.readTexture(entry.targetIndex()), main, 0,
+                (tile % 2) * (width / 2), (tile / 2) * cropHeight,
+                width / 4, height / 4,
+                cropWidth, cropHeight
+        );
+    }
+
+    /** The same main-target texture {@link #executeFinal} blits into. */
+    private GpuTexture mainTargetTexture() {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft.gameRenderer == null) {
+            return null;
+        }
+        RenderTarget target = minecraft.gameRenderer.mainRenderTarget();
+        return target == null ? null : target.getColorTexture();
     }
 
     private void executeCompute(
