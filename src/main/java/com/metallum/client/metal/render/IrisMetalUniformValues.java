@@ -954,8 +954,13 @@ final class IrisMetalUniformValues implements AutoCloseable {
             // --- weather / player state ---
             case "rainStrength", "wetness" -> out.putFloat(at, frame.rainStrength());
             case "screenBrightness" -> out.putFloat(at, frame.screenBrightness());
-            // timeBrightness peaks at noon; Iris derives it from the sun angle.
-            case "timeBrightness" -> out.putFloat(at, Math.max(0.0f, (float) Math.cos(frame.sunAngle() * Math.PI * 2.0)));
+            // timeBrightness peaks at noon: upstream HardcodedCustomUniforms
+            // (20e226b L145-158) derives it from timeAngle = worldDayTime /
+            // 24000, i.e. max(sin(2*pi*timeAngle), 0). frame.worldTime() is the
+            // same dayTime % 24000 the hardcoded uniform uses; frame.sunAngle()
+            // is the eased OptiFine celestial angle and is not this input.
+            case "timeBrightness" -> out.putFloat(at, Math.max(0.0f,
+                    (float) Math.sin(frame.worldTime() / 24000.0 * Math.PI * 2.0)));
             case "eyeBrightness", "eyeBrightnessSmooth" -> putIVec2(out, at, 0, 240);
             case "eyeAltitude" -> out.putFloat(at, (float) frame.cameraPosition().y);
             case "isEyeInWater" -> out.putInt(at, 0);

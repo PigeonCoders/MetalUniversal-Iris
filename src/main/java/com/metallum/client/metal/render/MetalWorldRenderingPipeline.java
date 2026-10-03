@@ -6,6 +6,7 @@ import net.fabricmc.api.Environment;
 import net.irisshaders.iris.features.FeatureFlags;
 import net.irisshaders.iris.gl.texture.TextureType;
 import net.irisshaders.iris.helpers.Tri;
+import net.irisshaders.iris.pathways.HorizonRenderer;
 import net.irisshaders.iris.pipeline.VanillaRenderingPipeline;
 import net.irisshaders.iris.pipeline.WorldRenderingPhase;
 import net.irisshaders.iris.shaderpack.ShaderPack;
@@ -31,6 +32,7 @@ import net.irisshaders.iris.vertices.sodium.terrain.FormatAnalyzer;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.Camera;
 import net.minecraft.client.renderer.state.level.CameraRenderState;
+import net.minecraft.world.level.dimension.DimensionType;
 import net.irisshaders.iris.mixin.LevelRendererAccessor;
 import org.jspecify.annotations.Nullable;
 import org.joml.Vector3d;
@@ -67,6 +69,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
     private IrisMetalCompiledPrograms compiledPrograms;
     private IrisMetalWorldResources resources;
     private @Nullable IrisMetalCenterDepthSampler centerDepthSampler;
+    private @Nullable HorizonRenderer horizonRenderer;
     private MetalDevice centerDepthDevice;
     private int receiptWidth = -1;
     private int receiptHeight = -1;
@@ -457,6 +460,10 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
             this.centerDepthSampler = null;
         }
         this.centerDepthDevice = null;
+        if (this.horizonRenderer != null) {
+            this.horizonRenderer.destroy();
+            this.horizonRenderer = null;
+        }
         this.programs.close();
         if (this.resources != null) {
             this.resources.close();
@@ -505,6 +512,36 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
     @Override
     public void onBeginClear() {
         this.frameState.setPhase(WorldRenderingPhase.SKY);
+
+        // Upstream parity: IrisRenderingPipeline.onBeginClear() (L1286-1303 in
+        // the pinned 20e226b tree) draws HorizonRenderer's inverted cone before
+        // sky rendering. 26.2's vanilla SkyRenderer only covers the upper
+        // hemisphere (sky disc at y=+16), so without this pass the lower half
+        // of the sky stays clear color. The cone is drawn through the vanilla
+        // SKY pipeline; HorizonRendererMixin arms the world override for it.
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft.level == null) {
+            return;
+        }
+        if (!this.shouldRenderSkyDisc()) {
+            return;
+        }
+        DimensionType dimensionType = minecraft.level.dimensionType();
+        if (dimensionType.skybox() != DimensionType.Skybox.OVERWORLD && !dimensionType.hasSkyLight()) {
+            return;
+        }
+        if (this.horizonRenderer == null) {
+            this.horizonRenderer = new HorizonRenderer();
+        }
+        Vector3d fogColor3 = CapturedRenderingState.INSTANCE.getFogColor();
+        // NB: The alpha value must be 1.0 here, or shader packs get pink
+        // reflections and similar bugs (upstream comment on the same value).
+        Vector4f fogColor = new Vector4f((float) fogColor3.x, (float) fogColor3.y, (float) fogColor3.z, 1.0F);
+        this.horizonRenderer.renderHorizon(
+                CapturedRenderingState.INSTANCE.getGbufferModelView(),
+                CapturedRenderingState.INSTANCE.getGbufferProjection(),
+                fogColor
+        );
     }
 
     @Override

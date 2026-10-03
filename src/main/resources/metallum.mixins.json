@@ -31,6 +31,7 @@
     "iris.QuadParticleFeatureRendererMixin",
     "iris.WeatherEffectRendererMixin",
     "iris.SkyRendererMixin",
+    "iris.HorizonRendererMixin",
     "iris.GlStateManagerMixin",
     "iris.GLDebugMixin",
     "iris.IrisMetalValidationMixin",
