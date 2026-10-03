@@ -32,7 +32,9 @@ abstract class NoVanillaCloudsMixin {
             final int j,
             final CallbackInfo ci
     ) {
-        if (MetalDebugSwitches.NO_VANILLA_CLOUDS || MetalDebugSwitches.NO_VANILLA_SKY) {
+        if (MetalDebugSwitches.NO_CLOUDS_HARD
+                || MetalDebugSwitches.NO_VANILLA_CLOUDS
+                || MetalDebugSwitches.NO_VANILLA_SKY) {
             ci.cancel();
         }
     }
