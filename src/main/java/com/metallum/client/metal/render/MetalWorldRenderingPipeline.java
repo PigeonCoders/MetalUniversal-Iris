@@ -479,22 +479,22 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
 
     @Override
     public boolean shouldRenderSun() {
-        return this.directives.shouldRenderSun();
+        return !MetalDebugSwitches.NO_VANILLA_SKY && this.directives.shouldRenderSun();
     }
 
     @Override
     public boolean shouldRenderWeather() {
-        return this.directives.shouldRenderWeather();
+        return !MetalDebugSwitches.NO_VANILLA_SKY && this.directives.shouldRenderWeather();
     }
 
     @Override
     public boolean shouldRenderWeatherParticles() {
-        return this.directives.shouldRenderWeatherParticles();
+        return !MetalDebugSwitches.NO_VANILLA_SKY && this.directives.shouldRenderWeatherParticles();
     }
 
     @Override
     public boolean shouldRenderMoon() {
-        return this.directives.shouldRenderMoon();
+        return !MetalDebugSwitches.NO_VANILLA_SKY && this.directives.shouldRenderMoon();
     }
 
     @Override
@@ -544,6 +544,9 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
 
     @Override
     public CloudSetting getCloudSetting() {
+        if (MetalDebugSwitches.NO_VANILLA_SKY || MetalDebugSwitches.NO_VANILLA_CLOUDS) {
+            return CloudSetting.OFF;
+        }
         return this.directives.getCloudSetting();
     }
 
