@@ -501,6 +501,11 @@ final class MetalRenderPass implements RenderPassBackend {
         return commandEncoder.transientMemory().allocateGpuMapped(size, alignment, usage);
     }
 
+    /** Whether the engine bound a vertex buffer at the given logical slot for this pass. */
+    boolean isVertexBufferBound(final int slot) {
+        return slot >= 0 && slot < MAX_VERTEX_BUFFERS && vertexBuffers[slot] != null;
+    }
+
     private void pushVertexBuffers(final MTLRenderCommandEncoder enc) {
         int firstSlot = compiledPipeline.firstAvailableVertexBufferSlot();
         int count = compiledPipeline.vertexBufferCount();
@@ -586,6 +591,7 @@ final class MetalRenderPass implements RenderPassBackend {
     }
 
     private void bindDrawState(final MTLRenderCommandEncoder enc) {
+        IrisMetalWorldBridge.recordDrawVertexBuffers(this);
         if (compiledPipeline == null) {
             throw new IllegalStateException("Pipeline is missing");
         }

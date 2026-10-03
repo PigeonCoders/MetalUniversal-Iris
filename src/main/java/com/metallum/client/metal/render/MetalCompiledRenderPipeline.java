@@ -581,6 +581,10 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
         return this.genericVertexBufferSlot;
     }
 
+    List<MetalCrossShaderCompiler.GenericVertexInput> genericVertexInputs() {
+        return this.genericVertexInputs;
+    }
+
     static int resolveGenericVertexBufferSlot(
             final int firstAvailableSlot,
             final int physicalBindingCount,

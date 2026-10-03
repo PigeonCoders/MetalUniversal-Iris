@@ -6,6 +6,8 @@ import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.mojang.blaze3d.systems.RenderPassBackend;
 import com.mojang.blaze3d.systems.RenderPassDescriptor;
 import com.mojang.blaze3d.textures.GpuTextureView;
+import com.mojang.blaze3d.vertex.VertexFormat;
+import com.mojang.blaze3d.vertex.VertexFormatElement;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.irisshaders.iris.Iris;
@@ -19,6 +21,7 @@ import org.jspecify.annotations.Nullable;
 
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalDouble;
@@ -70,6 +73,8 @@ public final class IrisMetalWorldBridge {
     private static final Set<String> REPORTED_INSTALLS = new HashSet<>();
     private static final Set<String> REPORTED_SKIPS = new HashSet<>();
     private static final Set<String> REPORTED_PIPELINE_SKIPS = new HashSet<>();
+    private static final Set<String> REPORTED_INPUT_AUDITS = new HashSet<>();
+    private static boolean drawVertexBuffersReported;
     private static boolean mainDepthCapturedThisFrame;
     private static boolean samplersReported;
 
@@ -250,7 +255,71 @@ public final class IrisMetalWorldBridge {
             );
         }
         recordInstall(key, program.name(), program.program().drawBuffers(), "install");
+        recordInputAudit(key, source, resolved);
         return true;
+    }
+
+    /**
+     * One-shot per-key probe of the vertex input contract actually used for a
+     * taken-over draw: the runtime vertex format elements (which double as the
+     * MTL vertex descriptor attributes, assigned sequentially), the generic
+     * fallback inputs, and the Metal buffer slots reserved for them. The
+     * per-draw bound slot list is recorded by
+     * {@link #recordDrawVertexBuffers} from the first draw.
+     */
+    private static void recordInputAudit(
+            final ShaderKey key,
+            final RenderPipeline source,
+            final MetalCompiledRenderPipeline compiled
+    ) {
+        if (!REPORTED_INPUT_AUDITS.add(key.getName())) {
+            return;
+        }
+        StringBuilder audit = new StringBuilder("world override attrs key=").append(key.getName());
+        VertexFormat format = source.getVertexFormatBinding(0);
+        if (format == null) {
+            audit.append(" format=<null>");
+        } else {
+            List<VertexFormatElement> elements = format.getElements();
+            audit.append(" formatStride=").append(format.getVertexSize()).append('B');
+            for (int location = 0; location < elements.size(); location++) {
+                VertexFormatElement element = elements.get(location);
+                audit.append(" [").append(location).append(':').append(element.name())
+                        .append('@').append(element.offset())
+                        .append(' ').append(element.format()).append(']');
+            }
+        }
+        audit.append(" firstSlot=").append(compiled.firstAvailableVertexBufferSlot())
+                .append(" vertexBufferCount=").append(compiled.vertexBufferCount())
+                .append(" genericSlot=").append(compiled.genericVertexBufferSlot())
+                .append(" generic=").append(compiled.genericVertexInputs());
+        MetalProbeReport.record(audit.toString());
+    }
+
+    /**
+     * One-shot record of the vertex buffers the engine actually bound for the
+     * first world-override draw, so a real-device run can be checked against
+     * the {@link #recordInputAudit} contract.
+     */
+    static void recordDrawVertexBuffers(final MetalRenderPass metalPass) {
+        if (drawVertexBuffersReported || currentContext() == null) {
+            return;
+        }
+        drawVertexBuffersReported = true;
+        StringBuilder slots = new StringBuilder();
+        int boundCount = 0;
+        for (int slot = 0; slot < MetalRenderPass.MAX_VERTEX_BUFFERS; slot++) {
+            if (!metalPass.isVertexBufferBound(slot)) {
+                continue;
+            }
+            if (boundCount++ > 0) {
+                slots.append(',');
+            }
+            slots.append(slot);
+        }
+        MetalProbeReport.record(
+                "world override draw vertexBuffers bound=[" + slots + "] count=" + boundCount
+        );
     }
 
     /**

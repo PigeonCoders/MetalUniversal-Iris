@@ -41,6 +41,8 @@ import java.util.regex.Pattern;
 @Environment(EnvType.CLIENT)
 public final class MetalCrossShaderCompiler {
     private static final String IRIS_SSBO_DESCRIPTOR_PREFIX = "iris_ssbo/";
+    /** Prefix Iris' vanilla-core transformer adds to physical vertex input names. */
+    private static final String IRIS_INPUT_ALIAS_PREFIX = "iris_";
     private static final Set<String> BUILT_IN_UNIFORMS = Set.of("Projection", "Lighting", "Fog", "Globals");
     /** Sodium's stable per-region time buffer is a texel buffer, not a 2D sampler. */
     private static final GpuFormat SODIUM_SECTION_TIME_FORMAT = GpuFormat.R32_SINT;
@@ -1275,13 +1277,37 @@ public final class MetalCrossShaderCompiler {
         SpvcReflectedResource.Buffer list = SpvcReflectedResource.create(pList.get(0), count);
         for (int i = 0; i < count; i++) {
             SpvcReflectedResource input = list.get(i);
-            GpuFormat format = attributeFormats.get(input.nameString());
-            if (format == null || !format.name().endsWith("_UINT")) {
+            String inputName = input.nameString();
+            GpuFormat format = attributeFormats.get(inputName);
+            if (format == null && inputName.startsWith(IRIS_INPUT_ALIAS_PREFIX)) {
+                // Iris' vanilla-core transformer renames the physical inputs
+                // (UV1 -> iris_UV1, Position -> iris_Position, ...) while the
+                // format table is keyed by the physical element names. Retry
+                // the alias so renamed integer inputs still get their MSL
+                // interface format.
+                format = attributeFormats.get(
+                        inputName.substring(IRIS_INPUT_ALIAS_PREFIX.length())
+                );
+            }
+            if (format == null) {
                 continue;
             }
-            int width = format.name().contains("8") ? Spvc.SPVC_MSL_SHADER_VARIABLE_FORMAT_UINT8
-                    : format.name().contains("16") ? Spvc.SPVC_MSL_SHADER_VARIABLE_FORMAT_UINT16
-                      : Spvc.SPVC_MSL_SHADER_VARIABLE_FORMAT_OTHER;
+            String formatName = format.name();
+            int width;
+            if (formatName.endsWith("_UINT")) {
+                width = formatName.contains("8") ? Spvc.SPVC_MSL_SHADER_VARIABLE_FORMAT_UINT8
+                        : formatName.contains("16") ? Spvc.SPVC_MSL_SHADER_VARIABLE_FORMAT_UINT16
+                          : Spvc.SPVC_MSL_SHADER_VARIABLE_FORMAT_OTHER;
+            } else if (formatName.endsWith("_SINT")) {
+                // No signed-width enum exists in the SPIRV-Cross binding; the
+                // Any16/Any32 hints make it emit shortN/intN from the SPIR-V
+                // type, matching the backend's Short2/Int2 vertex formats.
+                width = formatName.contains("16") ? Spvc.SPVC_MSL_SHADER_VARIABLE_FORMAT_ANY16
+                        : formatName.contains("32") ? Spvc.SPVC_MSL_SHADER_VARIABLE_FORMAT_ANY32
+                          : Spvc.SPVC_MSL_SHADER_VARIABLE_FORMAT_OTHER;
+            } else {
+                continue;
+            }
             if (width == Spvc.SPVC_MSL_SHADER_VARIABLE_FORMAT_OTHER) {
                 continue;
             }
