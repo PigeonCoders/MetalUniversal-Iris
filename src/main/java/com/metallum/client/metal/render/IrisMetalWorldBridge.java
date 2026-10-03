@@ -2,6 +2,8 @@ package com.metallum.client.metal.render;
 
 import com.metallum.Metallum;
 import com.metallum.client.metal.render.mtl.MTLPixelFormat;
+import com.mojang.blaze3d.buffers.GpuBuffer;
+import com.mojang.blaze3d.buffers.GpuBufferSlice;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.mojang.blaze3d.systems.RenderPassBackend;
 import com.mojang.blaze3d.systems.RenderPassDescriptor;
@@ -19,6 +21,7 @@ import net.irisshaders.iris.shaderpack.loading.ProgramId;
 import net.irisshaders.iris.shadows.ShadowRenderingState;
 import org.jspecify.annotations.Nullable;
 
+import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
@@ -91,6 +94,8 @@ public final class IrisMetalWorldBridge {
     private static final Set<String> REPORTED_SKIPS = new HashSet<>();
     private static final Set<String> REPORTED_PIPELINE_SKIPS = new HashSet<>();
     private static final Set<String> REPORTED_INPUT_AUDITS = new HashSet<>();
+    private static final Set<String> REPORTED_PER_DRAW_SKIPS = new HashSet<>();
+    private static final Set<String> REPORTED_PER_DRAW_MATERIALIZATIONS = new HashSet<>();
     private static boolean drawVertexBuffersReported;
     private static boolean mainDepthCapturedThisFrame;
     private static boolean samplersReported;
@@ -349,6 +354,71 @@ public final class IrisMetalWorldBridge {
         MetalProbeReport.record(
                 "world override draw vertexBuffers bound=[" + slots + "] count=" + boundCount
         );
+    }
+
+    /**
+     * Materializes the per-draw members of the shaderpack uniform block
+     * ({@code iris_NormalMat}, {@code iris_ModelViewMatInverse},
+     * {@code iris_ProjMatInverse}, {@code renderStage}) from the engine's
+     * {@code DynamicTransforms}/{@code Projection} for the draw that is binding
+     * state now. The per-frame upload skips those members (they must be
+     * per-draw), which left {@code iris_NormalMat} zeroed and made directional
+     * lighting collapse to a whole-object constant that flickered with any
+     * perturbation.
+     *
+     * <p>Returns {@code null} when the switch is off, no world override is
+     * active, the program declares no per-draw members, or the engine bytes are
+     * not host-visible; the caller then keeps the shared per-frame slice (the
+     * legacy zero/constant behavior). The returned slice is a transient-memory
+     * allocation valid until the encoder rotates after submit — the same
+     * lifetime the engine's own per-draw uniform slices rely on.</p>
+     */
+    static @Nullable GpuBufferSlice materializePerDrawUniforms(final MetalRenderPass metalPass) {
+        if (!MetalDebugSwitches.WORLD_PASS || !MetalDebugSwitches.WORLD_PASS_PER_DRAW_NORMALS) {
+            return null;
+        }
+        WorldContext context = currentContext();
+        if (context == null) {
+            return null;
+        }
+        IrisMetalUniformValues values = context.pipeline().uniformValues();
+        int size = values.drawBlockSize(context.key());
+        if (size <= 0) {
+            return null;
+        }
+        boolean needsModelView = values.requiresDynamicTransforms(context.key());
+        boolean needsProjection = values.requiresProjection(context.key());
+        ByteBuffer dynamicTransforms = needsModelView
+                ? metalPass.uniformBytes("DynamicTransforms") : null;
+        ByteBuffer projection = needsProjection ? metalPass.uniformBytes("Projection") : null;
+        if (needsModelView && dynamicTransforms == null) {
+            recordPerDrawSkip(context, "missing-dynamic-transforms");
+            return null;
+        }
+        if (needsProjection && projection == null) {
+            recordPerDrawSkip(context, "missing-projection");
+            return null;
+        }
+        try (GpuBufferSlice.MappedView output = metalPass.allocateTransient(
+                size, metalPass.minUniformOffsetAlignment(), GpuBuffer.USAGE_UNIFORM)) {
+            values.materializeDraw(context.key(), output.data(), dynamicTransforms, projection);
+            recordPerDrawMaterialization(context, size);
+            return output.slice();
+        }
+    }
+
+    private static void recordPerDrawSkip(final WorldContext context, final String reason) {
+        if (REPORTED_PER_DRAW_SKIPS.add(context.key().getName() + ":" + reason)) {
+            MetalProbeReport.record("world override perDraw skip key=" + context.key().getName()
+                    + " reason=" + reason);
+        }
+    }
+
+    private static void recordPerDrawMaterialization(final WorldContext context, final int size) {
+        if (REPORTED_PER_DRAW_MATERIALIZATIONS.add(context.key().getName())) {
+            MetalProbeReport.record("world override perDraw materialized key=" + context.key().getName()
+                    + " bytes=" + size);
+        }
     }
 
     /**

@@ -145,6 +145,10 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
         return this.programs;
     }
 
+    IrisMetalUniformValues uniformValues() {
+        return this.uniformValues;
+    }
+
     IrisMetalCompiledPrograms compiledPrograms() {
         if (this.compiledPrograms == null) {
             throw new IllegalStateException(

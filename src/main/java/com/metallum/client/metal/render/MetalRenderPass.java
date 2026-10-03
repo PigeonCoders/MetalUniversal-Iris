@@ -25,6 +25,7 @@ import org.lwjgl.vulkan.VkDrawIndexedIndirectCommand;
 import org.lwjgl.vulkan.VkDrawIndirectCommand;
 
 import java.lang.foreign.MemorySegment;
+import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
 import java.util.Arrays;
 import java.util.Collection;
@@ -63,6 +64,14 @@ final class MetalRenderPass implements RenderPassBackend {
     private long dirtyDescriptorMask;
     @Nullable
     private MetalCompiledRenderPipeline compiledPipeline;
+    /**
+     * Per-draw replacement for the shaderpack uniform block, materialized by
+     * {@link IrisMetalWorldBridge#materializePerDrawUniforms} from the engine's
+     * {@code DynamicTransforms}/{@code Projection}; {@code null} keeps the
+     * shared per-frame slice.
+     */
+    @Nullable
+    private GpuBufferSlice perDrawUniformOverride;
     @Nullable
     private GpuBuffer indexBuffer;
     private MTLIndexType indexType = MTLIndexType.UInt16;
@@ -506,6 +515,25 @@ final class MetalRenderPass implements RenderPassBackend {
         return slot >= 0 && slot < MAX_VERTEX_BUFFERS && vertexBuffers[slot] != null;
     }
 
+    /**
+     * CPU bytes of a bound uniform resource, or {@code null} when it is unbound
+     * or its buffer is not host-visible. Only used for the engine's shared
+     * {@code DynamicTransforms}/{@code Projection} buffers.
+     */
+    @Nullable
+    ByteBuffer uniformBytes(final String name) {
+        GpuBufferSlice slice = uniforms.get(name);
+        if (slice == null || !(slice.buffer() instanceof MetalGpuBuffer metalBuffer)) {
+            return null;
+        }
+        return metalBuffer.sliceStorageOrNull(slice.offset(), slice.length());
+    }
+
+    /** Metal's minimum uniform buffer offset alignment for per-draw transient slices. */
+    int minUniformOffsetAlignment() {
+        return this.device.getDeviceInfo().limits().minUniformOffsetAlignment();
+    }
+
     private void pushVertexBuffers(final MTLRenderCommandEncoder enc) {
         int firstSlot = compiledPipeline.firstAvailableVertexBufferSlot();
         int count = compiledPipeline.vertexBufferCount();
@@ -647,6 +675,15 @@ final class MetalRenderPass implements RenderPassBackend {
             vertexBuffersDirty = false;
         }
 
+        // Per-draw core transforms must be materialized after the engine wrote
+        // DynamicTransforms/Projection (setPipeline) and before descriptors are
+        // pushed; null keeps the shared per-frame block. Mark the block dirty
+        // so a second draw in the same pass rebinds its own slice.
+        this.perDrawUniformOverride = IrisMetalWorldBridge.materializePerDrawUniforms(this);
+        if (this.perDrawUniformOverride != null) {
+            markDescriptorDirty(IrisMetalGlslLinker.UNIFORM_BLOCK_NAME);
+        }
+
         if (dirtyDescriptorMask != 0) {
             for (MetalCompiledRenderPipeline.ResourceBinding binding : compiledPipeline.resources()) {
                 if ((dirtyDescriptorMask & (1L << binding.bindingIndex())) != 0L) {
@@ -783,7 +820,10 @@ final class MetalRenderPass implements RenderPassBackend {
             return;
         }
 
-        GpuBufferSlice uniformBinding = uniformSlice(binding.name());
+        GpuBufferSlice uniformBinding = binding.name().equals(IrisMetalGlslLinker.UNIFORM_BLOCK_NAME)
+                && perDrawUniformOverride != null
+                ? perDrawUniformOverride
+                : uniformSlice(binding.name());
         if (uniformBinding == null
                 && binding.kind() == MetalCompiledRenderPipeline.ResourceKind.STORAGE_BUFFER) {
             int logicalBinding = MetalCrossShaderCompiler.storageBufferLogicalBinding(binding.name());

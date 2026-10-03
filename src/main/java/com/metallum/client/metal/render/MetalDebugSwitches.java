@@ -35,6 +35,17 @@ public final class MetalDebugSwitches {
     public static final boolean WORLD_PASS_DEPTH_VANILLA = !"false".equalsIgnoreCase(
             System.getProperty("metallum.iris.worldPass.depthVanilla", "true").trim()
     );
+    /**
+     * Materializes the per-draw core transforms ({@code iris_NormalMat},
+     * {@code iris_ModelViewMatInverse}, {@code iris_ProjMatInverse},
+     * {@code renderStage}) from the engine's {@code DynamicTransforms} /
+     * {@code Projection} for every taken-over world draw. {@code false}
+     * restores the old behavior (those members stay zeroed):
+     * {@code -Dmetallum.iris.worldPass.perDrawNormals=false}.
+     */
+    public static final boolean WORLD_PASS_PER_DRAW_NORMALS = !"false".equalsIgnoreCase(
+            System.getProperty("metallum.iris.worldPass.perDrawNormals", "true").trim()
+    );
     /** Logs the sampler keys of the first non-terrain world pass once per process. */
     public static final boolean LOG_SAMPLERS = Boolean.getBoolean("metallum.iris.worldPass.logSamplers");
     public static final List<StripEntry> STAGE_STRIP = parseStageStrip(
