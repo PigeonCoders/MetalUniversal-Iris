@@ -323,6 +323,24 @@ public final class IrisMetalWorldBridge {
             Metallum.LOGGER.warn("[metallum-iris][debug] worldPass samplers: {}", bound.keySet());
             MetalProbeReport.record("worldPass samplers=" + bound.keySet());
         }
+        // 26.2's vanilla-core transformer re-exposes the engine's render-type
+        // textures under Iris names, so a patchVanilla program declares those
+        // instead of the names the engine binds: the albedo bound as Sampler0
+        // becomes "gtexture" (and upstream's texture/tex/u_MainSampler
+        // aliases), the overlay bound as Sampler1 by RenderSetup.useOverlay
+        // becomes "iris_overlay" (EntityPatcher), and the lightmap bound as
+        // Sampler2 by useLightmap becomes "lightmap". Resolve them from the
+        // engine-bound map; when the engine bound nothing, return null so the
+        // caller keeps its Missing sampler exception.
+        MetalRenderPass.TextureViewAndSampler vanillaAlias = switch (name) {
+            case "gtexture", "texture", "tex", "u_MainSampler" -> bound.get("Sampler0");
+            case "iris_overlay" -> bound.get("Sampler1");
+            case "lightmap" -> bound.get("Sampler2");
+            default -> null;
+        };
+        if (vanillaAlias != null) {
+            return vanillaAlias;
+        }
         if ("noisetex".equals(name)) {
             return context.pipeline().resources().noiseTexture().binding();
         }
