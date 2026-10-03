@@ -30,6 +30,7 @@
     "iris.PreparedRenderTypeMixin",
     "iris.QuadParticleFeatureRendererMixin",
     "iris.WeatherEffectRendererMixin",
+    "iris.SkyRendererMixin",
     "iris.GlStateManagerMixin",
     "iris.GLDebugMixin",
     "iris.IrisMetalValidationMixin",

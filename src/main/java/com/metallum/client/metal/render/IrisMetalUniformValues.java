@@ -17,6 +17,12 @@ import net.irisshaders.iris.shaderpack.properties.PackShadowDirectives;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.renderer.GameRenderer;
+import net.minecraft.util.Mth;
+import net.minecraft.world.attribute.EnvironmentAttributes;
+import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.effect.MobEffects;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.phys.Vec3;
 import org.jspecify.annotations.Nullable;
 import org.joml.Matrix3f;
@@ -603,7 +609,13 @@ final class IrisMetalUniformValues implements AutoCloseable {
             float frameTimeCounter,
             int worldTime,
             int worldDay,
-            int frameCounter
+            int frameCounter,
+            int moonPhase,
+            float cloudHeight,
+            float nightVision,
+            float blindFactor,
+            float darknessFactor,
+            int bedrockLevel
     ) {
     }
 
@@ -645,7 +657,8 @@ final class IrisMetalUniformValues implements AutoCloseable {
                 new Vector4f(0.0f, 100.0f, 0.0f, 0.0f),
                 new Vector3d(), 0.0f, 0.0f, 256.0f, 0.0f, systemTime.frameTime(),
                 0.25f, 0.25f, 0.0f, 1.0f, 1.0f, 1.0f, 256.0f,
-                systemTime.frameTimeCounter(), 0, 0, systemTime.frameCounter()
+                systemTime.frameTimeCounter(), 0, 0, systemTime.frameCounter(),
+                0, 192.0f, 0.0f, 0.0f, 0.0f, 0
         );
     }
 
@@ -690,6 +703,48 @@ final class IrisMetalUniformValues implements AutoCloseable {
         var mainTarget = minecraft.gameRenderer.mainRenderTarget();
         var fogParameters = ((FogStorage) minecraft.gameRenderer).sodium$getFogParameters();
 
+        // Sky / celestial / effect uniforms (M4). Sources mirror Iris GL:
+        // WorldTimeUniforms (moonPhase, via the camera environment attribute
+        // probe), IrisExclusiveUniforms (cloudHeight, bedrockLevel) and
+        // CommonUniforms/HardcodedCustomUniforms (nightVision, blindFactor,
+        // darknessFactor).
+        int moonPhase = camera == null ? 0
+                : camera.attributeProbe()
+                .getValue(EnvironmentAttributes.MOON_PHASE, tickDelta)
+                .index();
+        float cloudHeight = camera == null || level == null
+                ? 192.0f
+                : camera.attributeProbe()
+                .getValue(EnvironmentAttributes.CLOUD_HEIGHT, tickDelta);
+        float nightVision = 0.0f;
+        float blindFactor = 0.0f;
+        float darknessFactor = 0.0f;
+        var cameraEntity = minecraft.getCameraEntity();
+        if (cameraEntity instanceof LivingEntity living) {
+            try {
+                float nightVisionScale = GameRenderer.nightVisionScale(living, tickDelta);
+                if (nightVisionScale > 0.0f) {
+                    nightVision = Mth.clamp(nightVisionScale, 0.0f, 1.0f);
+                }
+            } catch (NullPointerException ignored) {
+                // Iris's CommonUniforms catches the same NPE: the vanilla scale
+                // helper assumes the entity actually has the effect.
+            }
+            MobEffectInstance blindness = living.getEffect(MobEffects.BLINDNESS);
+            if (blindness != null) {
+                float blindnessValue = blindness.isInfiniteDuration()
+                        ? 1.0f
+                        : Mth.clamp(blindness.getDuration() / 20.0f, 0.0f, 1.0f);
+                float blindFactorSqrt = Mth.clamp(blindnessValue * 2.0f - 1.0f, 0.0f, 1.0f);
+                blindFactor = blindFactorSqrt * blindFactorSqrt;
+            }
+            MobEffectInstance darkness = living.getEffect(MobEffects.DARKNESS);
+            if (darkness != null) {
+                darknessFactor = darkness.getBlendFactor(living, tickDelta);
+            }
+        }
+        int bedrockLevel = level == null ? 0 : level.dimensionType().minY();
+
         return new Frame(
                 modelView,
                 modelViewInverse,
@@ -721,7 +776,13 @@ final class IrisMetalUniformValues implements AutoCloseable {
                 systemTime.frameTimeCounter(),
                 level == null ? 0 : (int) (level.getDefaultClockTime() % 24000L),
                 level == null ? 0 : (int) (level.getDefaultClockTime() / 24000L),
-                systemTime.frameCounter()
+                systemTime.frameCounter(),
+                moonPhase,
+                cloudHeight,
+                nightVision,
+                blindFactor,
+                darknessFactor,
+                bedrockLevel
         );
     }
 
@@ -899,6 +960,20 @@ final class IrisMetalUniformValues implements AutoCloseable {
             case "eyeAltitude" -> out.putFloat(at, (float) frame.cameraPosition().y);
             case "isEyeInWater" -> out.putInt(at, 0);
             case "shadowFade" -> out.putFloat(at, 0.0f);
+
+            // --- sky / celestial / effect uniforms (M4) ---
+            case "moonPhase" -> out.putInt(at, frame.moonPhase());
+            case "cloudHeight" -> out.putFloat(at, frame.cloudHeight());
+            case "nightVision" -> out.putFloat(at, frame.nightVision());
+            case "blindFactor" -> out.putFloat(at, frame.blindFactor());
+            case "darknessFactor" -> out.putFloat(at, frame.darknessFactor());
+            case "bedrockLevel" -> out.putInt(at, frame.bedrockLevel());
+            // OptiFine biome flags: Iris GL has no supplier for these either,
+            // so the GLSL default of 0 is the faithful value. They are listed
+            // explicitly so the sky programs (which declare them) are accepted
+            // in strict mode instead of being reported as port gaps.
+            case "isDesert", "isMesa", "isCold", "isSwamp", "isMushroom",
+                 "isSavanna", "isJungle" -> out.putFloat(at, 0.0f);
 
             default -> reportUnsupported(out, member);
         }

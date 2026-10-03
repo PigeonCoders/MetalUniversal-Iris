@@ -85,7 +85,10 @@ public final class IrisMetalWorldBridge {
             ShaderKey.GLINT,
             ShaderKey.PARTICLES,
             ShaderKey.PARTICLES_TRANS,
-            ShaderKey.WEATHER
+            ShaderKey.WEATHER,
+            ShaderKey.SKY_BASIC,
+            ShaderKey.SKY_BASIC_COLOR,
+            ShaderKey.SKY_TEXTURED
     );
 
     private static final ThreadLocal<WorldContext> ACTIVE_WORLD_PASS = new ThreadLocal<>();
@@ -100,6 +103,7 @@ public final class IrisMetalWorldBridge {
     private static final Set<String> REPORTED_INSTALLS = new HashSet<>();
     private static final Set<String> REPORTED_SKIPS = new HashSet<>();
     private static final Set<String> REPORTED_PIPELINE_SKIPS = new HashSet<>();
+    private static final Set<String> REPORTED_MISSING_SAMPLER_TARGETS = new HashSet<>();
     private static final Set<String> REPORTED_INPUT_AUDITS = new HashSet<>();
     private static final Set<String> REPORTED_PER_DRAW_SKIPS = new HashSet<>();
     private static final Set<String> REPORTED_PER_DRAW_MATERIALIZATIONS = new HashSet<>();
@@ -232,12 +236,15 @@ public final class IrisMetalWorldBridge {
             drawBuffers = new int[]{0};
         }
         IrisMetalRenderTargets renderTargets = pipeline.resources().renderTargets();
-        if (!mainDepthCapturedThisFrame) {
+        if (!mainDepthCapturedThisFrame && !isSkyKey(key)) {
             // Only seed depthtex0 from a pass that actually targets the vanilla
-            // main scene depth. Weather (WEATHER_TARGET) and improved-transparency
-            // particle passes own separate depth buffers; capturing those would
-            // poison depthtex0 for the shaderpack. The translucent/hand boundary
-            // captures in MetalWorldRenderingPipeline still update depthtex0 later.
+            // main scene depth, and never from a sky pass: the sky is the first
+            // thing the framegraph renders, so capturing there would freeze
+            // depthtex0 before terrain depth exists. Weather
+            // (WEATHER_TARGET) and improved-transparency particle passes own
+            // separate depth buffers for the same reason. The translucent/hand
+            // boundary captures in MetalWorldRenderingPipeline still update
+            // depthtex0 later.
             RenderPassDescriptor.Attachment<OptionalDouble> depthAttachment = descriptor.depthAttachment();
             if (depthAttachment != null) {
                 GpuTextureView passDepth = depthAttachment.textureView();
@@ -590,11 +597,16 @@ public final class IrisMetalWorldBridge {
         int colorIndex = renderTargetIndex(name);
         if (colorIndex >= 0) {
             if (colorIndex >= renderTargets.colorTargets().targetCount()) {
-                throw new IllegalStateException(
-                        "Sampler " + name + " resolves to colortex" + colorIndex
-                                + " but this generation owns only "
-                                + renderTargets.colorTargets().targetCount() + " targets"
-                );
+                // Legacy names (eg gaux1 -> colortex4) can outrun a generation
+                // that owns fewer targets. Binding the shared white pixel keeps
+                // the draw alive without masking a valid target; the miss is
+                // recorded once per name.
+                if (REPORTED_MISSING_SAMPLER_TARGETS.add(name + ":" + colorIndex)) {
+                    MetalProbeReport.record("world override sampler fallback name=" + name
+                            + " target=" + colorIndex
+                            + " owned=" + renderTargets.colorTargets().targetCount());
+                }
+                return context.pipeline().resources().whitePixel().binding();
             }
             return new MetalRenderPass.TextureViewAndSampler(
                     renderTargets.colorTargets().readView(colorIndex),
@@ -667,8 +679,17 @@ public final class IrisMetalWorldBridge {
         }
     }
 
-    private static int shadowColorIndex(final String name) {
-        if (name.equals("shadowcolor")) {
+    /**
+     * Sky keys render first in the frame, before terrain depth exists, so the
+     * lazy depthtex0 seed must ignore their passes.
+     */
+    private static boolean isSkyKey(final ShaderKey key) {
+        return key == ShaderKey.SKY_BASIC
+                || key == ShaderKey.SKY_BASIC_COLOR
+                || key == ShaderKey.SKY_TEXTURED;
+    }
+
+    private static int shadowColorIndex(final String name) {        if (name.equals("shadowcolor")) {
             return 0;
         }
         if (!name.startsWith("shadowcolor") || name.startsWith("shadowcolorimg")) {
