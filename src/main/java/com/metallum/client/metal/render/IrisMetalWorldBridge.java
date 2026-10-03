@@ -11,7 +11,6 @@ import net.fabricmc.api.Environment;
 import net.irisshaders.iris.Iris;
 import net.irisshaders.iris.gl.blending.AlphaTest;
 import net.irisshaders.iris.gl.state.ShaderAttributeInputs;
-import net.irisshaders.iris.pipeline.WorldRenderingPhase;
 import net.irisshaders.iris.pipeline.WorldRenderingPipeline;
 import net.irisshaders.iris.pipeline.programs.ShaderKey;
 import net.irisshaders.iris.shaderpack.loading.ProgramId;
@@ -30,14 +29,17 @@ import java.util.Set;
  * moving-block draws through the shaderpack's {@code gbuffers_*} programs into
  * the Iris gbuffer, so the final composite no longer erases them.
  *
- * <p>Two entry points cooperate like the terrain bridge:
- * {@link #rewriteWorldDescriptor} (from {@code MetalCommandEncoder.createRenderPass})
- * swaps the vanilla pass attachments for the Iris gbuffer whenever the active
- * phase is on the M1 whitelist, and {@link #installPipeline} (from
- * {@code IrisRenderPassMixin.setPipeline} HEAD) installs the generation-owned
- * compiled shaderpack pipeline for the draw. Whichever entry point misses, the
- * pass stays vanilla. Fully inert unless the world pass override is enabled
- * (on by default; {@code -Dmetallum.iris.worldPass=off} disables it).</p>
+ * <p>Three entry points cooperate like the terrain bridge:
+ * {@link #armForDraw} (from {@code PreparedRenderType.drawFromBuffer} HEAD)
+ * resolves the draw's {@link RenderPipeline} to an M1 shader key and stashes
+ * it as the pending key, {@link #rewriteWorldDescriptor} (from
+ * {@code MetalCommandEncoder.createRenderPass}) consumes that key and swaps
+ * the vanilla pass attachments for the Iris gbuffer, and
+ * {@link #installPipeline} (from {@code IrisRenderPassMixin.setPipeline}
+ * HEAD) installs the generation-owned compiled shaderpack pipeline for the
+ * draw. Whichever entry point misses, the pass stays vanilla. Fully inert
+ * unless the world pass override is enabled (on by default;
+ * {@code -Dmetallum.iris.worldPass=off} disables it).</p>
  */
 @Environment(EnvType.CLIENT)
 public final class IrisMetalWorldBridge {
@@ -57,8 +59,17 @@ public final class IrisMetalWorldBridge {
     );
 
     private static final ThreadLocal<WorldContext> ACTIVE_WORLD_PASS = new ThreadLocal<>();
+    /**
+     * Draw-time arming signal set by {@link #armForDraw} at
+     * {@code PreparedRenderType.drawFromBuffer} HEAD and consumed by
+     * {@link #rewriteWorldDescriptor} when that same draw creates its render
+     * pass. 26.2 dispatches entity / block-entity draws by pipeline identity,
+     * so this replaces the dead phase-based gate.
+     */
+    private static final ThreadLocal<ShaderKey> PENDING_WORLD_KEY = new ThreadLocal<>();
     private static final Set<String> REPORTED_INSTALLS = new HashSet<>();
     private static final Set<String> REPORTED_SKIPS = new HashSet<>();
+    private static final Set<String> REPORTED_PIPELINE_SKIPS = new HashSet<>();
     private static boolean mainDepthCapturedThisFrame;
     private static boolean samplersReported;
 
@@ -68,26 +79,66 @@ public final class IrisMetalWorldBridge {
     /** Resets the per-frame lazy main-depth capture; called from {@code beginLevelRendering}. */
     static void beginFrame() {
         ACTIVE_WORLD_PASS.remove();
+        PENDING_WORLD_KEY.remove();
         mainDepthCapturedThisFrame = false;
     }
 
     /** Clears the active world pass; called from {@code MetalIrisClearMixin} at pass submit. */
     public static void endPass() {
         ACTIVE_WORLD_PASS.remove();
+        PENDING_WORLD_KEY.remove();
+    }
+
+    /**
+     * Arms the M1 world override for the draw that is about to be encoded,
+     * called from {@code PreparedRenderType.drawFromBuffer} HEAD. Returns
+     * {@code false} (and clears any stale pending key) whenever the draw must
+     * stay vanilla: world pass override disabled, no Metal world pipeline,
+     * shadow pass, or the source pipeline does not map to an M1-whitelisted
+     * shader key. On success the resolved key is stashed in
+     * {@link #PENDING_WORLD_KEY} and consumed by
+     * {@link #rewriteWorldDescriptor} for this same draw.
+     */
+    public static boolean armForDraw(final RenderPipeline source) {
+        if (!MetalDebugSwitches.WORLD_PASS) {
+            return false;
+        }
+        PENDING_WORLD_KEY.remove();
+        MetalWorldRenderingPipeline pipeline = activePipeline();
+        if (pipeline == null || ShadowRenderingState.areShadowsCurrentlyBeingRendered()) {
+            return false;
+        }
+        ShaderKey key = MetalIrisPipelines.getShaderKeyForPipeline(pipeline, source);
+        if (key == null || !M1_WORLD_KEYS.contains(key)) {
+            recordPipelineSkip(source, key, "not-whitelisted");
+            return false;
+        }
+        PENDING_WORLD_KEY.set(key);
+        return true;
     }
 
     /**
      * Rewrites the descriptor of a vanilla world pass into an Iris gbuffer
-     * write descriptor when the M1 whitelist covers the current phase. The
-     * first rewritten pass of each frame also lazily copies the vanilla main
-     * depth (which by then contains the terrain) into the Iris depthtex0
-     * texture, so entity depth writes accumulate on top of the terrain depth.
+     * write descriptor when the draw that is creating the pass was armed by
+     * {@link #armForDraw} with an M1-whitelisted shader key. The pending key
+     * is consumed here (and nowhere else), so a draw that was not armed, or
+     * whose re-creation races a pass boundary, can never take over an
+     * unrelated pass. The first rewritten pass of each frame also lazily
+     * copies the vanilla main depth (which by then contains the terrain) into
+     * the Iris depthtex0 texture, so entity depth writes accumulate on top of
+     * the terrain depth.
      */
     public static RenderPassDescriptor rewriteWorldDescriptor(
             final MetalDevice device,
             final RenderPassDescriptor descriptor
     ) {
         if (!MetalDebugSwitches.WORLD_PASS) {
+            return descriptor;
+        }
+        // Consume the draw's arming signal before any further gate, so a skip
+        // can never leave the key pending for the next, unrelated pass.
+        ShaderKey key = consumePendingKey();
+        if (key == null) {
             return descriptor;
         }
         MetalWorldRenderingPipeline pipeline = activePipeline();
@@ -97,18 +148,13 @@ public final class IrisMetalWorldBridge {
         if (ShadowRenderingState.areShadowsCurrentlyBeingRendered()) {
             return descriptor;
         }
-        WorldRenderingPhase phase = pipeline.getPhase();
-        ShaderKey key = primaryKeyForPhase(phase);
-        if (key == null) {
-            return descriptor;
-        }
         ProgramRequest request = shaderKeyToProgramRequest(key);
         Optional<IrisMetalGlslLinker.LinkedRasterProgram> linked =
                 pipeline.programs().vanilla(
                         request.program(), request.alphaTest(), request.lines(), request.clouds(), request.inputs()
                 );
         if (linked.isEmpty()) {
-            recordSkip(key, "no-program phase=" + phase);
+            recordSkip(key, "no-program");
             return descriptor;
         }
         IrisMetalGlslLinker.LinkedRasterProgram program = linked.orElseThrow();
@@ -130,7 +176,7 @@ public final class IrisMetalWorldBridge {
             }
         }
         ACTIVE_WORLD_PASS.set(new WorldContext(pipeline, key));
-        recordInstall(key, program.name(), drawBuffers, "phase=" + phase);
+        recordInstall(key, program.name(), drawBuffers, "draw");
         return renderTargets.createWorldWriteDescriptor(
                 descriptor.label().get(), drawBuffers, descriptor.renderArea
         );
@@ -160,6 +206,11 @@ public final class IrisMetalWorldBridge {
         MetalWorldRenderingPipeline pipeline = context.pipeline();
         ShaderKey key = MetalIrisPipelines.getShaderKeyForPipeline(pipeline, source);
         if (key == null || !M1_WORLD_KEYS.contains(key)) {
+            // A context exists only for armed, whitelisted draws; reaching this
+            // means the source pipeline no longer resolves the same way as at
+            // arm time. Record once per pipeline to make real-device triage
+            // possible instead of failing silently.
+            recordPipelineSkip(source, key, "not-whitelisted");
             return false;
         }
         MetalDevice device = MetalDeviceRegistry.getActiveDevice();
@@ -228,17 +279,14 @@ public final class IrisMetalWorldBridge {
     }
 
     /**
-     * M1 phase whitelist. Hand, particles, weather and clouds stay vanilla
-     * (M2/M3). {@code ENTITIES} resolves through the cutout variant; runtime
-     * attachment checks in {@link #installPipeline} catch any variant whose
-     * DRAWBUFFERS differ.
+     * Reads and clears the draw-time arming signal. 26.2 dispatches entity /
+     * block-entity draws by pipeline identity, so the M1 whitelist decision is
+     * made in {@link #armForDraw} and only the consuming draw inherits it.
      */
-    public static @Nullable ShaderKey primaryKeyForPhase(final WorldRenderingPhase phase) {
-        return switch (phase) {
-            case ENTITIES -> ShaderKey.ENTITIES_CUTOUT;
-            case BLOCK_ENTITIES -> ShaderKey.BLOCK_ENTITY;
-            default -> null;
-        };
+    private static @Nullable ShaderKey consumePendingKey() {
+        ShaderKey key = PENDING_WORLD_KEY.get();
+        PENDING_WORLD_KEY.remove();
+        return key;
     }
 
     /**
@@ -350,6 +398,24 @@ public final class IrisMetalWorldBridge {
     private static void recordSkip(final ShaderKey key, final String reason) {
         if (REPORTED_SKIPS.add(key.getName() + ":" + reason)) {
             MetalProbeReport.record("world override skip key=" + key.getName() + " reason=" + reason);
+        }
+    }
+
+    /**
+     * Diagnostic for draws that were considered but left vanilla. Deduped per
+     * (reason, key, source pipeline) so repeated draws do not flood the probe
+     * report.
+     */
+    private static void recordPipelineSkip(
+            final RenderPipeline source,
+            final @Nullable ShaderKey key,
+            final String reason
+    ) {
+        String keyName = key == null ? "<none>" : key.getName();
+        if (REPORTED_PIPELINE_SKIPS.add(reason + ":" + keyName + ":" + source.getLocation())) {
+            MetalProbeReport.record("world override skip key=" + keyName
+                    + " source=" + source.getLocation()
+                    + " reason=" + reason);
         }
     }
 

@@ -27,6 +27,7 @@
     "iris.ShaderMapMixin",
     "iris.IrisRenderSystemMixin",
     "iris.IrisRenderPassMixin",
+    "iris.PreparedRenderTypeMixin",
     "iris.GlStateManagerMixin",
     "iris.GLDebugMixin",
     "iris.IrisMetalValidationMixin",
