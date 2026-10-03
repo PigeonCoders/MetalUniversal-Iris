@@ -2,6 +2,7 @@ package com.metallum.mixin.render;
 
 import com.metallum.Metallum;
 import com.metallum.client.metal.render.MetalDebugSwitches;
+import com.metallum.client.metal.render.MetalProbeReport;
 import com.mojang.blaze3d.framegraph.FrameGraphBuilder;
 import net.minecraft.client.CloudStatus;
 import net.minecraft.client.renderer.LevelRenderer;
@@ -43,6 +44,7 @@ abstract class NoVanillaCloudsMixin {
         if (!metallum$reported) {
             metallum$reported = true;
             Metallum.LOGGER.warn("[metallum-iris][debug] addCloudsPass seen; cancelling={}", cancelling);
+            MetalProbeReport.record("addCloudsPass seen; cancelling=" + cancelling);
         }
         if (cancelling) {
             ci.cancel();

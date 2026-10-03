@@ -27,7 +27,8 @@ public final class MetallumMixinConfigPlugin implements IMixinConfigPlugin {
             "com.metallum.mixin.render.NoVanillaSkyMixin",
             "com.metallum.mixin.render.NoVanillaCloudsMixin",
             "com.metallum.mixin.render.NoVanillaCloudRendererMixin",
-            "com.metallum.mixin.render.ForceCloudStatusOffMixin"
+            "com.metallum.mixin.render.ForceCloudStatusOffMixin",
+            "com.metallum.mixin.render.MetalProbeReportMixin"
     );
 
     private boolean isMacOs;

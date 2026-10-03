@@ -2,6 +2,7 @@ package com.metallum.mixin.render;
 
 import com.metallum.Metallum;
 import com.metallum.client.metal.render.MetalDebugSwitches;
+import com.metallum.client.metal.render.MetalProbeReport;
 import net.minecraft.client.CloudStatus;
 import net.minecraft.client.renderer.CloudRenderer;
 import net.minecraft.world.phys.Vec3;
@@ -40,6 +41,7 @@ abstract class NoVanillaCloudRendererMixin {
         if (!metallum$reported) {
             metallum$reported = true;
             Metallum.LOGGER.warn("[metallum-iris][debug] cloudRenderer.render seen; cancelling={}", cancelling);
+            MetalProbeReport.record("cloudRenderer.render seen; cancelling=" + cancelling);
         }
         if (cancelling) {
             ci.cancel();

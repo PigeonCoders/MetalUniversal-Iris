@@ -10,7 +10,7 @@ import java.util.Set;
 /** Runtime diagnostic switches (all default off; no behavior change when unset). */
 public final class MetalDebugSwitches {
     /** Identifies this probe build in device logs. */
-    public static final String BUILD_TAG = "probe4";
+    public static final String BUILD_TAG = "probe5";
     public static final boolean SKIP_DEFERRED = Boolean.getBoolean("metallum.iris.debug.skipDeferred");
     public static final boolean SKIP_POST = Boolean.getBoolean("metallum.iris.debug.skipPost");
     public static final String VIEW = System.getProperty("metallum.iris.debug.view", "").trim();
