@@ -28,14 +28,15 @@ import java.util.OptionalDouble;
 import java.util.Set;
 
 /**
- * M1 non-terrain world-program wiring: routes entity / block-entity /
- * moving-block draws through the shaderpack's {@code gbuffers_*} programs into
- * the Iris gbuffer, so the final composite no longer erases them.
+ * Non-terrain world-program wiring: routes entity / block-entity /
+ * moving-block (M1) and first-person hand / held item / glint (M2) draws
+ * through the shaderpack's {@code gbuffers_*} programs into the Iris gbuffer,
+ * so the final composite no longer erases them.
  *
  * <p>Three entry points cooperate like the terrain bridge:
  * {@link #armForDraw} (from {@code PreparedRenderType.drawFromBuffer} HEAD)
- * resolves the draw's {@link RenderPipeline} to an M1 shader key and stashes
- * it as the pending key, {@link #rewriteWorldDescriptor} (from
+ * resolves the draw's {@link RenderPipeline} to a whitelisted shader key and
+ * stashes it as the pending key, {@link #rewriteWorldDescriptor} (from
  * {@code MetalCommandEncoder.createRenderPass}) consumes that key and swaps
  * the vanilla pass attachments for the Iris gbuffer, and
  * {@link #installPipeline} (from {@code IrisRenderPassMixin.setPipeline}
@@ -46,8 +47,17 @@ import java.util.Set;
  */
 @Environment(EnvType.CLIENT)
 public final class IrisMetalWorldBridge {
-    /** M1 whitelist: shader keys whose draws are taken over; everything else stays vanilla. */
-    static final Set<ShaderKey> M1_WORLD_KEYS = Set.of(
+    /**
+     * World-override whitelist: shader keys whose draws are taken over;
+     * everything else stays vanilla. Covers M1 (entities, block entities,
+     * moving blocks) plus the reachable M2 hand/held-item keys produced by the
+     * {@link MetalIrisPipelines} selectors ({@code HandRenderer}-active
+     * branches) and the constant glint mapping. The fullbright HAND_*_BRIGHT
+     * and HAND_TEXT_INTENSITY variants are deliberately absent: no selector
+     * can produce them (upstream {@code IrisPipelines} never returns them
+     * either).
+     */
+    static final Set<ShaderKey> WORLD_OVERRIDE_KEYS = Set.of(
             ShaderKey.ENTITIES_SOLID,
             ShaderKey.ENTITIES_CUTOUT,
             ShaderKey.ENTITIES_CUTOUT_DIFFUSE,
@@ -58,7 +68,14 @@ public final class IrisMetalWorldBridge {
             ShaderKey.BLOCK_ENTITY_BRIGHT,
             ShaderKey.BLOCK_ENTITY_DIFFUSE,
             ShaderKey.BE_TRANSLUCENT,
-            ShaderKey.MOVING_BLOCK
+            ShaderKey.MOVING_BLOCK,
+            ShaderKey.HAND_CUTOUT,
+            ShaderKey.HAND_CUTOUT_DIFFUSE,
+            ShaderKey.HAND_TRANSLUCENT,
+            ShaderKey.HAND_WATER_DIFFUSE,
+            ShaderKey.HAND_TEXT,
+            ShaderKey.HAND_TEXT_TRANSLUCENT,
+            ShaderKey.GLINT
     );
 
     private static final ThreadLocal<WorldContext> ACTIVE_WORLD_PASS = new ThreadLocal<>();
@@ -95,11 +112,11 @@ public final class IrisMetalWorldBridge {
     }
 
     /**
-     * Arms the M1 world override for the draw that is about to be encoded,
+     * Arms the world override for the draw that is about to be encoded,
      * called from {@code PreparedRenderType.drawFromBuffer} HEAD. Returns
      * {@code false} (and clears any stale pending key) whenever the draw must
      * stay vanilla: world pass override disabled, no Metal world pipeline,
-     * shadow pass, or the source pipeline does not map to an M1-whitelisted
+     * shadow pass, or the source pipeline does not map to a whitelisted
      * shader key. On success the resolved key is stashed in
      * {@link #PENDING_WORLD_KEY} and consumed by
      * {@link #rewriteWorldDescriptor} for this same draw.
@@ -114,7 +131,7 @@ public final class IrisMetalWorldBridge {
             return false;
         }
         ShaderKey key = MetalIrisPipelines.getShaderKeyForPipeline(pipeline, source);
-        if (key == null || !M1_WORLD_KEYS.contains(key)) {
+        if (key == null || !WORLD_OVERRIDE_KEYS.contains(key)) {
             recordPipelineSkip(source, key, "not-whitelisted");
             return false;
         }
@@ -125,7 +142,7 @@ public final class IrisMetalWorldBridge {
     /**
      * Rewrites the descriptor of a vanilla world pass into an Iris gbuffer
      * write descriptor when the draw that is creating the pass was armed by
-     * {@link #armForDraw} with an M1-whitelisted shader key. The pending key
+     * {@link #armForDraw} with a whitelisted shader key. The pending key
      * is consumed here (and nowhere else), so a draw that was not armed, or
      * whose re-creation races a pass boundary, can never take over an
      * unrelated pass. The first rewritten pass of each frame also lazily
@@ -192,7 +209,7 @@ public final class IrisMetalWorldBridge {
      * world draw, bypassing RenderPass's vanilla format/count validation the
      * same way {@link IrisMetalTerrainBridge#installPipeline} does for Sodium.
      * Returns {@code false} (leaving the pass vanilla) unless a rewritten
-     * world pass is active and the mapped key is on the M1 whitelist.
+     * world pass is active and the mapped key is on the world-override whitelist.
      */
     public static boolean installPipeline(
             final RenderPassBackend backend,
@@ -210,7 +227,7 @@ public final class IrisMetalWorldBridge {
         }
         MetalWorldRenderingPipeline pipeline = context.pipeline();
         ShaderKey key = MetalIrisPipelines.getShaderKeyForPipeline(pipeline, source);
-        if (key == null || !M1_WORLD_KEYS.contains(key)) {
+        if (key == null || !WORLD_OVERRIDE_KEYS.contains(key)) {
             // A context exists only for armed, whitelisted draws; reaching this
             // means the source pipeline no longer resolves the same way as at
             // arm time. Record once per pipeline to make real-device triage
@@ -349,7 +366,7 @@ public final class IrisMetalWorldBridge {
 
     /**
      * Reads and clears the draw-time arming signal. 26.2 dispatches entity /
-     * block-entity draws by pipeline identity, so the M1 whitelist decision is
+     * block-entity draws by pipeline identity, so the whitelist decision is
      * made in {@link #armForDraw} and only the consuming draw inherits it.
      */
     private static @Nullable ShaderKey consumePendingKey() {

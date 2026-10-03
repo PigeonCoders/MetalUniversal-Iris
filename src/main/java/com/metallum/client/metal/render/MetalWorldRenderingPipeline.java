@@ -239,9 +239,9 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
                     linked -> this.uniformValues.register(key, "sodium_" + key.getName(), linked)
             );
         }
-        // M1: pack uniform blocks for every non-terrain world key the world
-        // bridge can install, so uniformSlice(key) succeeds at draw time.
-        for (ShaderKey key : IrisMetalWorldBridge.M1_WORLD_KEYS) {
+        // Pack uniform blocks for every world key the world bridge can
+        // install (M1 + M2), so uniformSlice(key) succeeds at draw time.
+        for (ShaderKey key : IrisMetalWorldBridge.WORLD_OVERRIDE_KEYS) {
             IrisMetalWorldBridge.ProgramRequest request = IrisMetalWorldBridge.shaderKeyToProgramRequest(key);
             this.programs.vanilla(
                     request.program(), request.alphaTest(), request.lines(), request.clouds(), request.inputs()
