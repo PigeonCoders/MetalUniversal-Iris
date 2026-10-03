@@ -333,11 +333,22 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
     @Override
     public void beginTranslucents() {
         this.receipts.recordEvent("depthtex1.capture");
-        // M1: the vanilla depth was already folded into depthtex0 by the world
-        // bridge's first rewrite of this frame, so the translucent boundary
-        // only needs mainDepth -> noTranslucents. Nothing is captured from the
-        // vanilla depth here anymore.
-        this.executionGraph.captureNoTranslucentsDepthOnly(this.resources());
+        if (usesVanillaSceneDepth()) {
+            // Vanilla depth is the authoritative scene depth: taken-over draws
+            // test/write it, so depthtex0 and depthtex1 are derived from it
+            // (terrain + entities, before translucent water).
+            RenderTarget target = Minecraft.getInstance().gameRenderer.mainRenderTarget();
+            GpuTexture depth = target.getDepthTexture();
+            if (depth == null) {
+                throw new IllegalStateException("Iris translucent boundary has no main depth texture");
+            }
+            this.executionGraph.captureNoTranslucentsDepth(this.resources(), depth);
+        } else {
+            // Legacy Iris-depth path: the vanilla depth was already folded into
+            // depthtex0 by the world bridge's first rewrite of this frame, so
+            // the translucent boundary only needs mainDepth -> noTranslucents.
+            this.executionGraph.captureNoTranslucentsDepthOnly(this.resources());
+        }
         this.receipts.recordEvent("deferred");
         if (!MetalDebugSwitches.SKIP_DEFERRED) {
             this.executionGraph.executeDeferred(this.resources());
@@ -354,10 +365,25 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
         this.receipts.recordEvent("center-depth.sample");
         this.executionGraph.sampleCenterDepth(depthView, 1.0F / 60.0F);
         this.receipts.recordEvent("depthtex2.capture");
-        // M1: same reasoning as beginTranslucents; hand and particles still
-        // draw into the vanilla depth, so depthtex2 comes from the Iris
-        // mainDepth that already contains terrain + entities.
-        this.executionGraph.captureNoHandDepthOnly(this.resources());
+        if (usesVanillaSceneDepth()) {
+            // depthtex2 = current scene (terrain + entities + water) without
+            // hand; hand and particles still draw into the vanilla depth, so
+            // vanilla is the authoritative source.
+            this.executionGraph.captureNoHandDepth(this.resources(), depthView.texture());
+        } else {
+            // Legacy Iris-depth path: depthtex2 comes from the Iris mainDepth.
+            this.executionGraph.captureNoHandDepthOnly(this.resources());
+        }
+    }
+
+    /**
+     * Whether taken-over world draws used the vanilla scene depth attachment
+     * (default) instead of the Iris depthtex0 texture. Mirrors the choice in
+     * {@link IrisMetalWorldBridge#rewriteWorldDescriptor}; captures must be
+     * sourced accordingly.
+     */
+    private static boolean usesVanillaSceneDepth() {
+        return MetalDebugSwitches.WORLD_PASS && MetalDebugSwitches.WORLD_PASS_DEPTH_VANILLA;
     }
 
     @Override

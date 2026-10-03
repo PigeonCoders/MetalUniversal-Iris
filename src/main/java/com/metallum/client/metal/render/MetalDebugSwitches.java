@@ -26,6 +26,15 @@ public final class MetalDebugSwitches {
     public static final boolean WORLD_PASS = !"off".equalsIgnoreCase(
             System.getProperty("metallum.iris.worldPass", "on").trim()
     );
+    /**
+     * World-override depth attachment: {@code true} (default) makes taken-over
+     * draws test/write the vanilla scene depth, so translucents (water) see
+     * entity/hand depth; {@code false} restores the old Iris depthtex0
+     * attachment. A/B diagnostic: {@code -Dmetallum.iris.worldPass.depthVanilla=false}.
+     */
+    public static final boolean WORLD_PASS_DEPTH_VANILLA = !"false".equalsIgnoreCase(
+            System.getProperty("metallum.iris.worldPass.depthVanilla", "true").trim()
+    );
     /** Logs the sampler keys of the first non-terrain world pass once per process. */
     public static final boolean LOG_SAMPLERS = Boolean.getBoolean("metallum.iris.worldPass.logSamplers");
     public static final List<StripEntry> STAGE_STRIP = parseStageStrip(

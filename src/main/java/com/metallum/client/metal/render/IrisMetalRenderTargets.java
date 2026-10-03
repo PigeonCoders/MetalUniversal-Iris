@@ -353,10 +353,19 @@ final class IrisMetalRenderTargets implements AutoCloseable {
         return descriptor;
     }
 
+    /**
+     * Builds the rewritten attachment set for a taken-over world draw. When
+     * {@code depthView} is present (M2 vanilla-depth mode) the pass tests and
+     * writes the vanilla scene depth, so later translucent terrain passes
+     * observe entity/hand depth; {@code null} falls back to the Iris
+     * depthtex0 attachment (legacy behavior).
+     */
     RenderPassDescriptor createWorldWriteDescriptor(
             final String label,
             final int[] drawBuffers,
-            final RenderPass.@Nullable RenderArea renderArea
+            final RenderPass.@Nullable RenderArea renderArea,
+            final @Nullable GpuTextureView depthView,
+            final OptionalDouble depthClear
     ) {
         ensureOpen();
         if (drawBuffers.length == 0) {
@@ -374,7 +383,11 @@ final class IrisMetalRenderTargets implements AutoCloseable {
             written[logicalTarget] = true;
             descriptor.withColorAttachment(colorTargets.readView(logicalTarget), Optional.empty());
         }
-        descriptor.withDepthAttachment(mainDepthView(), OptionalDouble.empty());
+        if (depthView != null) {
+            descriptor.withDepthAttachment(depthView, depthClear);
+        } else {
+            descriptor.withDepthAttachment(mainDepthView(), OptionalDouble.empty());
+        }
         descriptor.withRenderArea(renderArea == null
                 ? new RenderPass.RenderArea(0, 0, width, height)
                 : renderArea);

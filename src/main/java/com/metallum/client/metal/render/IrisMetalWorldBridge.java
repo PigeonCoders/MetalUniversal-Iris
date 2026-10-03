@@ -147,8 +147,14 @@ public final class IrisMetalWorldBridge {
      * whose re-creation races a pass boundary, can never take over an
      * unrelated pass. The first rewritten pass of each frame also lazily
      * copies the vanilla main depth (which by then contains the terrain) into
-     * the Iris depthtex0 texture, so entity depth writes accumulate on top of
-     * the terrain depth.
+     * the Iris depthtex0 texture.
+     *
+     * <p>By default the rewritten pass keeps the <em>vanilla</em> depth
+     * attachment: taken-over draws must test/write the same depth buffer the
+     * terrain bridge uses, or translucent terrain (water) passes would never
+     * see entity/hand depth and would draw straight through them.
+     * {@code -Dmetallum.iris.worldPass.depthVanilla=false} restores the old
+     * Iris-depthtex0 attachment for A/B comparison.</p>
      */
     public static RenderPassDescriptor rewriteWorldDescriptor(
             final MetalDevice device,
@@ -197,10 +203,16 @@ public final class IrisMetalWorldBridge {
                 }
             }
         }
+        RenderPassDescriptor.Attachment<OptionalDouble> vanillaDepth =
+                MetalDebugSwitches.WORLD_PASS_DEPTH_VANILLA ? descriptor.depthAttachment() : null;
+        GpuTextureView depthView = vanillaDepth == null ? null : vanillaDepth.textureView();
+        OptionalDouble depthClear = vanillaDepth == null || vanillaDepth.clearValue() == null
+                ? OptionalDouble.empty()
+                : vanillaDepth.clearValue();
         ACTIVE_WORLD_PASS.set(new WorldContext(pipeline, key));
         recordInstall(key, program.name(), drawBuffers, "draw");
         return renderTargets.createWorldWriteDescriptor(
-                descriptor.label().get(), drawBuffers, descriptor.renderArea
+                descriptor.label().get(), drawBuffers, descriptor.renderArea, depthView, depthClear
         );
     }
 
