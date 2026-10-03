@@ -28,6 +28,8 @@
     "iris.IrisRenderSystemMixin",
     "iris.IrisRenderPassMixin",
     "iris.PreparedRenderTypeMixin",
+    "iris.QuadParticleFeatureRendererMixin",
+    "iris.WeatherEffectRendererMixin",
     "iris.GlStateManagerMixin",
     "iris.GLDebugMixin",
     "iris.IrisMetalValidationMixin",

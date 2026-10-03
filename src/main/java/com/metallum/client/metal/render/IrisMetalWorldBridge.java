@@ -5,8 +5,10 @@ import com.metallum.client.metal.render.mtl.MTLPixelFormat;
 import com.mojang.blaze3d.buffers.GpuBuffer;
 import com.mojang.blaze3d.buffers.GpuBufferSlice;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
+import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.systems.RenderPassBackend;
 import com.mojang.blaze3d.systems.RenderPassDescriptor;
+import com.mojang.blaze3d.textures.GpuTexture;
 import com.mojang.blaze3d.textures.GpuTextureView;
 import com.mojang.blaze3d.vertex.VertexFormat;
 import com.mojang.blaze3d.vertex.VertexFormatElement;
@@ -19,6 +21,7 @@ import net.irisshaders.iris.pipeline.WorldRenderingPipeline;
 import net.irisshaders.iris.pipeline.programs.ShaderKey;
 import net.irisshaders.iris.shaderpack.loading.ProgramId;
 import net.irisshaders.iris.shadows.ShadowRenderingState;
+import net.minecraft.client.Minecraft;
 import org.jspecify.annotations.Nullable;
 
 import java.nio.ByteBuffer;
@@ -149,6 +152,35 @@ public final class IrisMetalWorldBridge {
     }
 
     /**
+     * Arms the world override with an explicitly known shader key, for draw
+     * paths that build their own render pass instead of going through
+     * {@code PreparedRenderType.drawFromBuffer}: 26.2's
+     * {@code QuadParticleFeatureRenderer.executeGroup} and
+     * {@code WeatherEffectRenderer.render}. Applies the same gates as the
+     * pipeline overload (world-pass switch, active pipeline, shadow pass,
+     * whitelist) and stashes the key for the next pass creation, which
+     * {@link #rewriteWorldDescriptor} consumes.
+     */
+    public static boolean armForDraw(final @Nullable ShaderKey key) {
+        if (!MetalDebugSwitches.WORLD_PASS) {
+            return false;
+        }
+        PENDING_WORLD_KEY.remove();
+        MetalWorldRenderingPipeline pipeline = activePipeline();
+        if (pipeline == null || ShadowRenderingState.areShadowsCurrentlyBeingRendered()) {
+            return false;
+        }
+        if (key == null || !WORLD_OVERRIDE_KEYS.contains(key)) {
+            if (key != null) {
+                recordSkip(key, "not-whitelisted");
+            }
+            return false;
+        }
+        PENDING_WORLD_KEY.set(key);
+        return true;
+    }
+
+    /**
      * Rewrites the descriptor of a vanilla world pass into an Iris gbuffer
      * write descriptor when the draw that is creating the pass was armed by
      * {@link #armForDraw} with a whitelisted shader key. The pending key
@@ -201,14 +233,19 @@ public final class IrisMetalWorldBridge {
         }
         IrisMetalRenderTargets renderTargets = pipeline.resources().renderTargets();
         if (!mainDepthCapturedThisFrame) {
-            mainDepthCapturedThisFrame = true;
+            // Only seed depthtex0 from a pass that actually targets the vanilla
+            // main scene depth. Weather (WEATHER_TARGET) and improved-transparency
+            // particle passes own separate depth buffers; capturing those would
+            // poison depthtex0 for the shaderpack. The translucent/hand boundary
+            // captures in MetalWorldRenderingPipeline still update depthtex0 later.
             RenderPassDescriptor.Attachment<OptionalDouble> depthAttachment = descriptor.depthAttachment();
             if (depthAttachment != null) {
-                GpuTextureView vanillaDepth = depthAttachment.textureView();
-                if (vanillaDepth != null) {
-                    renderTargets.captureMainDepth(
-                            device.createCommandEncoder(), vanillaDepth.texture()
-                    );
+                GpuTextureView passDepth = depthAttachment.textureView();
+                GpuTexture mainSceneDepth = vanillaMainDepthTexture();
+                if (passDepth != null && mainSceneDepth != null
+                        && passDepth.texture() == mainSceneDepth) {
+                    mainDepthCapturedThisFrame = true;
+                    renderTargets.captureMainDepth(device.createCommandEncoder(), mainSceneDepth);
                 }
             }
         }
@@ -244,6 +281,18 @@ public final class IrisMetalWorldBridge {
         }
         WorldContext context = currentContext();
         if (context == null) {
+            // No rewritten pass for this draw. When the pipeline nevertheless
+            // maps to a whitelisted key, a bypass arming path (particles /
+            // weather) either did not fire or its pending key was lost; record
+            // once per source so a real-device run can confirm the bypass
+            // arming works.
+            MetalWorldRenderingPipeline active = activePipeline();
+            if (active != null && !ShadowRenderingState.areShadowsCurrentlyBeingRendered()) {
+                ShaderKey resolved = MetalIrisPipelines.getShaderKeyForPipeline(active, source);
+                if (resolved != null && WORLD_OVERRIDE_KEYS.contains(resolved)) {
+                    recordPipelineSkip(source, resolved, "no-context");
+                }
+            }
             return false;
         }
         MetalWorldRenderingPipeline pipeline = context.pipeline();
@@ -675,5 +724,19 @@ public final class IrisMetalWorldBridge {
             MetalWorldRenderingPipeline pipeline,
             ShaderKey key
     ) {
+    }
+
+    /**
+     * The vanilla main render target's depth texture, used to recognize passes
+     * that actually target the main scene (weather and improved-transparency
+     * particles build passes on their own targets).
+     */
+    private static @Nullable GpuTexture vanillaMainDepthTexture() {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft == null || minecraft.gameRenderer == null) {
+            return null;
+        }
+        RenderTarget target = minecraft.gameRenderer.mainRenderTarget();
+        return target == null ? null : target.getDepthTexture();
     }
 }
