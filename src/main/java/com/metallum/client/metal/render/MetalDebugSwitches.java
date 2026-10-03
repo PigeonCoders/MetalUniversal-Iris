@@ -11,6 +11,8 @@ public final class MetalDebugSwitches {
     public static final boolean SKIP_POST = Boolean.getBoolean("metallum.iris.debug.skipPost");
     public static final String VIEW = System.getProperty("metallum.iris.debug.view", "").trim();
     public static final String SKIP_PASS = System.getProperty("metallum.iris.debug.skipPass", "").trim();
+    public static final boolean NO_SHADOW_MATRICES = Boolean.getBoolean("metallum.iris.debug.noShadowMatrices");
+    public static final boolean ZERO_VL = Boolean.getBoolean("metallum.iris.debug.zeroVl");
     private static final Set<String> SKIP_PASS_NAMES = parsePassNames(SKIP_PASS);
 
     private MetalDebugSwitches() {
@@ -33,9 +35,10 @@ public final class MetalDebugSwitches {
     }
 
     static {
-        if (SKIP_DEFERRED || SKIP_POST || !VIEW.isEmpty() || !SKIP_PASS_NAMES.isEmpty()) {
-            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: skipDeferred={} skipPost={} view={} skipPass={}",
-                    SKIP_DEFERRED, SKIP_POST, VIEW, SKIP_PASS);
+        if (SKIP_DEFERRED || SKIP_POST || !VIEW.isEmpty() || !SKIP_PASS_NAMES.isEmpty()
+                || NO_SHADOW_MATRICES || ZERO_VL) {
+            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: skipDeferred={} skipPost={} view={} skipPass={} noShadowMatrices={} zeroVl={}",
+                    SKIP_DEFERRED, SKIP_POST, VIEW, SKIP_PASS, NO_SHADOW_MATRICES, ZERO_VL);
         }
     }
 }

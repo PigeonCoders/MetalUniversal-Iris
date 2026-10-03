@@ -100,7 +100,8 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
                 this.directives.getSunPathRotation(),
                 customUniforms,
                 this.frameState.updateNotifier(),
-                () -> this.frameState.phase().ordinal()
+                () -> this.frameState.phase().ordinal(),
+                this.directives.getShadowDirectives()
         );
         this.executionGraph.attachUniformValues(this.uniformValues);
         publishWorldSettings();

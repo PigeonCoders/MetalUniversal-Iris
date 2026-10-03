@@ -13,6 +13,7 @@ import net.irisshaders.iris.uniforms.FrameUpdateNotifier;
 import net.irisshaders.iris.uniforms.SystemTimeUniforms;
 import net.irisshaders.iris.uniforms.custom.CustomUniforms;
 import net.irisshaders.iris.pipeline.programs.ShaderKey;
+import net.irisshaders.iris.shaderpack.properties.PackShadowDirectives;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
@@ -76,6 +77,7 @@ final class IrisMetalUniformValues implements AutoCloseable {
     private static final String CORE_NORMAL_MATRIX = "iris_NormalMat";
 
     private final float sunPathRotation;
+    private final @Nullable PackShadowDirectives shadowDirectives;
     private final @Nullable CustomUniforms customUniforms;
     private final @Nullable FrameUpdateNotifier updateNotifier;
     private final IntSupplier renderStageSource;
@@ -86,6 +88,7 @@ final class IrisMetalUniformValues implements AutoCloseable {
     private final Matrix4f previousProjection = new Matrix4f();
     private final Vector3d previousCameraPosition = new Vector3d();
     private boolean warnedIdentityMatrices;
+    private boolean warnedShadowFallback;
     private boolean closed;
 
     /**
@@ -135,20 +138,21 @@ final class IrisMetalUniformValues implements AutoCloseable {
     }
 
     IrisMetalUniformValues(final float sunPathRotation) {
-        this(sunPathRotation, null, null, () -> 0, false);
+        this(sunPathRotation, null, null, () -> 0, false, null);
     }
 
     IrisMetalUniformValues(final float sunPathRotation, final IntSupplier renderStageSource) {
-        this(sunPathRotation, null, null, renderStageSource, false);
+        this(sunPathRotation, null, null, renderStageSource, false, null);
     }
 
     IrisMetalUniformValues(
             final float sunPathRotation,
             final CustomUniforms customUniforms,
             final FrameUpdateNotifier updateNotifier,
-            final IntSupplier renderStageSource
+            final IntSupplier renderStageSource,
+            final PackShadowDirectives shadowDirectives
     ) {
-        this(sunPathRotation, customUniforms, updateNotifier, renderStageSource, true);
+        this(sunPathRotation, customUniforms, updateNotifier, renderStageSource, true, shadowDirectives);
     }
 
     private IrisMetalUniformValues(
@@ -156,12 +160,14 @@ final class IrisMetalUniformValues implements AutoCloseable {
             final @Nullable CustomUniforms customUniforms,
             final @Nullable FrameUpdateNotifier updateNotifier,
             final IntSupplier renderStageSource,
-            final boolean strict
+            final boolean strict,
+            final @Nullable PackShadowDirectives shadowDirectives
     ) {
         if ((customUniforms == null) != (updateNotifier == null)) {
             throw new IllegalArgumentException("Iris custom uniforms and frame notifier must be supplied together");
         }
         this.sunPathRotation = sunPathRotation;
+        this.shadowDirectives = shadowDirectives;
         this.customUniforms = customUniforms;
         this.updateNotifier = updateNotifier;
         this.renderStageSource = Objects.requireNonNull(renderStageSource, "renderStageSource");
@@ -571,6 +577,10 @@ final class IrisMetalUniformValues implements AutoCloseable {
             Matrix4f modelViewInverse,
             Matrix4f projection,
             Matrix4f projectionInverse,
+            Matrix4f shadowModelView,
+            Matrix4f shadowModelViewInverse,
+            Matrix4f shadowProjection,
+            Matrix4f shadowProjectionInverse,
             Matrix3f normalMatrix,
             Vector3d cameraPosition,
             Vector4f sunPosition,
@@ -625,7 +635,9 @@ final class IrisMetalUniformValues implements AutoCloseable {
     private Frame neutralFrame() {
         SystemFrameTime systemTime = systemFrameTime();
         return new Frame(
-                new Matrix4f(), new Matrix4f(), new Matrix4f(), new Matrix4f(), new Matrix3f(),
+                new Matrix4f(), new Matrix4f(), new Matrix4f(), new Matrix4f(),
+                new Matrix4f(), new Matrix4f(), new Matrix4f(), new Matrix4f(),
+                new Matrix3f(),
                 new Vector3d(),
                 new Vector4f(0.0f, 100.0f, 0.0f, 0.0f),
                 new Vector4f(0.0f, -100.0f, 0.0f, 0.0f),
@@ -661,6 +673,10 @@ final class IrisMetalUniformValues implements AutoCloseable {
         CelestialUniforms celestial = new CelestialUniforms(this.sunPathRotation);
         Vector4f shadowLight = celestial.getShadowLightPosition();
         boolean day = CelestialUniforms.isDay();
+        float shadowAngle = CelestialUniforms.getSunAngle(day) / 360.0f;
+        ShadowMatrices shadowMatrices = computeShadowMatrices(
+                modelView, modelViewInverse, projection, projectionInverse, cameraPosition, shadowAngle
+        );
         Vector4f sun = day
                 ? new Vector4f(shadowLight)
                 : new Vector4f(-shadowLight.x, -shadowLight.y, -shadowLight.z, shadowLight.w);
@@ -679,6 +695,10 @@ final class IrisMetalUniformValues implements AutoCloseable {
                 modelViewInverse,
                 projection,
                 projectionInverse,
+                shadowMatrices.modelView(),
+                shadowMatrices.modelViewInverse(),
+                shadowMatrices.projection(),
+                shadowMatrices.projectionInverse(),
                 normalMatrix,
                 cameraPosition,
                 sun,
@@ -692,7 +712,7 @@ final class IrisMetalUniformValues implements AutoCloseable {
                 tickDelta,
                 systemTime.frameTime(),
                 sunAngle,
-                CelestialUniforms.getSunAngle(day) / 360.0f,
+                shadowAngle,
                 level == null ? 0.0f : level.getRainLevel(tickDelta),
                 minecraft.options == null ? 1.0f : minecraft.options.gamma().get().floatValue(),
                 mainTarget.width,
@@ -703,6 +723,78 @@ final class IrisMetalUniformValues implements AutoCloseable {
                 level == null ? 0 : (int) (level.getDefaultClockTime() / 24000L),
                 systemTime.frameCounter()
         );
+    }
+
+    /**
+     * Builds the pack shadow matrices the same way upstream GL Iris does
+     * ({@code ShadowMatrices}/{@code ShadowRenderer}): an orthographic
+     * projection over the shadow distance plus a sun-relative, grid-snapped
+     * model view. Falls back to the camera matrices — the previous behavior —
+     * when the pack requests a perspective shadow projection (not implemented
+     * here), the directives are missing, or the A/B switch is enabled.
+     */
+    private ShadowMatrices computeShadowMatrices(
+            final Matrix4f cameraModelView,
+            final Matrix4f cameraModelViewInverse,
+            final Matrix4f cameraProjection,
+            final Matrix4f cameraProjectionInverse,
+            final Vector3d cameraPosition,
+            final float shadowAngle
+    ) {
+        if (MetalDebugSwitches.NO_SHADOW_MATRICES || this.shadowDirectives == null
+                || this.shadowDirectives.getFov() != null) {
+            if (!MetalDebugSwitches.NO_SHADOW_MATRICES && !this.warnedShadowFallback) {
+                this.warnedShadowFallback = true;
+                Metallum.LOGGER.warn(
+                        "[metallum-iris] shadow matrices unavailable ({}); falling back to camera matrices",
+                        this.shadowDirectives == null
+                                ? "no shadow directives"
+                                : "pack requests a perspective shadow projection"
+                );
+            }
+            return new ShadowMatrices(
+                    cameraModelView, cameraModelViewInverse, cameraProjection, cameraProjectionInverse
+            );
+        }
+
+        float halfPlaneLength = this.shadowDirectives.getDistance();
+        // Ortho is built in the port's zero-to-one depth convention and then
+        // converted into the [-1, 1] space packs expect — the same handling
+        // sampleLiveFrame applies to the gbuffer projection.
+        Matrix4f shadowProjection = MetalIrisDepthConvention.packProjection(
+                new Matrix4f().setOrthoSymmetric(
+                        halfPlaneLength * 2.0F, halfPlaneLength * 2.0F,
+                        this.shadowDirectives.getNearPlane(), this.shadowDirectives.getFarPlane(), true
+                )
+        );
+        Matrix4f shadowProjectionInverse = new Matrix4f(shadowProjection).invert();
+
+        float skyAngle = shadowAngle < 0.25F ? shadowAngle + 0.75F : shadowAngle - 0.25F;
+        Matrix4f shadowModelView = new Matrix4f()
+                .rotateX((float) Math.toRadians(90.0))
+                .rotateZ((float) Math.toRadians(skyAngle * -360.0F))
+                .rotateX((float) Math.toRadians(this.sunPathRotation));
+        float intervalSize = this.shadowDirectives.getIntervalSize();
+        if (Math.abs(intervalSize) != 0.0F) {
+            shadowModelView.translate(
+                    (float) cameraPosition.x % intervalSize - intervalSize / 2.0F,
+                    (float) cameraPosition.y % intervalSize - intervalSize / 2.0F,
+                    (float) cameraPosition.z % intervalSize - intervalSize / 2.0F
+            );
+        }
+        Matrix4f shadowModelViewInverse = new Matrix4f(shadowModelView).invert();
+
+        return new ShadowMatrices(
+                shadowModelView, shadowModelViewInverse, shadowProjection, shadowProjectionInverse
+        );
+    }
+
+    private record ShadowMatrices(
+            Matrix4f modelView,
+            Matrix4f modelViewInverse,
+            Matrix4f projection,
+            Matrix4f projectionInverse
+    ) {
     }
 
     /**
@@ -749,12 +841,14 @@ final class IrisMetalUniformValues implements AutoCloseable {
         int at = member.offset();
         switch (member.name()) {
             // --- matrices (exact) ---
-            case "gbufferModelView", "iris_ModelViewMatrix", "shadowModelView" -> putMat4(out, at, frame.modelView());
-            case "gbufferModelViewInverse", "iris_ModelViewMatrixInverse", "shadowModelViewInverse" ->
-                    putMat4(out, at, frame.modelViewInverse());
-            case "gbufferProjection", "iris_ProjectionMatrix", "shadowProjection" -> putMat4(out, at, frame.projection());
-            case "gbufferProjectionInverse", "iris_ProjectionMatrixInverse", "shadowProjectionInverse" ->
-                    putMat4(out, at, frame.projectionInverse());
+            case "gbufferModelView", "iris_ModelViewMatrix" -> putMat4(out, at, frame.modelView());
+            case "shadowModelView" -> putMat4(out, at, frame.shadowModelView());
+            case "gbufferModelViewInverse", "iris_ModelViewMatrixInverse" -> putMat4(out, at, frame.modelViewInverse());
+            case "shadowModelViewInverse" -> putMat4(out, at, frame.shadowModelViewInverse());
+            case "gbufferProjection", "iris_ProjectionMatrix" -> putMat4(out, at, frame.projection());
+            case "shadowProjection" -> putMat4(out, at, frame.shadowProjection());
+            case "gbufferProjectionInverse", "iris_ProjectionMatrixInverse" -> putMat4(out, at, frame.projectionInverse());
+            case "shadowProjectionInverse" -> putMat4(out, at, frame.shadowProjectionInverse());
             case "gbufferPreviousModelView" -> putMat4(out, at, this.previousModelView);
             case "gbufferPreviousProjection" -> putMat4(out, at, this.previousProjection);
             case "iris_NormalMat", "normalMatrix" -> putMat3(out, at, frame.normalMatrix());

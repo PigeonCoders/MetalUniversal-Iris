@@ -181,6 +181,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
     private BitSet state = new BitSet();
     private BitSet shadowState = new BitSet();
     private final Set<String> skippedPasses = new HashSet<>();
+    private boolean warnedZeroVl;
     private boolean prepared;
     private boolean closed;
 
@@ -704,9 +705,42 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                 executeRaster(plan, rasterPipelines.get(plan), resources, null);
                 resources.renderTargets().colorTargets().restore(plan.stateAfter());
                 state = plan.stateAfter();
+                zeroCompositeLightmap(plan, resources);
             }
         } finally {
             currentResourcesForDispatch = null;
+        }
+    }
+
+    /**
+     * {@code metallum.iris.debug.zeroVl} probe: right after the composite pass
+     * (composite0) writes colortex1, clear its read side to (0,0,0,1) so every
+     * later pass sees an empty vl buffer. On-device artifact bisection only;
+     * a no-op when the switch is off or the pack has a single color target.
+     */
+    private void zeroCompositeLightmap(final RasterPlan plan, final IrisMetalWorldResources resources) {
+        if (!MetalDebugSwitches.ZERO_VL || !"composite".equals(plan.name())) {
+            return;
+        }
+        IrisMetalRenderTargets targets = resources.renderTargets();
+        IrisMetalPingPongTargets colors = targets.colorTargets();
+        if (colors.targetCount() <= 1) {
+            return;
+        }
+        MetalGpuTextureView lightmapView = new MetalGpuTextureView(colors.readTexture(1), 0, 1);
+        Vector4fc clearColor = new Vector4f(0.0F, 0.0F, 0.0F, 1.0F);
+        RenderPassDescriptor descriptor = RenderPassDescriptor.create(
+                () -> "Iris zeroVl probe: " + plan.name()
+        ).withColorAttachment(lightmapView, Optional.of(clearColor))
+                .withRenderArea(new RenderPass.RenderArea(0, 0, targets.width(), targets.height()));
+        MetalCommandEncoder encoder = activeEncoder();
+        // No draws: the encoder materializes the pass on submit, which must
+        // happen while the descriptor's views are still open.
+        encoder.createRenderPass(descriptor);
+        encoder.submitRenderPass();
+        if (!this.warnedZeroVl) {
+            this.warnedZeroVl = true;
+            Metallum.LOGGER.warn("[metallum-iris][debug] zeroVl probe: cleared colortex1 after '{}'", plan.name());
         }
     }
 
