@@ -32,9 +32,10 @@ import java.util.Set;
 
 /**
  * Non-terrain world-program wiring: routes entity / block-entity /
- * moving-block (M1) and first-person hand / held item / glint (M2) draws
- * through the shaderpack's {@code gbuffers_*} programs into the Iris gbuffer,
- * so the final composite no longer erases them.
+ * moving-block (M1), first-person hand / held item / glint (M2) and
+ * particles / weather (M3) draws through the shaderpack's {@code gbuffers_*}
+ * programs into the Iris gbuffer, so the final composite no longer erases
+ * them.
  *
  * <p>Three entry points cooperate like the terrain bridge:
  * {@link #armForDraw} (from {@code PreparedRenderType.drawFromBuffer} HEAD)
@@ -53,12 +54,12 @@ public final class IrisMetalWorldBridge {
     /**
      * World-override whitelist: shader keys whose draws are taken over;
      * everything else stays vanilla. Covers M1 (entities, block entities,
-     * moving blocks) plus the reachable M2 hand/held-item keys produced by the
+     * moving blocks), the reachable M2 hand/held-item keys produced by the
      * {@link MetalIrisPipelines} selectors ({@code HandRenderer}-active
-     * branches) and the constant glint mapping. The fullbright HAND_*_BRIGHT
-     * and HAND_TEXT_INTENSITY variants are deliberately absent: no selector
-     * can produce them (upstream {@code IrisPipelines} never returns them
-     * either).
+     * branches), the constant glint mapping, and M3 particles/weather. The
+     * fullbright HAND_*_BRIGHT and HAND_TEXT_INTENSITY variants are
+     * deliberately absent: no selector can produce them (upstream
+     * {@code IrisPipelines} never returns them either).
      */
     static final Set<ShaderKey> WORLD_OVERRIDE_KEYS = Set.of(
             ShaderKey.ENTITIES_SOLID,
@@ -78,7 +79,10 @@ public final class IrisMetalWorldBridge {
             ShaderKey.HAND_WATER_DIFFUSE,
             ShaderKey.HAND_TEXT,
             ShaderKey.HAND_TEXT_TRANSLUCENT,
-            ShaderKey.GLINT
+            ShaderKey.GLINT,
+            ShaderKey.PARTICLES,
+            ShaderKey.PARTICLES_TRANS,
+            ShaderKey.WEATHER
     );
 
     private static final ThreadLocal<WorldContext> ACTIVE_WORLD_PASS = new ThreadLocal<>();

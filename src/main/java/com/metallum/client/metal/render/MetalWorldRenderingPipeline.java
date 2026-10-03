@@ -244,7 +244,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
             );
         }
         // Pack uniform blocks for every world key the world bridge can
-        // install (M1 + M2), so uniformSlice(key) succeeds at draw time.
+        // install (M1 + M2 + M3), so uniformSlice(key) succeeds at draw time.
         for (ShaderKey key : IrisMetalWorldBridge.WORLD_OVERRIDE_KEYS) {
             IrisMetalWorldBridge.ProgramRequest request = IrisMetalWorldBridge.shaderKeyToProgramRequest(key);
             this.programs.vanilla(
