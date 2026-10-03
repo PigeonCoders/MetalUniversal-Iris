@@ -129,10 +129,6 @@ public final class IrisMetalTerrainBridge {
             final RenderPassBackend backend,
             final RenderPipeline source
     ) {
-        if (MetalDebugSwitches.NO_PACK_TERRAIN) {
-            // Diagnostic bisection switch: fall back to the vanilla pipeline.
-            return false;
-        }
         if (!(backend instanceof MetalRenderPass metalPass)) {
             return false;
         }

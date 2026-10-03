@@ -31,6 +31,7 @@ import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.EnumMap;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -179,6 +180,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
     private @Nullable IrisMetalCenterDepthSampler centerDepthSampler;
     private BitSet state = new BitSet();
     private BitSet shadowState = new BitSet();
+    private final Set<String> skippedPasses = new HashSet<>();
     private boolean prepared;
     private boolean closed;
 
@@ -675,6 +677,29 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                     continue;
                 }
                 RasterPlan plan = operation.raster();
+                if (MetalDebugSwitches.shouldSkipPass(plan.name())) {
+                    // Diagnostic bisection: make this raster pass an identity
+                    // operation. Its output side is filled by copying the
+                    // input side so later passes never read stale or wrong
+                    // ping-pong contents; all flip bookkeeping matches the
+                    // normal branch exactly.
+                    IrisMetalPingPongTargets colors = resources.renderTargets().colorTargets();
+                    colors.restore(plan.readsFromAlt());
+                    for (int target : plan.drawBuffers()) {
+                        MetalGpuTexture read = colors.readTexture(target);
+                        MetalGpuTexture write = colors.writeTexture(target);
+                        if (read != write) {
+                            activeEncoder().copyTextureToTexture(read, write, 0, 0, 0, 0, 0,
+                                    resources.renderTargets().width(), resources.renderTargets().height());
+                        }
+                    }
+                    colors.restore(plan.stateAfter());
+                    state = plan.stateAfter();
+                    if (skippedPasses.add(plan.name())) {
+                        Metallum.LOGGER.warn("[metallum-iris][debug] skipping raster pass '{}'", plan.name());
+                    }
+                    continue;
+                }
                 resources.renderTargets().colorTargets().restore(plan.readsFromAlt());
                 executeRaster(plan, rasterPipelines.get(plan), resources, null);
                 resources.renderTargets().colorTargets().restore(plan.stateAfter());
