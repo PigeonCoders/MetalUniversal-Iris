@@ -328,7 +328,9 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
         this.receipts.recordEvent("depthtex1.capture");
         this.executionGraph.captureNoTranslucentsDepth(this.resources(), depth);
         this.receipts.recordEvent("deferred");
-        this.executionGraph.executeDeferred(this.resources());
+        if (!MetalDebugSwitches.SKIP_DEFERRED) {
+            this.executionGraph.executeDeferred(this.resources());
+        }
     }
 
     @Override
@@ -377,7 +379,9 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
         this.receipts.recordEvent("depthtex0.capture");
         this.executionGraph.captureFinalDepth(this.resources(), depth);
         this.receipts.recordEvent("composite");
-        this.executionGraph.executeComposite(this.resources());
+        if (!MetalDebugSwitches.SKIP_POST) {
+            this.executionGraph.executeComposite(this.resources());
+        }
         this.receipts.recordEvent("final");
         this.executionGraph.executeFinal(this.resources(), colorView);
         MetalDevice device = MetalDeviceRegistry.getActiveDevice();

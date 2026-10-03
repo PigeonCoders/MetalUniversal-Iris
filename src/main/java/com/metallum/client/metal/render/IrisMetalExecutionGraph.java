@@ -1,5 +1,6 @@
 package com.metallum.client.metal.render;
 
+import com.metallum.Metallum;
 import com.mojang.blaze3d.GpuFormat;
 import com.mojang.blaze3d.PrimitiveTopology;
 import com.mojang.blaze3d.buffers.GpuBuffer;
@@ -445,6 +446,9 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
     }
 
     void executeComposite(final IrisMetalWorldResources resources) {
+        if (MetalDebugSwitches.SKIP_POST) {
+            return;
+        }
         executeStage(Stage.COMPOSITE, resources);
     }
 
@@ -560,16 +564,24 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         IrisMetalRenderTargets targets = resources.renderTargets();
         IrisMetalPingPongTargets colors = targets.colorTargets();
         colors.restore(state);
-        executeStage(Stage.FINAL, resources);
-        colors.restore(state);
-        if (finalPlan == null) {
+        if (MetalDebugSwitches.SKIP_POST) {
             activeEncoder().copyTextureToTexture(
                     colors.readTexture(0), mainColor.texture(), 0, 0, 0, 0, 0,
                     targets.width(), targets.height()
             );
         } else {
-            executeRaster(finalPlan, finalPipeline, resources, mainColor);
+            executeStage(Stage.FINAL, resources);
+            colors.restore(state);
+            if (finalPlan == null) {
+                activeEncoder().copyTextureToTexture(
+                        colors.readTexture(0), mainColor.texture(), 0, 0, 0, 0, 0,
+                        targets.width(), targets.height()
+                );
+            } else {
+                executeRaster(finalPlan, finalPipeline, resources, mainColor);
+            }
         }
+        copyDebugView(colors, targets, mainColor);
         targets.resetMipmaps();
         for (int target = state.nextSetBit(0); target >= 0; target = state.nextSetBit(target + 1)) {
             MetalGpuTexture source = colors.readTexture(target);
@@ -582,6 +594,73 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             }
         }
     }
+
+    /**
+     * Copies one of the pack color targets (picked via
+     * {@code metallum.iris.debug.view=colortexN}) over the normal final output.
+     * Used only for on-device artifact bisection; a no-op when the switch is
+     * unset.
+     */
+    private void copyDebugView(
+            final IrisMetalPingPongTargets colors,
+            final IrisMetalRenderTargets targets,
+            final GpuTextureView mainColor
+    ) {
+        int index = debugViewIndex();
+        if (index < 0) {
+            if (index == DEBUG_VIEW_INVALID && !warnedInvalidDebugView) {
+                warnedInvalidDebugView = true;
+                Metallum.LOGGER.warn(
+                        "[metallum-iris][debug] invalid debug view '{}' (expected colortexN); ignoring",
+                        MetalDebugSwitches.VIEW
+                );
+            }
+            return;
+        }
+        if (index >= colors.targetCount()) {
+            if (!warnedInvalidDebugView) {
+                warnedInvalidDebugView = true;
+                Metallum.LOGGER.warn(
+                        "[metallum-iris][debug] debug view colortex{} out of range (target count {}); ignoring",
+                        index, colors.targetCount()
+                );
+            }
+            return;
+        }
+        activeEncoder().copyTextureToTexture(
+                colors.readTexture(index), mainColor.texture(), 0, 0, 0, 0, 0,
+                targets.width(), targets.height()
+        );
+    }
+
+    /**
+     * Parses {@code metallum.iris.debug.view}. Returns {@code -1} when unset,
+     * the requested target index when valid, and {@link #DEBUG_VIEW_INVALID}
+     * when the format does not match {@code colortex<decimal>}.
+     */
+    private int debugViewIndex() {
+        String view = MetalDebugSwitches.VIEW;
+        if (view.isEmpty()) {
+            return -1;
+        }
+        if (!view.startsWith("colortex")) {
+            return DEBUG_VIEW_INVALID;
+        }
+        try {
+            int index = Integer.parseInt(view.substring("colortex".length()));
+            if (index < 0) {
+                return DEBUG_VIEW_INVALID;
+            }
+            return index;
+        } catch (NumberFormatException malformed) {
+            return DEBUG_VIEW_INVALID;
+        }
+    }
+
+    private static final int DEBUG_VIEW_INVALID = -2;
+
+    /** Dedupes the single warn for an unparseable/out-of-range debug view. */
+    private static boolean warnedInvalidDebugView;
 
     private void executeStage(final Stage stage, final IrisMetalWorldResources resources) {
         ensurePrepared();
