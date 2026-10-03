@@ -330,8 +330,7 @@ public final class IrisMetalWorldBridge {
         // aliases), the overlay bound as Sampler1 by RenderSetup.useOverlay
         // becomes "iris_overlay" (EntityPatcher), and the lightmap bound as
         // Sampler2 by useLightmap becomes "lightmap". Resolve them from the
-        // engine-bound map; when the engine bound nothing, return null so the
-        // caller keeps its Missing sampler exception.
+        // engine-bound map when present.
         MetalRenderPass.TextureViewAndSampler vanillaAlias = switch (name) {
             case "gtexture", "texture", "tex", "u_MainSampler" -> bound.get("Sampler0");
             case "iris_overlay" -> bound.get("Sampler1");
@@ -340,6 +339,16 @@ public final class IrisMetalWorldBridge {
         };
         if (vanillaAlias != null) {
             return vanillaAlias;
+        }
+        // Fullbright / overlay-less render types (eg the eyes pass, which binds
+        // only Sampler0) leave Sampler1/Sampler2 unbound while the program
+        // still declares iris_overlay/lightmap. Upstream Iris substitutes a
+        // 1x1 white pixel: a white overlay gives entityColor = (1,1,1,0), whose
+        // rgb the entity workaround zeroes (no hurt tint), and a white lightmap
+        // yields fullbright. Missing anything else keeps the caller's
+        // Missing sampler diagnostic.
+        if ("iris_overlay".equals(name) || "lightmap".equals(name)) {
+            return context.pipeline().resources().whitePixel().binding();
         }
         if ("noisetex".equals(name)) {
             return context.pipeline().resources().noiseTexture().binding();
