@@ -42,8 +42,36 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
     static final int STAGE_FRAGMENT = 2;
     static final int STAGE_ALL = STAGE_VERTEX | STAGE_FRAGMENT;
 
+    /**
+     * A pipeline resource and the Metal argument-table indices it occupies.
+     *
+     * <p>Vanilla pipelines use one shared {@code bindingIndex} for both stages.
+     * Shaderpack pipelines may use different per-stage indices for the same
+     * sampled resource (each stage compacts its active sampled images onto
+     * {@code 0..n-1} independently), so the fragment index is tracked
+     * separately. {@link #descriptorMaskIndex()} returns the highest of the two
+     * for dirty-mask bookkeeping; {@link #bindingIndexForStage(int)} selects the
+     * index to pass to the native setter for one stage.
+     */
     record ResourceBinding(ResourceKind kind, String name, int bindingIndex, int stageMask,
-                           @Nullable GpuFormat texelBufferFormat) {
+                           @Nullable GpuFormat texelBufferFormat, int fragmentBindingIndex) {
+        ResourceBinding(
+                ResourceKind kind,
+                String name,
+                int bindingIndex,
+                int stageMask,
+                @Nullable GpuFormat texelBufferFormat
+        ) {
+            this(kind, name, bindingIndex, stageMask, texelBufferFormat, bindingIndex);
+        }
+
+        int bindingIndexForStage(int stageBit) {
+            return stageBit == STAGE_FRAGMENT ? fragmentBindingIndex : bindingIndex;
+        }
+
+        int descriptorMaskIndex() {
+            return Math.max(bindingIndex, fragmentBindingIndex);
+        }
     }
 
     private final List<ResourceBinding> resources;
@@ -94,8 +122,8 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
         int maxBindingIndex = -1;
         long resourceMask = 0L;
         for (ResourceBinding binding : resources) {
-            maxBindingIndex = Math.max(maxBindingIndex, binding.bindingIndex());
-            resourceMask |= 1L << binding.bindingIndex();
+            maxBindingIndex = Math.max(maxBindingIndex, binding.descriptorMaskIndex());
+            resourceMask |= 1L << binding.descriptorMaskIndex();
         }
         if (maxBindingIndex >= Long.SIZE) {
             throw new IllegalStateException("Pipeline " + info.getLocation() + " has binding index " + maxBindingIndex + ", limit is " + (Long.SIZE - 1));
@@ -267,8 +295,8 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
         int maxBindingIndex = -1;
         long resourceMask = 0L;
         for (ResourceBinding binding : resources) {
-            maxBindingIndex = Math.max(maxBindingIndex, binding.bindingIndex());
-            resourceMask |= 1L << binding.bindingIndex();
+            maxBindingIndex = Math.max(maxBindingIndex, binding.descriptorMaskIndex());
+            resourceMask |= 1L << binding.descriptorMaskIndex();
         }
         if (maxBindingIndex >= Long.SIZE) {
             throw new IllegalStateException("Pipeline " + location + " has binding index " + maxBindingIndex + ", limit is " + (Long.SIZE - 1));

@@ -88,7 +88,8 @@ final class MetalDepthMipmapGenerator implements AutoCloseable {
                         "sourceDepth",
                         0,
                         MetalCompiledRenderPipeline.STAGE_VERTEX,
-                        null
+                        null,
+                        0
                 )),
                 false,
                 PolygonMode.FILL,

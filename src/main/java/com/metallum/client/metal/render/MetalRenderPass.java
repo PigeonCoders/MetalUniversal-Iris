@@ -211,7 +211,7 @@ final class MetalRenderPass implements RenderPassBackend {
             for (MetalCompiledRenderPipeline.ResourceBinding resource : compiledPipeline.resources()) {
                 if (resource.kind() == MetalCompiledRenderPipeline.ResourceKind.STORAGE_BUFFER
                         && MetalCrossShaderCompiler.storageBufferLogicalBinding(resource.name()) == binding) {
-                    dirtyDescriptorMask |= 1L << resource.bindingIndex();
+                    dirtyDescriptorMask |= 1L << resource.descriptorMaskIndex();
                 }
             }
         }
@@ -686,7 +686,7 @@ final class MetalRenderPass implements RenderPassBackend {
 
         if (dirtyDescriptorMask != 0) {
             for (MetalCompiledRenderPipeline.ResourceBinding binding : compiledPipeline.resources()) {
-                if ((dirtyDescriptorMask & (1L << binding.bindingIndex())) != 0L) {
+                if ((dirtyDescriptorMask & (1L << binding.descriptorMaskIndex())) != 0L) {
                     pushDescriptor(enc, binding);
                 }
             }
@@ -754,7 +754,7 @@ final class MetalRenderPass implements RenderPassBackend {
 
     private void markDescriptorDirty(final MetalCompiledRenderPipeline.@Nullable ResourceBinding binding) {
         if (binding != null) {
-            dirtyDescriptorMask |= 1L << binding.bindingIndex();
+            dirtyDescriptorMask |= 1L << binding.descriptorMaskIndex();
         }
     }
 
@@ -780,6 +780,11 @@ final class MetalRenderPass implements RenderPassBackend {
             final MTLRenderCommandEncoder enc,
             final MetalCompiledRenderPipeline.ResourceBinding binding
     ) {
+        if (binding.stageMask() == 0) {
+            // Resource is not active in either stage's MSL (shaderpack programs
+            // get a per-stage active set); there is no declared argument to bind.
+            return;
+        }
         if (binding.kind() == MetalCompiledRenderPipeline.ResourceKind.SAMPLED_IMAGE) {
             TextureViewAndSampler textureBinding = samplers.get(binding.name());
             if (textureBinding == null) {
@@ -798,7 +803,7 @@ final class MetalRenderPass implements RenderPassBackend {
 
             MetalGpuTextureView textureView = (MetalGpuTextureView) textureBinding.textureView();
             MetalGpuSampler sampler = (MetalGpuSampler) textureBinding.sampler();
-            enc.setTextureAndSampler(textureView.nativeHandle(), sampler.nativeHandle(), binding.bindingIndex(), binding.stageMask());
+            setTextureForStages(enc, sampler.nativeHandle(), textureView.nativeHandle(), binding);
             return;
         }
 
@@ -816,7 +821,7 @@ final class MetalRenderPass implements RenderPassBackend {
             }
             commandEncoder.flushPendingClear(texture);
             texture.markContentsDirty();
-            enc.setTexture(metalView.nativeHandle(), binding.bindingIndex(), binding.stageMask());
+            setTextureForStages(enc, null, metalView.nativeHandle(), binding);
             return;
         }
 
@@ -879,8 +884,56 @@ final class MetalRenderPass implements RenderPassBackend {
             throw new IllegalStateException("Failed to create Metal texel buffer texture for " + binding.name());
         }
 
-        enc.setTexture(texelTexture, binding.bindingIndex(), binding.stageMask());
+        setTextureForStages(enc, null, texelTexture, binding);
         commandEncoder.queueForDestroy(() -> MetalNativeBridge.metallum_release_object(texelTexture));
+    }
+
+    /**
+     * Binds a texture, and optionally its sampler, at the per-stage Metal
+     * indices carried by {@code binding}.
+     *
+     * <p>Vanilla bindings use one shared index, so this is a single native
+     * call (byte-for-byte the previous behavior). Shaderpack sampled resources
+     * may compact their vertex and fragment tables independently, so when the
+     * two indices differ each active stage is bound separately with its own
+     * index.
+     *
+     * @param sampler sampler state to bind alongside the texture, or
+     *                {@code null} for a plain texture binding (texel/storage
+     *                images).
+     */
+    private void setTextureForStages(
+            final MTLRenderCommandEncoder enc,
+            final @Nullable MemorySegment sampler,
+            final MemorySegment texture,
+            final MetalCompiledRenderPipeline.ResourceBinding binding
+    ) {
+        final int vertexIndex = binding.bindingIndex();
+        final int fragmentIndex = binding.fragmentBindingIndex();
+        if (vertexIndex == fragmentIndex) {
+            if (sampler == null) {
+                enc.setTexture(texture, vertexIndex, binding.stageMask());
+            } else {
+                enc.setTextureAndSampler(texture, sampler, vertexIndex, binding.stageMask());
+            }
+            return;
+        }
+        if ((binding.stageMask() & MetalCompiledRenderPipeline.STAGE_VERTEX) != 0) {
+            int index = binding.bindingIndexForStage(MetalCompiledRenderPipeline.STAGE_VERTEX);
+            if (sampler == null) {
+                enc.setTexture(texture, index, MetalCompiledRenderPipeline.STAGE_VERTEX);
+            } else {
+                enc.setTextureAndSampler(texture, sampler, index, MetalCompiledRenderPipeline.STAGE_VERTEX);
+            }
+        }
+        if ((binding.stageMask() & MetalCompiledRenderPipeline.STAGE_FRAGMENT) != 0) {
+            int index = binding.bindingIndexForStage(MetalCompiledRenderPipeline.STAGE_FRAGMENT);
+            if (sampler == null) {
+                enc.setTexture(texture, index, MetalCompiledRenderPipeline.STAGE_FRAGMENT);
+            } else {
+                enc.setTextureAndSampler(texture, sampler, index, MetalCompiledRenderPipeline.STAGE_FRAGMENT);
+            }
+        }
     }
 
     record TextureViewAndSampler(GpuTextureView textureView, GpuSampler sampler) {
