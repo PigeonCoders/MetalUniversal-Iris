@@ -119,6 +119,10 @@ public final class IrisMetalWorldBridge {
             ShaderKey.SHADOW_TEXT_BG,
             ShaderKey.SHADOW_BASIC,
             ShaderKey.SHADOW_BEACON_BEAM,
+            // M6.4: main-pass lightning, matching upstream
+            // IrisPipelines.assignToMain(LIGHTNING -> LIGHTNING). Runs through
+            // the same POSITION_COLOR no-albedo path as SHADOW_LIGHTNING.
+            ShaderKey.LIGHTNING,
             ShaderKey.SHADOW_LIGHTNING
     );
 
@@ -136,6 +140,7 @@ public final class IrisMetalWorldBridge {
     private static final Set<String> REPORTED_PIPELINE_SKIPS = new HashSet<>();
     private static final Set<String> REPORTED_SHADOW_ATTACHMENTS = new HashSet<>();
     private static final Set<String> REPORTED_MISSING_SAMPLER_TARGETS = new HashSet<>();
+    private static final Set<String> REPORTED_NO_ALBEDO_FALLBACKS = new HashSet<>();
     private static final Set<String> REPORTED_CUSTOM_SAMPLERS = new HashSet<>();
     private static final Set<String> REPORTED_INPUT_AUDITS = new HashSet<>();
     private static final Set<String> REPORTED_PER_DRAW_SKIPS = new HashSet<>();
@@ -680,6 +685,20 @@ public final class IrisMetalWorldBridge {
         );
     }
 
+    /**
+     * The albedo alias names upstream's {@code IrisSamplers.addLevelSamplers}
+     * binds to the shared white pixel when a level render type has no texture
+     * ({@code hasTexture == false}). Pure so
+     * {@code IrisMetalWorldSamplerFallbackTest} can pin the set without a
+     * Metal device.
+     */
+    static boolean isAlbedoAlias(final String name) {
+        return switch (name) {
+            case "gtexture", "texture", "tex", "u_MainSampler" -> true;
+            default -> false;
+        };
+    }
+
     private static MetalRenderPass.@Nullable TextureViewAndSampler standardSampler(
             final WorldContext context,
             final String name,
@@ -693,8 +712,25 @@ public final class IrisMetalWorldBridge {
         // becomes "iris_overlay" (EntityPatcher), and the lightmap bound as
         // Sampler2 by useLightmap becomes "lightmap". Resolve them from the
         // engine-bound map when present.
+        if (isAlbedoAlias(name)) {
+            MetalRenderPass.TextureViewAndSampler albedo = bound.get("Sampler0");
+            if (albedo != null) {
+                return albedo;
+            }
+            // Render types without a texture bind no Sampler0 (26.2's LIGHTNING
+            // and SHADOW_LIGHTNING use POSITION_COLOR), while the shaderpack
+            // programs still declare and sample "tex". Upstream
+            // IrisSamplers.addLevelSamplers binds the shared white pixel to
+            // tex/texture/gtexture/u_MainSampler when hasTexture == false;
+            // without the same fallback here the first shadow-casting
+            // lightning bolt aborts pushDescriptor with "Missing sampler tex".
+            if (REPORTED_NO_ALBEDO_FALLBACKS.add(name)) {
+                MetalProbeReport.record("world override sampler fallback name=" + name
+                        + " reason=no-albedo");
+            }
+            return context.pipeline().resources().whitePixel().binding();
+        }
         MetalRenderPass.TextureViewAndSampler vanillaAlias = switch (name) {
-            case "gtexture", "texture", "tex", "u_MainSampler" -> bound.get("Sampler0");
             case "iris_overlay" -> bound.get("Sampler1");
             case "lightmap" -> bound.get("Sampler2");
             default -> null;
