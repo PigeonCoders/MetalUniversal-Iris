@@ -61,6 +61,7 @@ import java.util.Objects;
 final class IrisMetalShadowRenderer {
     private final MetalWorldRenderingPipeline pipeline;
     private @Nullable String reportedCulling;
+    private @Nullable String reportedDepthMode;
     private boolean warnedSafeZone;
 
     IrisMetalShadowRenderer(final MetalWorldRenderingPipeline pipeline) {
@@ -125,8 +126,17 @@ final class IrisMetalShadowRenderer {
         frustum.prepare(cameraX, cameraY, cameraZ);
         boolean spectator = camera.entity() != null && camera.entity().isSpectator();
         GpuSampler sampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST, true);
+        // GL-NDC shadow depth: the caster vertex shader emulates GL's
+        // NDC->depth viewport transform (see IrisMetalShadowDepthFix), so the
+        // engine projection must be the GL-space pack matrix exactly like
+        // upstream GL Iris hands Sodium. With the A/B switch off, fall back to
+        // the zero-to-one ortho (pre-fix behavior).
+        Matrix4f shadowProjection = MetalDebugSwitches.SHADOW_DEPTH_FIX
+                ? new Matrix4f(matrixSet.packProjection())
+                : new Matrix4f(matrixSet.zeroToOneProjection());
+        reportDepthMode(MetalDebugSwitches.SHADOW_DEPTH_FIX ? "gl-ndc" : "zero-to-one");
         ChunkRenderMatrices shadowMatrices = new ChunkRenderMatrices(
-                new Matrix4f(matrixSet.zeroToOneProjection()),
+                shadowProjection,
                 new Matrix4f(matrixSet.modelView())
         );
         ChunkRenderMatrices savedMatrices = extension.sodium$getMatrices();
@@ -269,6 +279,13 @@ final class IrisMetalShadowRenderer {
         if (!description.equals(this.reportedCulling)) {
             this.reportedCulling = description;
             this.pipeline.receipts().recordEvent("shadow.culling=" + description);
+        }
+    }
+
+    private void reportDepthMode(final String mode) {
+        if (!mode.equals(this.reportedDepthMode)) {
+            this.reportedDepthMode = mode;
+            this.pipeline.receipts().recordEvent("shadow.depthFix=" + mode);
         }
     }
 }

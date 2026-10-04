@@ -158,6 +158,8 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
         }
 
         MetalCompiledRenderPipeline compiled;
+        boolean glDepthEmulation = MetalDebugSwitches.SHADOW_DEPTH_FIX
+                && IrisMetalShadowDepthFix.appliesTo(program.program().resolution().requested());
         try {
             compiled = MetalCrossShaderCompiler.compileShaderpack(
                     this.device,
@@ -172,7 +174,8 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
                     state.primitiveTopology(),
                     state.vertexFormats().toArray(VertexFormat[]::new),
                     state.depthStencilState(),
-                    colorTargets
+                    colorTargets,
+                    glDepthEmulation
             );
         } catch (Exception exception) {
             throw new IllegalStateException(

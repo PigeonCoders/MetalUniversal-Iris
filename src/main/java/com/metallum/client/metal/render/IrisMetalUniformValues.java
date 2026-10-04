@@ -1027,6 +1027,12 @@ final class IrisMetalUniformValues implements AutoCloseable {
             case "eyeBrightness", "eyeBrightnessSmooth" -> putIVec2(out, at, 0, 240);
             case "eyeAltitude" -> out.putFloat(at, (float) frame.cameraPosition().y);
             case "isEyeInWater" -> out.putInt(at, 0);
+            // TODO(M6.1.1): upstream HardcodedCustomUniforms.getShadowFade()
+            // (20e226b L161-163) feeds CelestialUniforms.getSunAngle in degrees
+            // into a 0..1-shaped expression; that looks dimensionally broken in
+            // the pinned tree, so the faithful-value fallback is unclear. BSL
+            // does not consume this uniform (its custom-uniform graph wins), so
+            // the old 0.0 fallback is kept until an active pack needs it.
             case "shadowFade" -> out.putFloat(at, 0.0f);
 
             // --- sky / celestial / effect uniforms (M4) ---

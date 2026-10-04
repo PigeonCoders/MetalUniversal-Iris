@@ -43,6 +43,18 @@ public final class MetalDebugSwitches {
      * {@code -Dmetallum.iris.debug.shadowCulling=advanced|box|none}.
      */
     public static final String SHADOW_CULLING = System.getProperty("metallum.iris.debug.shadowCulling", "").trim();
+    /**
+     * M6.1.1 GL-NDC depth emulation for shadow caster vertex shaders. BSL's
+     * shadow VSH scales {@code gl_Position.z} and relies on GL's NDC
+     * [-1,1]&rarr;depth [0,1] viewport transform, which Metal's clip space does
+     * not perform; the fix wraps the shadow vertex main with that transform.
+     * On by default; {@code -Dmetallum.iris.debug.shadowDepthFix=off} disables
+     * the wrapper (and switches the caster matrices back to the zero-to-one
+     * ortho), reproducing the pre-fix "shadow=0 everywhere" behavior.
+     */
+    public static final boolean SHADOW_DEPTH_FIX = !"off".equalsIgnoreCase(
+            System.getProperty("metallum.iris.debug.shadowDepthFix", "on").trim()
+    );
     /** Non-terrain world-program override; on by default, {@code -Dmetallum.iris.worldPass=off} disables it. */
     public static final boolean WORLD_PASS = !"off".equalsIgnoreCase(
             System.getProperty("metallum.iris.worldPass", "on").trim()
@@ -126,12 +138,12 @@ public final class MetalDebugSwitches {
         if (SKIP_DEFERRED || SKIP_POST || !VIEW.isEmpty() || !SKIP_PASS_NAMES.isEmpty()
                 || NO_SHADOW_MATRICES || ZERO_VL || ZERO_BLOOM || !STAGE_STRIP.isEmpty()
                 || NO_VANILLA_SKY || NO_VANILLA_CLOUDS || NO_CLOUDS_HARD || MAGENTA_CLEAR
-                || !SHADOW_PASS || NO_SHADOWS || !SHADOW_CULLING.isEmpty()) {
-            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: build={} skipDeferred={} skipPost={} view={} skipPass={} noShadowMatrices={} zeroVl={} zeroBloom={} stageStrip={} noVanillaSky={} noVanillaClouds={} noCloudsHard={} magentaClear={} shadowPass={} noShadows={} shadowCulling={}",
+                || !SHADOW_PASS || NO_SHADOWS || !SHADOW_CULLING.isEmpty() || !SHADOW_DEPTH_FIX) {
+            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: build={} skipDeferred={} skipPost={} view={} skipPass={} noShadowMatrices={} zeroVl={} zeroBloom={} stageStrip={} noVanillaSky={} noVanillaClouds={} noCloudsHard={} magentaClear={} shadowPass={} noShadows={} shadowCulling={} shadowDepthFix={}",
                     BUILD_TAG, SKIP_DEFERRED, SKIP_POST, VIEW, SKIP_PASS, NO_SHADOW_MATRICES, ZERO_VL, ZERO_BLOOM,
                     System.getProperty("metallum.iris.debug.stageStrip", ""),
                     NO_VANILLA_SKY, NO_VANILLA_CLOUDS, NO_CLOUDS_HARD, MAGENTA_CLEAR,
-                    SHADOW_PASS, NO_SHADOWS, SHADOW_CULLING);
+                    SHADOW_PASS, NO_SHADOWS, SHADOW_CULLING, SHADOW_DEPTH_FIX);
         }
     }
 }

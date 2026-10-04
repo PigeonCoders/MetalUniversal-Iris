@@ -225,6 +225,10 @@ public final class MetalCrossShaderCompiler {
      * @param depthStencilState        depth/stencil state (nullable).
      * @param colorTargets             compact physical color-target states in
      *                                 the same order as Iris DRAWBUFFERS.
+     * @param glDepthEmulation         whether to wrap the vertex stage with the
+     *                                 GL NDC&rarr;depth viewport transform for
+     *                                 shadow caster programs (see
+     *                                 {@link IrisMetalShadowDepthFix}).
      * @return the compiled Metal render pipeline.
      * @throws ShaderCompileException if GLSL&#8594;SPIR-V or SPIR-V&#8594;MSL fails.
      */
@@ -241,16 +245,21 @@ public final class MetalCrossShaderCompiler {
             final PrimitiveTopology primitiveTopology,
             final VertexFormat[] vertexFormatBindings,
             final DepthStencilState depthStencilState,
-            final ColorTargetState[] colorTargets
+            final ColorTargetState[] colorTargets,
+            final boolean glDepthEmulation
     ) throws ShaderCompileException {
         final int[] vertexSpvWords;
         final int[] fragmentSpvWords;
+        final String vertexSource = IrisMetalShadowDepthFix.vertexSource(vertexGlsl, glDepthEmulation);
+        final String vertexDefines = IrisMetalShadowDepthFix.vertexDefines(defines, glDepthEmulation);
         try {
-            vertexSpvWords = GlslangBridge.compileGlslToSpv(GlslangBridge.Stage.VERTEX, vertexGlsl, defines);
+            vertexSpvWords = GlslangBridge.compileGlslToSpv(GlslangBridge.Stage.VERTEX, vertexSource, vertexDefines);
         } catch (GlslangBridge.ShaderCompileException e) {
             throw wrapGlslangError("Failed to compile shaderpack vertex shader '" + name + "'", e);
         }
         try {
+            // The wrapper must never leak into the fragment stage: it uses the
+            // shared define only for the vertex compile above.
             fragmentSpvWords = GlslangBridge.compileGlslToSpv(GlslangBridge.Stage.FRAGMENT, fragmentGlsl, defines);
         } catch (GlslangBridge.ShaderCompileException e) {
             throw wrapGlslangError("Failed to compile shaderpack fragment shader '" + name + "'", e);
@@ -590,7 +599,8 @@ public final class MetalCrossShaderCompiler {
                 PrimitiveTopology.TRIANGLES,
                 new VertexFormat[]{vertexFormat},
                 null,
-                new ColorTargetState[]{ColorTargetState.DEFAULT}
+                new ColorTargetState[]{ColorTargetState.DEFAULT},
+                false
         );
         SHADERPACK_PIPELINE_CACHE.put(name, pipeline);
         return true;

@@ -1332,7 +1332,8 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                     PrimitiveTopology.QUADS,
                     new com.mojang.blaze3d.vertex.VertexFormat[]{DefaultVertexFormat.POSITION_TEX},
                     (DepthStencilState) null,
-                    colorTargets
+                    colorTargets,
+                    false
             );
             if (!pipeline.isValid()) {
                 pipeline.close();
@@ -1374,7 +1375,8 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                     PrimitiveTopology.QUADS,
                     new com.mojang.blaze3d.vertex.VertexFormat[]{DefaultVertexFormat.POSITION_TEX},
                     null,
-                    colorTargets
+                    colorTargets,
+                    false
             );
         } catch (Exception failure) {
             throw new IllegalStateException("Failed to compile Iris shadow composite " + program.name(), failure);
