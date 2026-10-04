@@ -63,6 +63,14 @@ public final class IrisMetalWorldBridge {
      * fullbright HAND_*_BRIGHT and HAND_TEXT_INTENSITY variants are
      * deliberately absent: no selector can produce them (upstream
      * {@code IrisPipelines} never returns them either).
+     *
+     * <p>M5: 26.2 renders solid/cutout moving blocks (falling anvils/sand,
+     * piston heads) with {@code RenderPipelines.SOLID_BLOCK}/{@code CUTOUT_BLOCK},
+     * which upstream maps to {@code TERRAIN_SOLID}/{@code TERRAIN_CUTOUT}.
+     * Those are vanilla-patch {@code gbuffers_terrain} programs drawn through
+     * {@code PreparedRenderType.drawFromBuffer}, not Sodium terrain, so they
+     * are whitelisted here (the Sodium terrain keys stay with
+     * {@link IrisMetalTerrainBridge}).</p>
      */
     static final Set<ShaderKey> WORLD_OVERRIDE_KEYS = Set.of(
             ShaderKey.ENTITIES_SOLID,
@@ -75,6 +83,8 @@ public final class IrisMetalWorldBridge {
             ShaderKey.BLOCK_ENTITY_BRIGHT,
             ShaderKey.BLOCK_ENTITY_DIFFUSE,
             ShaderKey.BE_TRANSLUCENT,
+            ShaderKey.TERRAIN_SOLID,
+            ShaderKey.TERRAIN_CUTOUT,
             ShaderKey.MOVING_BLOCK,
             ShaderKey.HAND_CUTOUT,
             ShaderKey.HAND_CUTOUT_DIFFUSE,
