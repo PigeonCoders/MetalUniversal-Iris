@@ -52,6 +52,7 @@ final class IrisMetalWorldResources implements AutoCloseable {
                 programSet.getPack().getCustomTextureDataMap(),
                 programSet.getPackDirectives().getNoiseTextureResolution(),
                 programSet.getPack().getCustomNoiseTexture(),
+                programSet.getPackDirectives(),
                 createShadowTargets(device, programSet),
                 programSet.getPack()
         );
@@ -81,6 +82,7 @@ final class IrisMetalWorldResources implements AutoCloseable {
                 noiseResolution,
                 customNoise,
                 null,
+                null,
                 null
         );
     }
@@ -96,6 +98,7 @@ final class IrisMetalWorldResources implements AutoCloseable {
             final Map<TextureStage, ? extends Map<String, CustomTextureData>> customDefinitions,
             final int noiseResolution,
             final @Nullable CustomTextureData customNoise,
+            final @Nullable PackDirectives directives,
             final @Nullable IrisMetalShadowTargets shadowTargets,
             final @Nullable ShaderPack computePack
     ) {
@@ -113,7 +116,7 @@ final class IrisMetalWorldResources implements AutoCloseable {
         IrisMetalComputeResources newComputeResources = null;
         try {
             newTargets = new IrisMetalRenderTargets(
-                    device, formats, width, height, targetSettings, mipmappedTargets
+                    device, formats, width, height, targetSettings, mipmappedTargets, directives
             );
             newCustomTextures = new IrisMetalCustomTextures(device, customDefinitions);
             newCustomTextures.prewarmAll();

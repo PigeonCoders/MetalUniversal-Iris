@@ -87,6 +87,15 @@ public final class MetalDebugSwitches {
     public static final boolean WORLD_PASS_PER_DRAW_NORMALS = !"false".equalsIgnoreCase(
             System.getProperty("metallum.iris.worldPass.perDrawNormals", "true").trim()
     );
+    /**
+     * Per-target {@code size.buffer.*} resolution support; on by default.
+     * {@code -Dmetallum.iris.sizeBuffer=off} forces every colortex target back
+     * to the base (main render target) extent, reproducing the pre-support
+     * uniform-size behavior without touching the pack parser.
+     */
+    public static final boolean SIZE_BUFFER = !"off".equalsIgnoreCase(
+            System.getProperty("metallum.iris.sizeBuffer", "on").trim()
+    );
     /** Logs the sampler keys of the first non-terrain world pass once per process. */
     public static final boolean LOG_SAMPLERS = Boolean.getBoolean("metallum.iris.worldPass.logSamplers");
     public static final List<StripEntry> STAGE_STRIP = parseStageStrip(
@@ -102,7 +111,8 @@ public final class MetalDebugSwitches {
             || !SKIP_PASS_NAMES.isEmpty() || NO_SHADOW_MATRICES || ZERO_VL || ZERO_BLOOM
             || !STAGE_STRIP.isEmpty() || NO_VANILLA_SKY || NO_VANILLA_CLOUDS
             || NO_CLOUDS_HARD || MAGENTA_CLEAR || !SHADOW_PASS || NO_SHADOWS
-            || !SHADOW_CULLING.isEmpty() || !SHADOW_DEPTH_FIX || BLEND_OVERRIDES;
+            || !SHADOW_CULLING.isEmpty() || !SHADOW_DEPTH_FIX || BLEND_OVERRIDES
+            || !SIZE_BUFFER;
 
     /** One {@code stageStrip} entry: a pass name plus the target index to tile. */
     public record StripEntry(String passName, int targetIndex) {
@@ -154,11 +164,11 @@ public final class MetalDebugSwitches {
 
     static {
         if (PROBES_ACTIVE) {
-            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: build={} skipDeferred={} skipPost={} view={} skipPass={} noShadowMatrices={} zeroVl={} zeroBloom={} stageStrip={} noVanillaSky={} noVanillaClouds={} noCloudsHard={} magentaClear={} shadowPass={} noShadows={} shadowCulling={} shadowDepthFix={} blendOverrides={}",
+            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: build={} skipDeferred={} skipPost={} view={} skipPass={} noShadowMatrices={} zeroVl={} zeroBloom={} stageStrip={} noVanillaSky={} noVanillaClouds={} noCloudsHard={} magentaClear={} shadowPass={} noShadows={} shadowCulling={} shadowDepthFix={} blendOverrides={} sizeBuffer={}",
                     BUILD_TAG, SKIP_DEFERRED, SKIP_POST, VIEW, SKIP_PASS, NO_SHADOW_MATRICES, ZERO_VL, ZERO_BLOOM,
                     System.getProperty("metallum.iris.debug.stageStrip", ""),
                     NO_VANILLA_SKY, NO_VANILLA_CLOUDS, NO_CLOUDS_HARD, MAGENTA_CLEAR,
-                    SHADOW_PASS, NO_SHADOWS, SHADOW_CULLING, SHADOW_DEPTH_FIX, BLEND_OVERRIDES);
+                    SHADOW_PASS, NO_SHADOWS, SHADOW_CULLING, SHADOW_DEPTH_FIX, BLEND_OVERRIDES, SIZE_BUFFER);
         }
     }
 }

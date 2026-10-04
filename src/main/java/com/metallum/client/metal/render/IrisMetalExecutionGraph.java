@@ -201,6 +201,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
     private int stripIndex;
     private boolean warnedZeroVl;
     private boolean warnedZeroBloom;
+    private boolean warnedScaledFinalCopy;
     private boolean prepared;
     private boolean closed;
 
@@ -439,6 +440,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             throw new IllegalStateException("Execution graph target count changed within generation");
         }
         if (!prepared) {
+            validatePlanExtents(targets);
             for (Stage stage : Stage.values()) {
                 for (OrderedOperation operation : orderedOperations.get(stage)) {
                     if (operation.compute() != null) {
@@ -490,6 +492,43 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
 
     void executeBegin(final IrisMetalWorldResources resources) {
         executeStage(Stage.BEGIN, resources);
+    }
+
+    /**
+     * Upstream {@code CompositeRenderer.recalculateSizes} rejects a pass whose
+     * draw buffers disagree on size ("Pass widths must match"). Surface the
+     * same failure during {@code prepare} so a mis-scaled pack fails before
+     * any Metal attachment validation, not in the middle of a frame.
+     */
+    private void validatePlanExtents(final IrisMetalRenderTargets targets) {
+        for (List<RasterPlan> plans : rasterPlans.values()) {
+            for (RasterPlan plan : plans) {
+                validatePlanExtent(targets, plan.name(), plan.drawBuffers());
+            }
+        }
+        if (finalPlan != null) {
+            validatePlanExtent(targets, finalPlan.name(), finalPlan.drawBuffers());
+        }
+    }
+
+    private static void validatePlanExtent(
+            final IrisMetalRenderTargets targets,
+            final String name,
+            final int[] drawBuffers
+    ) {
+        int width = targets.targetWidth(drawBuffers[0]);
+        int height = targets.targetHeight(drawBuffers[0]);
+        for (int slot = 1; slot < drawBuffers.length; slot++) {
+            int slotWidth = targets.targetWidth(drawBuffers[slot]);
+            int slotHeight = targets.targetHeight(drawBuffers[slot]);
+            if (slotWidth != width || slotHeight != height) {
+                throw new IllegalStateException(
+                        "Iris pass " + name + ": Pass widths must match (colortex" + drawBuffers[0]
+                                + " " + width + "x" + height + " vs colortex" + drawBuffers[slot]
+                                + " " + slotWidth + "x" + slotHeight + ")"
+                );
+            }
+        }
     }
 
     void executePrepare(final IrisMetalWorldResources resources) {
@@ -766,18 +805,12 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         IrisMetalPingPongTargets colors = targets.colorTargets();
         colors.restore(state);
         if (MetalDebugSwitches.SKIP_POST) {
-            activeEncoder().copyTextureToTexture(
-                    colors.readTexture(0), mainColor.texture(), 0, 0, 0, 0, 0,
-                    targets.width(), targets.height()
-            );
+            copyColortex0ToMain(colors, targets, mainColor);
         } else {
             executeStage(Stage.FINAL, resources);
             colors.restore(state);
             if (finalPlan == null) {
-                activeEncoder().copyTextureToTexture(
-                        colors.readTexture(0), mainColor.texture(), 0, 0, 0, 0, 0,
-                        targets.width(), targets.height()
-                );
+                copyColortex0ToMain(colors, targets, mainColor);
             } else {
                 executeRaster(finalPlan, finalPipeline, resources, mainColor);
             }
@@ -790,10 +823,38 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             if (source != destination) {
                 activeEncoder().copyTextureToTexture(
                         source, destination, 0, 0, 0, 0, 0,
-                        targets.width(), targets.height()
+                        colors.width(target), colors.height(target)
                 );
             }
         }
+    }
+
+    /**
+     * Fallback blit used by SKIP_POST and by packs without a final program.
+     * Metal texture copies cannot scale, so the region is clamped to both the
+     * colortex0 and main-target extents; a scaled-down colortex0 cannot be
+     * upscaled and leaves the remainder of the main target stale (warned once).
+     */
+    private void copyColortex0ToMain(
+            final IrisMetalPingPongTargets colors,
+            final IrisMetalRenderTargets targets,
+            final GpuTextureView mainColor
+    ) {
+        int sourceWidth = colors.width(0);
+        int sourceHeight = colors.height(0);
+        int copyWidth = Math.min(sourceWidth, targets.width());
+        int copyHeight = Math.min(sourceHeight, targets.height());
+        if ((copyWidth != targets.width() || copyHeight != targets.height()) && !warnedScaledFinalCopy) {
+            warnedScaledFinalCopy = true;
+            Metallum.LOGGER.warn(
+                    "[metallum-iris] colortex0 is {}x{} while the main target is {}x{}; copying only the "
+                            + "overlapping region (Metal texture copies do not scale)",
+                    sourceWidth, sourceHeight, targets.width(), targets.height()
+            );
+        }
+        activeEncoder().copyTextureToTexture(
+                colors.readTexture(0), mainColor.texture(), 0, 0, 0, 0, 0, copyWidth, copyHeight
+        );
     }
 
     /**
@@ -838,7 +899,8 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         }
         activeEncoder().copyTextureToTexture(
                 colors.readTexture(index), mainColor.texture(), 0, 0, 0, 0, 0,
-                targets.width(), targets.height()
+                Math.min(targets.width(), colors.width(index)),
+                Math.min(targets.height(), colors.height(index))
         );
     }
 
@@ -923,7 +985,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                     MetalGpuTexture write = colors.writeTexture(target);
                     if (read != write) {
                         activeEncoder().copyTextureToTexture(read, write, 0, 0, 0, 0, 0,
-                                resources.renderTargets().width(), resources.renderTargets().height());
+                                colors.width(target), colors.height(target));
                     }
                 }
                 colors.restore(plan.stateAfter());
@@ -963,7 +1025,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         RenderPassDescriptor descriptor = RenderPassDescriptor.create(
                 () -> "Iris zeroVl probe: " + plan.name()
         ).withColorAttachment(lightmapView, Optional.of(clearColor))
-                .withRenderArea(new RenderPass.RenderArea(0, 0, targets.width(), targets.height()));
+                .withRenderArea(new RenderPass.RenderArea(0, 0, colors.width(1), colors.height(1)));
         MetalCommandEncoder encoder = activeEncoder();
         // No draws: the encoder materializes the pass on submit, which must
         // happen while the descriptor's views are still open.
@@ -998,7 +1060,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                 () -> "Iris zeroBloom probe: " + plan.name()
         ).withColorAttachment(readSide, Optional.of(clearColor))
                 .withColorAttachment(writeSide, Optional.of(clearColor))
-                .withRenderArea(new RenderPass.RenderArea(0, 0, targets.width(), targets.height()));
+                .withRenderArea(new RenderPass.RenderArea(0, 0, colors.width(1), colors.height(1)));
         MetalCommandEncoder encoder = activeEncoder();
         // No draws: submit while the descriptor's views are still open.
         encoder.createRenderPass(descriptor);
@@ -1021,9 +1083,9 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             return;
         }
         IrisMetalRenderTargets targets = resources.renderTargets();
-        int width = targets.width();
-        int height = targets.height();
-        if (width < 4 || height < 3) {
+        int mainWidth = targets.width();
+        int mainHeight = targets.height();
+        if (mainWidth < 4 || mainHeight < 3) {
             return;
         }
         MetalDebugSwitches.StripEntry entry = entries.get(this.stripIndex);
@@ -1042,13 +1104,21 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         if (main == null) {
             return;
         }
-        int cropWidth = width / 2;
-        int cropHeight = height / 3;
+        // Crop the target's center band, clamped to the main-target tile grid:
+        // a scaled target is smaller than the destination, and a copy cannot
+        // upscale.
+        int sourceWidth = colors.width(entry.targetIndex());
+        int sourceHeight = colors.height(entry.targetIndex());
+        int cropWidth = Math.min(sourceWidth / 2, mainWidth / 2);
+        int cropHeight = Math.min(sourceHeight / 3, mainHeight / 3);
+        if (cropWidth <= 0 || cropHeight <= 0) {
+            return;
+        }
         // 2 columns x 3 rows; crop the center band of the source target.
         activeEncoder().copyTextureToTexture(
                 colors.readTexture(entry.targetIndex()), main, 0,
-                (tile % 2) * (width / 2), (tile / 2) * cropHeight,
-                width / 4, height / 4,
+                (tile % 2) * (mainWidth / 2), (tile / 2) * cropHeight,
+                sourceWidth / 4, sourceHeight / 4,
                 cropWidth, cropHeight
         );
     }

@@ -1,5 +1,6 @@
 package com.metallum.client.metal.render;
 
+import com.metallum.Metallum;
 import com.metallum.client.metal.render.mtl.MTLSamplerMipFilter;
 import com.mojang.blaze3d.GpuFormat;
 import com.mojang.blaze3d.systems.RenderPass;
@@ -11,6 +12,7 @@ import com.mojang.blaze3d.textures.GpuTexture;
 import com.mojang.blaze3d.textures.GpuTextureView;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
+import net.irisshaders.iris.shaderpack.properties.PackDirectives;
 import net.irisshaders.iris.shaderpack.properties.PackRenderTargetDirectives.RenderTargetSettings;
 import org.joml.Vector4f;
 import org.joml.Vector4fc;
@@ -20,6 +22,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalDouble;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /** Generation-owned Iris colortex ping-pong and depthtex0/1/2 resources. */
 @Environment(EnvType.CLIENT)
@@ -35,6 +38,9 @@ final class IrisMetalRenderTargets implements AutoCloseable {
     private final MetalDevice device;
     private final IrisMetalPingPongTargets colorTargets;
     private final Map<Integer, RenderTargetSettings> targetSettings;
+    /** Pack directives backing per-target {@code size.buffer} extents; null on the uniform/test path. */
+    private final @Nullable PackDirectives directives;
+    private IrisMetalRenderTargetExtents.Extents extents;
     private MetalGpuTexture mainDepth;
     private MetalGpuTexture noTranslucentsDepth;
     private MetalGpuTexture noHandDepth;
@@ -77,9 +83,31 @@ final class IrisMetalRenderTargets implements AutoCloseable {
             final Map<Integer, RenderTargetSettings> targetSettings,
             final Set<Integer> mipmappedTargets
     ) {
+        this(device, colorFormats, width, height, targetSettings, mipmappedTargets, null);
+    }
+
+    /**
+     * Pack-path constructor: resolves every target's extent from the pack's
+     * {@code size.buffer.*} directives (via
+     * {@link IrisMetalRenderTargetExtents}) instead of using one uniform size.
+     */
+    IrisMetalRenderTargets(
+            final MetalDevice device,
+            final GpuFormat[] colorFormats,
+            final int width,
+            final int height,
+            final Map<Integer, RenderTargetSettings> targetSettings,
+            final Set<Integer> mipmappedTargets,
+            final @Nullable PackDirectives directives
+    ) {
         this.device = device;
+        this.directives = directives;
+        this.extents = IrisMetalRenderTargetExtents.from(
+                directives, colorFormats.length, width, height
+        );
         this.colorTargets = new IrisMetalPingPongTargets(
-                device, "iris-colortex", colorFormats, width, height, mipmappedTargets
+                device, "iris-colortex", colorFormats,
+                this.extents.widths(), this.extents.heights(), mipmappedTargets
         );
         this.targetSettings = Map.copyOf(targetSettings);
         this.colorSampler = sampler(FilterMode.LINEAR, MTLSamplerMipFilter.NotMipmapped);
@@ -87,7 +115,24 @@ final class IrisMetalRenderTargets implements AutoCloseable {
         this.colorMipSampler = sampler(FilterMode.LINEAR, MTLSamplerMipFilter.Linear);
         this.nearestMipSampler = sampler(FilterMode.NEAREST, MTLSamplerMipFilter.Linear);
         createDepthTextures(width, height);
+        reportExtentsOnce();
     }
+
+    private void reportExtentsOnce() {
+        if (!MetalDebugSwitches.SIZE_BUFFER || !extents.anyNonBase()) {
+            return;
+        }
+        String summary = extents.nonBaseSummary();
+        if (REPORTED_EXTENTS.add(summary + "@" + extents.baseWidth() + "x" + extents.baseHeight())) {
+            Metallum.LOGGER.info(
+                    "[metallum-iris] size.buffer extents: {} (base {}x{})",
+                    summary, extents.baseWidth(), extents.baseHeight()
+            );
+        }
+    }
+
+    /** Dedupes the one-line extents report across frames/resizes. */
+    private static final Set<String> REPORTED_EXTENTS = ConcurrentHashMap.newKeySet();
 
     private MetalGpuSampler sampler(final FilterMode filter, final MTLSamplerMipFilter mipFilter) {
         return new MetalGpuSampler(
@@ -229,6 +274,18 @@ final class IrisMetalRenderTargets implements AutoCloseable {
         return height;
     }
 
+    /** Pixel width of one logical colortex target (base size unless {@code size.buffer} overrides it). */
+    int targetWidth(final int logicalTarget) {
+        ensureOpen();
+        return colorTargets.width(logicalTarget);
+    }
+
+    /** Pixel height of one logical colortex target (base size unless {@code size.buffer} overrides it). */
+    int targetHeight(final int logicalTarget) {
+        ensureOpen();
+        return colorTargets.height(logicalTarget);
+    }
+
     void captureNoTranslucentsDepth(final MetalCommandEncoder encoder) {
         ensureOpen();
         encoder.copyTextureToTexture(mainDepth, noTranslucentsDepth, 0, 0, 0, 0, 0, width, height);
@@ -266,6 +323,24 @@ final class IrisMetalRenderTargets implements AutoCloseable {
         }
     }
 
+    /**
+     * Depth-attached passes (terrain/world gbuffer draws) cannot write a scaled
+     * colortex target: Metal requires every attachment of a render pass to have
+     * the same dimensions, while the depth attachment is always the base
+     * extent.
+     */
+    private void requireBaseExtent(final String passKind, final String label, final int logicalTarget) {
+        int targetWidth = colorTargets.width(logicalTarget);
+        int targetHeight = colorTargets.height(logicalTarget);
+        if (targetWidth != width || targetHeight != height) {
+            throw new IllegalStateException(
+                    "Iris " + passKind + " pass '" + label + "' writes scaled colortex" + logicalTarget
+                            + " (" + targetWidth + "x" + targetHeight + ") but attaches scene depth ("
+                            + width + "x" + height + "); depth-attached passes must use base-size draw buffers"
+            );
+        }
+    }
+
     RenderPassDescriptorWithViews createWriteDescriptor(
             final String label,
             final int[] drawBuffers,
@@ -283,6 +358,27 @@ final class IrisMetalRenderTargets implements AutoCloseable {
         }
         if (readTargets != null) {
             colorTargets.checkNoFeedbackLoop(drawBuffers, readTargets);
+        }
+        int targetWidth = targetWidth(drawBuffers[0]);
+        int targetHeight = targetHeight(drawBuffers[0]);
+        for (int slot = 1; slot < drawBuffers.length; slot++) {
+            int width = targetWidth(drawBuffers[slot]);
+            int height = targetHeight(drawBuffers[slot]);
+            if (width != targetWidth || height != targetHeight) {
+                // Upstream CompositeRenderer.recalculateSizes rejects this too.
+                throw new IllegalStateException(
+                        "Iris pass '" + label + "' draw buffers must all have the same size: colortex"
+                                + drawBuffers[0] + " " + targetWidth + "x" + targetHeight
+                                + " vs colortex" + drawBuffers[slot] + " " + width + "x" + height
+                );
+            }
+        }
+        if (withDepth && (targetWidth != width || targetHeight != height)) {
+            throw new IllegalStateException(
+                    "Iris pass '" + label + "' attaches scene depth (" + width + "x" + height
+                            + ") but writes scaled draw buffer(s) at " + targetWidth + "x" + targetHeight
+                            + "; depth-attached passes must use base-size draw buffers"
+            );
         }
         RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> label);
         MetalGpuTextureView[] views = new MetalGpuTextureView[drawBuffers.length + (withDepth ? 1 : 0)];
@@ -306,7 +402,10 @@ final class IrisMetalRenderTargets implements AutoCloseable {
                     clearDepth == null ? OptionalDouble.empty() : OptionalDouble.of(clearDepth)
             );
         }
-        descriptor.withRenderArea(new RenderPass.RenderArea(0, 0, width, height));
+        // The viewport of the pass is derived from the first attachment, so the
+        // render area must be the common draw-buffer extent (upstream
+        // CompositeRenderer uses pass.viewWidth/viewHeight the same way).
+        descriptor.withRenderArea(new RenderPass.RenderArea(0, 0, targetWidth, targetHeight));
         return new RenderPassDescriptorWithViews(descriptor, views);
     }
 
@@ -338,6 +437,7 @@ final class IrisMetalRenderTargets implements AutoCloseable {
                 throw new IllegalArgumentException("Terrain DRAWBUFFERS repeats logical target " + logicalTarget);
             }
             written[logicalTarget] = true;
+            requireBaseExtent("Terrain", label, logicalTarget);
             Optional<Vector4fc> clear = logicalTarget == 0 && mainClearColor != null
                     ? Optional.of(mainClearColor)
                     : Optional.empty();
@@ -381,6 +481,7 @@ final class IrisMetalRenderTargets implements AutoCloseable {
                 throw new IllegalArgumentException("World DRAWBUFFERS repeats logical target " + logicalTarget);
             }
             written[logicalTarget] = true;
+            requireBaseExtent("World", label, logicalTarget);
             descriptor.withColorAttachment(colorTargets.readView(logicalTarget), Optional.empty());
         }
         if (depthView != null) {
@@ -399,7 +500,12 @@ final class IrisMetalRenderTargets implements AutoCloseable {
         if (newWidth == width && newHeight == height) {
             return;
         }
-        colorTargets.resize(newWidth, newHeight);
+        // Re-derive every target extent from the new base size; depth stays base.
+        IrisMetalRenderTargetExtents.Extents resized = IrisMetalRenderTargetExtents.from(
+                directives, colorTargets.targetCount(), newWidth, newHeight
+        );
+        this.extents = resized;
+        colorTargets.resize(resized.widths(), resized.heights());
         releaseDepthTextures();
         createDepthTextures(newWidth, newHeight);
         this.fullClearRequired = true;
