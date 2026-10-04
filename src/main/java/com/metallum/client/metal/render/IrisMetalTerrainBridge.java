@@ -66,17 +66,15 @@ public final class IrisMetalTerrainBridge {
         }
         IrisMetalShadowTargets shadowTargets = context.pipeline().resources().shadowTargets();
         if (ShadowRenderingState.areShadowsCurrentlyBeingRendered() && shadowTargets != null) {
-            Vector4fc[] shadowClearColors = null;
-            if (clearColor.isPresent()) {
-                shadowClearColors = new Vector4fc[context.drawBuffers().length];
-                shadowClearColors[0] = clearColor.orElseThrow();
-            }
+            // B (M6.3): caster passes never clear. The vanilla terrain draw's
+            // clears must not be forwarded to the shadow targets; clears run
+            // once per frame before the caster pass.
             IrisMetalRenderTargets.RenderPassDescriptorWithViews descriptor =
                     shadowTargets.createShadowGbufferDescriptor(
                             label.get(),
                             context.drawBuffers(),
-                            shadowClearColors,
-                            clearDepth.isPresent() ? clearDepth.getAsDouble() : null
+                            null,
+                            null
                     );
             return encoder.createRenderPass(descriptor.descriptor());
         }

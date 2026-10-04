@@ -362,13 +362,36 @@ final class IrisMetalShadowTargets implements AutoCloseable {
         }
     }
 
-    IrisMetalRenderTargets.RenderPassDescriptorWithViews createShadowWriteDescriptor(
+    /**
+     * Color-only clear descriptor for one ping-pong side of the requested
+     * shadowcolor targets (upstream clears each clear=true target on both
+     * sides; the depth attachment is untouched).
+     */
+    IrisMetalRenderTargets.RenderPassDescriptorWithViews createShadowColorClearDescriptor(
             final String label,
             final int[] drawBuffers,
-            @Nullable final Vector4fc[] clearColors,
-            @Nullable final Double clearDepth
+            final Vector4fc[] clearColors,
+            final boolean alt
     ) {
-        return createShadowGbufferDescriptor(label, drawBuffers, clearColors, clearDepth);
+        ensureOpen();
+        if (drawBuffers.length == 0 || clearColors.length != drawBuffers.length) {
+            throw new IllegalArgumentException(
+                    "A shadow color clear requires one clear color per target"
+            );
+        }
+        RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> label);
+        MetalGpuTextureView[] views = new MetalGpuTextureView[drawBuffers.length];
+        boolean[] written = new boolean[colorTargets.targetCount()];
+        for (int slot = 0; slot < drawBuffers.length; slot++) {
+            int target = validateDrawTarget(drawBuffers[slot], written, "Shadow color clear");
+            MetalGpuTextureView view = new MetalGpuTextureView(
+                    alt ? colorAlt[target] : colorMain[target], 0, 1
+            );
+            views[slot] = view;
+            descriptor.withColorAttachment(view, Optional.of(clearColors[slot]));
+        }
+        descriptor.withRenderArea(new RenderPass.RenderArea(0, 0, resolution, resolution));
+        return new IrisMetalRenderTargets.RenderPassDescriptorWithViews(descriptor, views);
     }
 
     IrisMetalRenderTargets.RenderPassDescriptorWithViews createShadowGbufferDescriptor(

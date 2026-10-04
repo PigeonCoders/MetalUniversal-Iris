@@ -54,6 +54,7 @@ import org.joml.Vector3f;
 import org.joml.Vector4f;
 import org.jspecify.annotations.Nullable;
 
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -81,8 +82,9 @@ import java.util.Objects;
 @Environment(EnvType.CLIENT)
 final class IrisMetalShadowRenderer {
     private final MetalWorldRenderingPipeline pipeline;
-    private @Nullable String reportedCulling;
+    private final Map<String, String> reportedCulling = new java.util.HashMap<>();
     private @Nullable String reportedDepthMode;
+    private @Nullable String reportedEntityFrustum;
     private boolean warnedSafeZone;
     private @Nullable LevelRenderState entityLevelRenderState;
     private @Nullable SubmitNodeStorage entitySubmitStorage;
@@ -144,12 +146,31 @@ final class IrisMetalShadowRenderer {
             return false;
         }
 
-        Frustum frustum = createFrustum(directives, matrixSet);
+        Frustum frustum = createFrustum(
+                directives, matrixSet, directives.getDistanceRenderMul(), "shadow.culling"
+        );
         Vec3 cameraPos = camera.position();
         double cameraX = cameraPos.x;
         double cameraY = cameraPos.y;
         double cameraZ = cameraPos.z;
         frustum.prepare(cameraX, cameraY, cameraZ);
+        // E (M6.3): the pack can constrain the entity shadow distance
+        // independently of the terrain distance (upstream
+        // entityShadowDistanceMultiplier). 1.0/negative shares the terrain
+        // frustum exactly as upstream.
+        Frustum entityFrustum = frustum;
+        float entityDistanceMultiplier = directives.getEntityShadowDistanceMul();
+        if (entityDistanceMultiplier == 1.0F || entityDistanceMultiplier < 0.0F) {
+            reportEntityFrustum("shared");
+        } else {
+            entityFrustum = createFrustum(
+                    directives, matrixSet,
+                    directives.getDistanceRenderMul() * entityDistanceMultiplier,
+                    "shadow.entityCulling"
+            );
+            entityFrustum.prepare(cameraX, cameraY, cameraZ);
+            reportEntityFrustum("separate");
+        }
         boolean spectator = camera.entity() != null && camera.entity().isSpectator();
         GpuSampler sampler = RenderSystem.getSamplerCache().getClampToEdge(FilterMode.NEAREST, true);
         // GL-NDC shadow depth: the caster vertex shader emulates GL's
@@ -195,7 +216,7 @@ final class IrisMetalShadowRenderer {
             // shadowtex0).
             pipeline.setPhase(WorldRenderingPhase.ENTITIES);
             renderEntityAndBlockEntityCasters(
-                    levelRenderer, sodiumWorldRenderer, camera, frustum, directives,
+                    levelRenderer, sodiumWorldRenderer, camera, entityFrustum, directives,
                     matrixSet, cameraX, cameraY, cameraZ
             );
             pipeline.setPhase(WorldRenderingPhase.NONE);
@@ -303,6 +324,13 @@ final class IrisMetalShadowRenderer {
                 // the block entities visible to the shadow frustum.
                 sodiumWorldRenderer.extractBlockEntities(
                         camera, tickDelta, minecraft.level.destructionProgress(), state
+                );
+            }
+            if (!directives.shouldRenderBlockEntities() && directives.shouldRenderLightBlockEntities()) {
+                // E (M6.3): pack wants only light-emitting block entities
+                // (upstream extractVisibleBlockEntities' lightsOnly filter).
+                state.blockEntityRenderStates.removeIf(
+                        blockEntityState -> blockEntityState.blockState.getLightEmission() == 0
                 );
             }
             BlockEntityRenderDispatcher blockDispatcher = minecraft.getBlockEntityRenderDispatcher();
@@ -431,19 +459,21 @@ final class IrisMetalShadowRenderer {
      */
     private Frustum createFrustum(
             final PackShadowDirectives directives,
-            final IrisMetalUniformValues.ShadowMatrixSet matrixSet
+            final IrisMetalUniformValues.ShadowMatrixSet matrixSet,
+            final float renderMultiplier,
+            final String receiptKey
     ) {
         String forced = MetalDebugSwitches.SHADOW_CULLING;
         if ("none".equalsIgnoreCase(forced)) {
-            reportCulling("none (forced)");
+            reportCulling(receiptKey, "none (forced)");
             return new NonCullingFrustum();
         }
         if ("advanced".equalsIgnoreCase(forced)) {
-            reportCulling("advanced (forced)");
-            return advancedFrustum(directives, matrixSet);
+            reportCulling(receiptKey, "advanced (forced)");
+            return advancedFrustum(directives, matrixSet, renderMultiplier);
         }
         if ("box".equalsIgnoreCase(forced)) {
-            return boxFrustum(directives, "box (forced)");
+            return boxFrustum(directives, renderMultiplier, "box (forced)", receiptKey);
         }
         ShadowCullState state = directives.getCullingState();
         if (state == ShadowCullState.SAFE_ZONE) {
@@ -454,34 +484,40 @@ final class IrisMetalShadowRenderer {
                                 + " falling back to advanced culling"
                 );
             }
-            reportCulling("advanced (safe-zone degraded)");
-            return advancedFrustum(directives, matrixSet);
+            reportCulling(receiptKey, "advanced (safe-zone degraded)");
+            return advancedFrustum(directives, matrixSet, renderMultiplier);
         }
         if (state == ShadowCullState.DISTANCE) {
-            return boxFrustum(directives, "box (pack)");
+            return boxFrustum(directives, renderMultiplier, "box (pack)", receiptKey);
         }
-        reportCulling("advanced (pack)");
-        return advancedFrustum(directives, matrixSet);
+        reportCulling(receiptKey, "advanced (pack)");
+        return advancedFrustum(directives, matrixSet, renderMultiplier);
     }
 
-    private Frustum boxFrustum(final PackShadowDirectives directives, final String description) {
-        double distance = shadowDistance(directives);
+    private Frustum boxFrustum(
+            final PackShadowDirectives directives,
+            final float renderMultiplier,
+            final String description,
+            final String receiptKey
+    ) {
+        double distance = shadowDistance(directives, renderMultiplier);
         double renderDistance = Minecraft.getInstance().options.getEffectiveRenderDistance() * 16.0;
         if (distance <= 0.0 || distance > renderDistance) {
             // Upstream disables culling entirely when the pack's distance
             // exceeds the normal render distance.
-            reportCulling(description + " -> none (distance)");
+            reportCulling(receiptKey, description + " -> none (distance)");
             return new NonCullingFrustum();
         }
-        reportCulling(description);
+        reportCulling(receiptKey, description);
         return new BoxCullingFrustum(new BoxCuller(distance));
     }
 
     private Frustum advancedFrustum(
             final PackShadowDirectives directives,
-            final IrisMetalUniformValues.ShadowMatrixSet matrixSet
+            final IrisMetalUniformValues.ShadowMatrixSet matrixSet,
+            final float renderMultiplier
     ) {
-        double distance = shadowDistance(directives);
+        double distance = shadowDistance(directives, renderMultiplier);
         double renderDistance = Minecraft.getInstance().options.getEffectiveRenderDistance() * 16.0;
         BoxCuller boxCuller = distance > 0.0 && distance < renderDistance
                 ? new BoxCuller(distance)
@@ -495,18 +531,31 @@ final class IrisMetalShadowRenderer {
         return new AdvancedShadowCullingFrustum(projView, matrixSet.packProjection(), light, boxCuller);
     }
 
-    private static double shadowDistance(final PackShadowDirectives directives) {
-        float multiplier = directives.getDistanceRenderMul();
-        if (multiplier < 0.0F) {
+    /**
+     * Pack distance scaled by the frustum's render multiplier; a negative
+     * multiplier (user shadow distance) wins over the pack distance.
+     */
+    private static double shadowDistance(
+            final PackShadowDirectives directives,
+            final float renderMultiplier
+    ) {
+        if (renderMultiplier < 0.0F) {
             return IrisVideoSettings.shadowDistance * 16.0;
         }
-        return directives.getDistance() * multiplier;
+        return directives.getDistance() * renderMultiplier;
     }
 
-    private void reportCulling(final String description) {
-        if (!description.equals(this.reportedCulling)) {
-            this.reportedCulling = description;
-            this.pipeline.receipts().recordEvent("shadow.culling=" + description);
+    private void reportCulling(final String key, final String description) {
+        if (!description.equals(this.reportedCulling.get(key))) {
+            this.reportedCulling.put(key, description);
+            this.pipeline.receipts().recordEvent(key + "=" + description);
+        }
+    }
+
+    private void reportEntityFrustum(final String mode) {
+        if (!mode.equals(this.reportedEntityFrustum)) {
+            this.reportedEntityFrustum = mode;
+            this.pipeline.receipts().recordEvent("shadow.entityFrustum=" + mode);
         }
     }
 

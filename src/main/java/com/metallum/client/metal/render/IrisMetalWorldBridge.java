@@ -22,7 +22,6 @@ import net.irisshaders.iris.pipeline.programs.ShaderKey;
 import net.irisshaders.iris.shaderpack.loading.ProgramId;
 import net.irisshaders.iris.shadows.ShadowRenderingState;
 import net.minecraft.client.Minecraft;
-import org.joml.Vector4fc;
 import org.jspecify.annotations.Nullable;
 
 import java.nio.ByteBuffer;
@@ -134,6 +133,7 @@ public final class IrisMetalWorldBridge {
     private static final Set<String> REPORTED_INSTALLS = new HashSet<>();
     private static final Set<String> REPORTED_SKIPS = new HashSet<>();
     private static final Set<String> REPORTED_PIPELINE_SKIPS = new HashSet<>();
+    private static final Set<String> REPORTED_SHADOW_ATTACHMENTS = new HashSet<>();
     private static final Set<String> REPORTED_MISSING_SAMPLER_TARGETS = new HashSet<>();
     private static final Set<String> REPORTED_INPUT_AUDITS = new HashSet<>();
     private static final Set<String> REPORTED_PER_DRAW_SKIPS = new HashSet<>();
@@ -341,45 +341,42 @@ public final class IrisMetalWorldBridge {
         }
         ACTIVE_WORLD_PASS.set(new WorldContext(pipeline, key));
         recordInstall(key, program.name(), drawBuffers, "shadow");
+        recordShadowAttachment(pipeline, program, drawBuffers, shadows);
+        // B (M6.3): caster draws never clear. The vanilla draw's color/depth
+        // clears must not be forwarded to the shadow attachments: a clear here
+        // would wipe shadowcolor0 / shadowtex0 mid-pass (upstream clears only
+        // at frame start, before any caster).
         return shadows.createShadowGbufferDescriptor(
                 descriptor.label().get(),
                 drawBuffers,
-                shadowClearColors(descriptor, drawBuffers),
-                shadowClearDepth(descriptor)
+                null,
+                null
         ).descriptor();
     }
 
-    /** Carries a vanilla draw's color clears over to the shadow attachments. */
-    private static @Nullable Vector4fc[] shadowClearColors(
-            final RenderPassDescriptor descriptor,
-            final int[] drawBuffers
+    /**
+     * E (M6.3): once per caster program, record the shadow attachments the
+     * draw writes so a receipt shows the colored-shadow path is live.
+     */
+    private static void recordShadowAttachment(
+            final MetalWorldRenderingPipeline pipeline,
+            final IrisMetalGlslLinker.LinkedRasterProgram program,
+            final int[] drawBuffers,
+            final IrisMetalShadowTargets shadows
     ) {
-        List<RenderPassDescriptor.Attachment<Optional<Vector4fc>>> colors = descriptor.colorAttachments();
-        Vector4fc[] clearColors = null;
-        int count = Math.min(drawBuffers.length, colors.size());
-        for (int index = 0; index < count; index++) {
-            RenderPassDescriptor.Attachment<Optional<Vector4fc>> attachment = colors.get(index);
-            if (attachment == null || attachment.clearValue() == null) {
-                continue;
+        StringBuilder formats = new StringBuilder();
+        for (int buffer : drawBuffers) {
+            if (formats.length() > 0) {
+                formats.append(',');
             }
-            Optional<Vector4fc> clear = attachment.clearValue();
-            if (clear.isPresent()) {
-                if (clearColors == null) {
-                    clearColors = new Vector4fc[drawBuffers.length];
-                }
-                clearColors[index] = clear.get();
-            }
+            formats.append(buffer).append(':').append(shadows.colorFormat(buffer));
         }
-        return clearColors;
-    }
-
-    /** Carries a vanilla draw's depth clear over to shadowtex0 when present. */
-    private static @Nullable Double shadowClearDepth(final RenderPassDescriptor descriptor) {
-        RenderPassDescriptor.Attachment<OptionalDouble> depth = descriptor.depthAttachment();
-        if (depth == null || depth.clearValue() == null || depth.clearValue().isEmpty()) {
-            return null;
+        String key = program.name() + ":" + formats;
+        if (REPORTED_SHADOW_ATTACHMENTS.add(key)) {
+            pipeline.receipts().recordEvent("shadow.caster.attachment program=" + program.name()
+                    + " colors=" + formats
+                    + " depth=" + shadows.shadowDepthTexture().getFormat());
         }
-        return depth.clearValue().getAsDouble();
     }
 
     /**

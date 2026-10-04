@@ -88,6 +88,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
                 IrisMetalRenderTargetFormats.from(this.programSet.getPackDirectives()).length
         );
         this.receipts = IrisMetalRuntimeReceipts.open(this.generation);
+        this.executionGraph.attachReceipts(this.receipts);
         this.pack = programSet.getPack();
         this.directives = programSet.getPackDirectives();
         this.forcedShadowRenderDistanceChunks = forcedShadowDistance(
@@ -216,7 +217,11 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
         this.executionGraph.beginFrame(
                 this.resources(), new Vector4f((float) fog.x, (float) fog.y, (float) fog.z, 1.0F)
         );
-        this.executionGraph.initializeShadowTargets(this.resources());
+        // Upstream order: clear shadowtex0 -> top-level shadow.csh dispatch at
+        // the shadow-map extent -> clear shadowcolor on both sides.
+        this.executionGraph.clearShadowDepth(this.resources());
+        this.executionGraph.executeShadowComputes(this.resources());
+        this.executionGraph.clearShadowColors(this.resources());
         this.frameState.beginWorldRendering();
         this.receipts.recordEvent("setup");
         this.executionGraph.executeSetup(this.resources());
