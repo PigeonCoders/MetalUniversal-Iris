@@ -195,6 +195,8 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
     private final Set<String> skippedPasses = new HashSet<>();
     private final Set<String> stripPassesHitThisFrame = new HashSet<>();
     private final Set<String> reportedShadowReceipts = new HashSet<>();
+    /** Passes whose declared-but-inactive sampler skip was already reported (plan names). */
+    private final Set<String> reportedInactiveSamplers = new HashSet<>();
     private @Nullable IrisMetalRuntimeReceipts receipts;
     private int stripIndex;
     private boolean warnedZeroVl;
@@ -1226,7 +1228,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                         readTargets.stream().mapToInt(Integer::intValue).toArray()
                 );
             }
-            try (descriptor) {
+            try {
                 MetalRenderPass pass = (MetalRenderPass) encoder.createRenderPass(descriptor.descriptor());
                 pass.setCompiledPipeline(pipeline);
                 bindRaster(pass, pipeline, plan, resources, targets);
@@ -1235,7 +1237,14 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                 pass.setVertexBuffer(0, net.irisshaders.iris.pathways.FullScreenQuadRenderer.INSTANCE.getQuad().slice());
                 pass.drawIndexed(6, 1, 0, 0, 0);
             } finally {
-                encoder.submitRenderPass();
+                // Submit while the descriptor's views are still open: pending clears
+                // are materialized against those views, and closing first would both
+                // crash and mask the real failure from the try body.
+                try {
+                    encoder.submitRenderPass();
+                } finally {
+                    descriptor.close();
+                }
             }
         } finally {
             targets.resetMipmaps();
@@ -1263,10 +1272,20 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                 );
             }
         }
-        for (IrisMetalGlslLinker.SamplerDecl sampler : plan.program().samplers()) {
-            if (!sampler.sampled()) {
-                continue;
-            }
+        // A shaderpack's linked source declares every sampler a shared include
+        // mentions, but only the ones the compiled MSL actually samples are
+        // active (stageMask != 0; MetalRenderPass.pushDescriptor skips the
+        // rest). Legacy compatibility declarations such as CR's gaux2/gaux4/
+        // normals/specular/tex have no render-target mapping and are inactive;
+        // requiring a binding for them aborted the pass before its draw and the
+        // deferred clear then crashed in submitRenderPass, masking the real
+        // error. Bind only active declarations and keep the strict failure for
+        // an active sampler the binding table cannot resolve.
+        Set<String> activeSampledImages = activeSampledImages(pipeline);
+        List<IrisMetalGlslLinker.SamplerDecl> declaredInactive = new ArrayList<>();
+        for (IrisMetalGlslLinker.SamplerDecl sampler : activeSampledDeclarations(
+                plan.program().samplers(), activeSampledImages
+        )) {
             MetalRenderPass.TextureViewAndSampler binding = textureBinding(
                     sampler.name(), plan.stage().textureStage, targets, resources, plan.readsFromAlt()
             );
@@ -1276,6 +1295,17 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                 );
             }
             pass.bindTexture(sampler.name(), binding.textureView(), binding.sampler());
+        }
+        for (IrisMetalGlslLinker.SamplerDecl sampler : plan.program().samplers()) {
+            if (sampler.sampled() && !activeSampledImages.contains(sampler.name())) {
+                declaredInactive.add(sampler);
+            }
+        }
+        if (!declaredInactive.isEmpty() && this.reportedInactiveSamplers.add(plan.name())) {
+            Metallum.LOGGER.debug(
+                    "[metallum-iris] pass '{}' skipped {} declared-but-inactive samplers: {}",
+                    plan.name(), declaredInactive.size(), declaredInactive
+            );
         }
         IrisMetalComputeResources computeResources = resources.computeResources();
         for (MetalCompiledRenderPipeline.ResourceBinding binding : pipeline.resources()) {
@@ -1314,16 +1344,17 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             final IrisMetalShadowTargets shadows
     ) {
         MetalCommandEncoder encoder = activeEncoder();
-        try (IrisMetalRenderTargets.RenderPassDescriptorWithViews descriptor =
-                     shadows.createShadowCompositeDescriptor(
-                             "Iris shadowcomp: " + plan.name(),
-                             plan.drawBuffers(),
-                             plan.readsFromAlt(),
-                             0,
-                             0,
-                             shadows.resolution(),
-                             shadows.resolution()
-                     )) {
+        IrisMetalRenderTargets.RenderPassDescriptorWithViews descriptor =
+                shadows.createShadowCompositeDescriptor(
+                        "Iris shadowcomp: " + plan.name(),
+                        plan.drawBuffers(),
+                        plan.readsFromAlt(),
+                        0,
+                        0,
+                        shadows.resolution(),
+                        shadows.resolution()
+                );
+        try {
             MetalRenderPass pass = (MetalRenderPass) encoder.createRenderPass(descriptor.descriptor());
             pass.setCompiledPipeline(pipeline);
             bindRaster(pass, pipeline, plan, resources, resources.renderTargets());
@@ -1332,7 +1363,14 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             pass.setVertexBuffer(0, net.irisshaders.iris.pathways.FullScreenQuadRenderer.INSTANCE.getQuad().slice());
             pass.drawIndexed(6, 1, 0, 0, 0);
         } finally {
-            encoder.submitRenderPass();
+            // Submit while the descriptor's views are still open: pending clears
+            // are materialized against those views, and closing first would both
+            // crash and mask the real failure from the try body.
+            try {
+                encoder.submitRenderPass();
+            } finally {
+                descriptor.close();
+            }
         }
     }
 
@@ -1607,6 +1645,37 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         } catch (NumberFormatException ignored) {
             return -1;
         }
+    }
+
+    /**
+     * Names of the sampled images the compiled shaderpack pipeline actually
+     * reads (per-stage compact remap leaves inactive declarations at
+     * {@code stageMask == 0}; {@code MetalRenderPass.pushDescriptor} skips
+     * those).
+     */
+    static Set<String> activeSampledImages(final MetalCompiledRenderPipeline pipeline) {
+        Set<String> active = new HashSet<>();
+        for (MetalCompiledRenderPipeline.ResourceBinding binding : pipeline.resources()) {
+            if (binding.kind() == MetalCompiledRenderPipeline.ResourceKind.SAMPLED_IMAGE
+                    && binding.stageMask() != 0) {
+                active.add(binding.name());
+            }
+        }
+        return active;
+    }
+
+    /** Declared samplers (not storage images) that the pipeline compiles as active. */
+    static List<IrisMetalGlslLinker.SamplerDecl> activeSampledDeclarations(
+            final List<IrisMetalGlslLinker.SamplerDecl> declared,
+            final Set<String> activeSampledImages
+    ) {
+        List<IrisMetalGlslLinker.SamplerDecl> result = new ArrayList<>();
+        for (IrisMetalGlslLinker.SamplerDecl sampler : declared) {
+            if (sampler.sampled() && activeSampledImages.contains(sampler.name())) {
+                result.add(sampler);
+            }
+        }
+        return result;
     }
 
     private int shadowTargetCount() {
