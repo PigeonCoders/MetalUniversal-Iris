@@ -10,19 +10,23 @@ import net.caffeinemc.mods.sodium.client.render.chunk.terrain.TerrainRenderPass;
 import net.irisshaders.iris.Iris;
 import net.irisshaders.iris.pipeline.WorldRenderingPipeline;
 import net.irisshaders.iris.pipeline.programs.ShaderKey;
+import net.irisshaders.iris.shaderpack.texture.TextureStage;
 import net.irisshaders.iris.shadows.ShadowRenderingState;
 import org.joml.Vector4fc;
 import org.jspecify.annotations.Nullable;
 
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalDouble;
+import java.util.Set;
 import java.util.function.Supplier;
 
 /** Atomically pairs one Sodium terrain draw with its Iris PSO and attachments. */
 public final class IrisMetalTerrainBridge {
     private static final ThreadLocal<TerrainContext> ACTIVE_TERRAIN = new ThreadLocal<>();
+    private static final Set<String> REPORTED_CUSTOM_SAMPLERS = new HashSet<>();
 
     private IrisMetalTerrainBridge() {
     }
@@ -157,6 +161,30 @@ public final class IrisMetalTerrainBridge {
         if (context == null) {
             return null;
         }
+        // Terrain and shadow-caster draws share TextureStage.GBUFFERS_AND_SHADOW
+        // (texture.gbuffers.*). Stage custom textures take precedence over every
+        // name-based default, exactly like upstream's
+        // ProgramSamplers.CustomTextureSamplerInterceptor. Before this check,
+        // CR's texture.gbuffers.gaux4 (cloud-water.png, the water normal map)
+        // fell through to LEGACY_RENDER_TARGETS index 7 -> colortex7, the
+        // reflection buffer, so water sampled reflections instead of waves.
+        MetalRenderPass.TextureViewAndSampler custom = context.pipeline().resources()
+                .customTextures()
+                .resolve(TextureStage.GBUFFERS_AND_SHADOW, name);
+        if (custom != null) {
+            recordCustomSamplerOverride("terrain", name);
+        }
+        return IrisMetalCustomTextures.overrideFirst(
+                custom,
+                () -> standardSampler(context, name, bound)
+        );
+    }
+
+    private static MetalRenderPass.@Nullable TextureViewAndSampler standardSampler(
+            final TerrainContext context,
+            final String name,
+            final Map<String, MetalRenderPass.TextureViewAndSampler> bound
+    ) {
         MetalRenderPass.TextureViewAndSampler alias = switch (name) {
             case "gtexture", "texture", "tex" -> bound.get("u_BlockTex");
             case "lightmap" -> bound.get("u_LightTex");
@@ -234,6 +262,13 @@ public final class IrisMetalTerrainBridge {
             return Integer.parseInt(name.substring("shadowcolor".length()));
         } catch (NumberFormatException ignored) {
             return -1;
+        }
+    }
+
+    /** Records the first custom-texture hit per (kind, sampler) so a probe run can confirm the override. */
+    private static void recordCustomSamplerOverride(final String where, final String name) {
+        if (REPORTED_CUSTOM_SAMPLERS.add(where + ":" + name)) {
+            MetalProbeReport.record(where + " sampler custom name=" + name + " stage=gbuffers");
         }
     }
 

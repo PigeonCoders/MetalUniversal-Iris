@@ -20,6 +20,7 @@ import net.irisshaders.iris.gl.state.ShaderAttributeInputs;
 import net.irisshaders.iris.pipeline.WorldRenderingPipeline;
 import net.irisshaders.iris.pipeline.programs.ShaderKey;
 import net.irisshaders.iris.shaderpack.loading.ProgramId;
+import net.irisshaders.iris.shaderpack.texture.TextureStage;
 import net.irisshaders.iris.shadows.ShadowRenderingState;
 import net.minecraft.client.Minecraft;
 import org.jspecify.annotations.Nullable;
@@ -135,6 +136,7 @@ public final class IrisMetalWorldBridge {
     private static final Set<String> REPORTED_PIPELINE_SKIPS = new HashSet<>();
     private static final Set<String> REPORTED_SHADOW_ATTACHMENTS = new HashSet<>();
     private static final Set<String> REPORTED_MISSING_SAMPLER_TARGETS = new HashSet<>();
+    private static final Set<String> REPORTED_CUSTOM_SAMPLERS = new HashSet<>();
     private static final Set<String> REPORTED_INPUT_AUDITS = new HashSet<>();
     private static final Set<String> REPORTED_PER_DRAW_SKIPS = new HashSet<>();
     private static final Set<String> REPORTED_PER_DRAW_MATERIALIZATIONS = new HashSet<>();
@@ -661,6 +663,28 @@ public final class IrisMetalWorldBridge {
             Metallum.LOGGER.warn("[metallum-iris][debug] worldPass samplers: {}", bound.keySet());
             MetalProbeReport.record("worldPass samplers=" + bound.keySet());
         }
+        // Gbuffer world-override draws and shadow-caster draws both use
+        // TextureStage.GBUFFERS_AND_SHADOW (texture.gbuffers.*). Stage custom
+        // textures take precedence over every name-based default, exactly like
+        // upstream's ProgramSamplers.CustomTextureSamplerInterceptor; a miss
+        // below must keep the existing legacy/alias resolution unchanged.
+        MetalRenderPass.TextureViewAndSampler custom = context.pipeline().resources()
+                .customTextures()
+                .resolve(TextureStage.GBUFFERS_AND_SHADOW, name);
+        if (custom != null) {
+            recordCustomSamplerOverride("world", name);
+        }
+        return IrisMetalCustomTextures.overrideFirst(
+                custom,
+                () -> standardSampler(context, name, bound)
+        );
+    }
+
+    private static MetalRenderPass.@Nullable TextureViewAndSampler standardSampler(
+            final WorldContext context,
+            final String name,
+            final Map<String, MetalRenderPass.TextureViewAndSampler> bound
+    ) {
         // 26.2's vanilla-core transformer re-exposes the engine's render-type
         // textures under Iris names, so a patchVanilla program declares those
         // instead of the names the engine binds: the albedo bound as Sampler0
@@ -749,6 +773,13 @@ public final class IrisMetalWorldBridge {
             );
         }
         return null;
+    }
+
+    /** Records the first custom-texture hit per (kind, sampler) so a probe run can confirm the override. */
+    private static void recordCustomSamplerOverride(final String where, final String name) {
+        if (REPORTED_CUSTOM_SAMPLERS.add(where + ":" + name)) {
+            MetalProbeReport.record(where + " sampler custom name=" + name + " stage=gbuffers");
+        }
     }
 
     private static void recordInstall(

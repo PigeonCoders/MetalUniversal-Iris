@@ -22,6 +22,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.OptionalDouble;
+import java.util.function.Supplier;
 
 /** Metal-owned, stage-scoped implementation of Iris shader-pack custom textures. */
 @Environment(EnvType.CLIENT)
@@ -95,6 +96,22 @@ final class IrisMetalCustomTextures implements AutoCloseable {
         Objects.requireNonNull(samplerName, "samplerName");
         Map<String, CustomTextureData> stageDefinitions = this.definitions.get(stage);
         return stageDefinitions != null && stageDefinitions.containsKey(samplerName);
+    }
+
+    /**
+     * Applies the custom-texture precedence to a name-based sampler fallback:
+     * a custom stage texture always beats the standard/legacy binding, and a
+     * miss defers to the fallback untouched. Upstream implements the same
+     * precedence in {@code ProgramSamplers.CustomTextureSamplerInterceptor},
+     * which substitutes the override for every {@code addDynamicSampler} call
+     * whose name matches, before the standard binding is recorded.
+     */
+    static MetalRenderPass.@Nullable TextureViewAndSampler overrideFirst(
+            final MetalRenderPass.@Nullable TextureViewAndSampler custom,
+            final Supplier<MetalRenderPass.@Nullable TextureViewAndSampler> fallback
+    ) {
+        Objects.requireNonNull(fallback, "fallback");
+        return custom != null ? custom : fallback.get();
     }
 
     /** Materializes every declared PNG before any render encoder is live. */
