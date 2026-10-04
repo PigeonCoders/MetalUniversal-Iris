@@ -13,6 +13,7 @@ import net.irisshaders.iris.shaderpack.properties.PackShadowDirectives;
 import net.irisshaders.iris.shaderpack.properties.PackRenderTargetDirectives.RenderTargetSettings;
 import net.irisshaders.iris.shaderpack.texture.CustomTextureData;
 import net.irisshaders.iris.shaderpack.texture.TextureStage;
+import org.joml.Vector4fc;
 import org.jspecify.annotations.Nullable;
 
 import java.util.Map;
@@ -251,7 +252,8 @@ final class IrisMetalWorldResources implements AutoCloseable {
                 : PackShadowDirectives.MAX_SHADOW_COLOR_BUFFERS_OF;
         boolean[] nearestColor = new boolean[targetCount];
         boolean[] mipmappedColor = new boolean[targetCount];
-        GpuFormat[] colorFormats = new GpuFormat[targetCount];
+        boolean[] clearColor = new boolean[targetCount];
+        Vector4fc[] clearColors = new Vector4fc[targetCount];
         for (int index = 0; index < targetCount; index++) {
             PackShadowDirectives.SamplingSettings settings = shadow.getColorSamplingSettings().get(index);
             if (settings == null) {
@@ -259,8 +261,10 @@ final class IrisMetalWorldResources implements AutoCloseable {
             }
             nearestColor[index] = settings.getNearest();
             mipmappedColor[index] = settings.getMipmap();
-            colorFormats[index] = IrisMetalRenderTargetFormats.fromInternalName(settings.getFormat().name());
+            clearColor[index] = settings.getClear();
+            clearColors[index] = settings.getClearColor();
         }
+        GpuFormat[] colorFormats = IrisMetalShadowTargets.colorFormats(programSet);
 
         boolean[] nearestDepth = new boolean[2];
         boolean[] mipmappedDepth = new boolean[2];
@@ -276,7 +280,9 @@ final class IrisMetalWorldResources implements AutoCloseable {
                 nearestColor,
                 mipmappedColor,
                 nearestDepth,
-                mipmappedDepth
+                mipmappedDepth,
+                clearColor,
+                clearColors
         );
     }
 

@@ -9,6 +9,10 @@ import com.mojang.blaze3d.textures.FilterMode;
 import com.mojang.blaze3d.textures.GpuTexture;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
+import net.irisshaders.iris.features.FeatureFlags;
+import net.irisshaders.iris.shaderpack.programs.ProgramSet;
+import net.irisshaders.iris.shaderpack.properties.PackShadowDirectives;
+import org.joml.Vector4f;
 import org.joml.Vector4fc;
 import org.jspecify.annotations.Nullable;
 
@@ -34,6 +38,8 @@ final class IrisMetalShadowTargets implements AutoCloseable {
     private final MetalGpuSampler[] depthSamplers;
     private final MetalGpuSampler[] depthCompareSamplers;
     private final boolean[] colorMipmapped;
+    private final boolean[] colorClear;
+    private final Vector4fc[] colorClearColors;
     private final boolean[] depthMipmapped;
     @Nullable
     private final MetalDepthMipmapGenerator depthMipmapGenerator;
@@ -88,10 +94,40 @@ final class IrisMetalShadowTargets implements AutoCloseable {
             final boolean[] nearestDepth,
             final boolean[] mipmappedDepth
     ) {
+        this(
+                device,
+                shadowColorFormats,
+                resolution,
+                nearestColor,
+                colorMipmapped,
+                nearestDepth,
+                mipmappedDepth,
+                allSet(shadowColorFormats.length),
+                whiteColors(shadowColorFormats.length)
+        );
+    }
+
+    IrisMetalShadowTargets(
+            final MetalDevice device,
+            final GpuFormat[] shadowColorFormats,
+            final int resolution,
+            final boolean[] nearestColor,
+            final boolean[] colorMipmapped,
+            final boolean[] nearestDepth,
+            final boolean[] mipmappedDepth,
+            final boolean[] colorClear,
+            final Vector4fc[] colorClearColors
+    ) {
         if (nearestColor.length != shadowColorFormats.length
                 || colorMipmapped.length != shadowColorFormats.length) {
             throw new IllegalArgumentException(
                     "One color sampling and mipmap mode is required per shadowcolor target"
+            );
+        }
+        if (colorClear.length != shadowColorFormats.length
+                || colorClearColors.length != shadowColorFormats.length) {
+            throw new IllegalArgumentException(
+                    "One clear mode and clear color is required per shadowcolor target"
             );
         }
         if (nearestDepth.length != 2 || mipmappedDepth.length != 2) {
@@ -109,6 +145,8 @@ final class IrisMetalShadowTargets implements AutoCloseable {
         refreshColorSides();
         this.colorSamplers = new MetalGpuSampler[shadowColorFormats.length];
         this.colorMipmapped = colorMipmapped.clone();
+        this.colorClear = colorClear.clone();
+        this.colorClearColors = colorClearColors.clone();
         for (int index = 0; index < colorSamplers.length; index++) {
             colorSamplers[index] = createSampler(nearestColor[index], colorMipmapped[index], false);
         }
@@ -151,6 +189,39 @@ final class IrisMetalShadowTargets implements AutoCloseable {
             }
         }
         return result;
+    }
+
+    private static boolean[] allSet(final int length) {
+        boolean[] flags = new boolean[length];
+        java.util.Arrays.fill(flags, true);
+        return flags;
+    }
+
+    private static Vector4fc[] whiteColors(final int length) {
+        Vector4fc[] colors = new Vector4fc[length];
+        java.util.Arrays.fill(colors, new Vector4f(1.0F, 1.0F, 1.0F, 1.0F));
+        return colors;
+    }
+
+    /**
+     * Shadowcolor formats shared by target creation and shadow-program PSO
+     * compilation; same source as {@code IrisMetalWorldResources.createShadowTargets}
+     * so the caster pass and the compiled pipelines cannot drift.
+     */
+    static GpuFormat[] colorFormats(final ProgramSet programSet) {
+        PackShadowDirectives shadow = programSet.getPackDirectives().getShadowDirectives();
+        int targetCount = programSet.getPack().hasFeature(FeatureFlags.HIGHER_SHADOWCOLOR)
+                ? PackShadowDirectives.MAX_SHADOW_COLOR_BUFFERS_IRIS
+                : PackShadowDirectives.MAX_SHADOW_COLOR_BUFFERS_OF;
+        GpuFormat[] formats = new GpuFormat[targetCount];
+        for (int index = 0; index < targetCount; index++) {
+            PackShadowDirectives.SamplingSettings settings = shadow.getColorSamplingSettings().get(index);
+            if (settings == null) {
+                settings = new PackShadowDirectives.SamplingSettings();
+            }
+            formats[index] = IrisMetalRenderTargetFormats.fromInternalName(settings.getFormat().name());
+        }
+        return formats;
     }
 
     private void refreshColorSides() {
@@ -241,6 +312,19 @@ final class IrisMetalShadowTargets implements AutoCloseable {
     GpuFormat colorFormat(final int index) {
         ensureOpen();
         return colorTargets.format(checkColorIndex(index));
+    }
+
+    /** Whether this shadowcolor target should be cleared at the start of the shadow pass. */
+    boolean clearsColor(final int index) {
+        ensureOpen();
+        return this.colorClear[checkColorIndex(index)];
+    }
+
+    /** The pack's clear color for this shadowcolor target. */
+    Vector4fc colorClearColor(final int index) {
+        ensureOpen();
+        Vector4fc color = this.colorClearColors[checkColorIndex(index)];
+        return color == null ? new Vector4f(1.0F, 1.0F, 1.0F, 1.0F) : color;
     }
 
     MetalGpuTexture colorTexture(final int index, final BitSet readsFromAlt) {

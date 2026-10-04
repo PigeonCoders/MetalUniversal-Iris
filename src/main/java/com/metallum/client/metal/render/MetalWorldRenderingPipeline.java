@@ -9,6 +9,7 @@ import net.irisshaders.iris.helpers.Tri;
 import net.irisshaders.iris.pathways.HorizonRenderer;
 import net.irisshaders.iris.pipeline.VanillaRenderingPipeline;
 import net.irisshaders.iris.pipeline.WorldRenderingPhase;
+import net.irisshaders.iris.shadows.ShadowRenderer;
 import net.irisshaders.iris.shaderpack.ShaderPack;
 import net.irisshaders.iris.shaderpack.materialmap.BlockMaterialMapping;
 import net.irisshaders.iris.shaderpack.materialmap.WorldRenderingSettings;
@@ -70,6 +71,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
     private IrisMetalWorldResources resources;
     private @Nullable IrisMetalCenterDepthSampler centerDepthSampler;
     private @Nullable HorizonRenderer horizonRenderer;
+    private @Nullable IrisMetalShadowRenderer shadowRenderer;
     private MetalDevice centerDepthDevice;
     private int receiptWidth = -1;
     private int receiptHeight = -1;
@@ -170,6 +172,19 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
         return this.resources;
     }
 
+    IrisMetalRuntimeReceipts receipts() {
+        return this.receipts;
+    }
+
+    PackShadowDirectives shadowDirectives() {
+        return this.directives.getShadowDirectives();
+    }
+
+    /** Copies shadowtex0 into shadowtex1 at the opaque/translucent caster boundary. */
+    void captureShadowNoTranslucents() {
+        this.executionGraph.captureShadowNoTranslucents(this.resources());
+    }
+
     /** Returns the generation-owned pack uniform block for a terrain shader key. */
     GpuBufferSlice uniformSlice(final ShaderKey key) {
         GpuBufferSlice slice = this.uniformValues.slice(key);
@@ -201,6 +216,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
         this.executionGraph.beginFrame(
                 this.resources(), new Vector4f((float) fog.x, (float) fog.y, (float) fog.z, 1.0F)
         );
+        this.executionGraph.initializeShadowTargets(this.resources());
         this.frameState.beginWorldRendering();
         this.receipts.recordEvent("setup");
         this.executionGraph.executeSetup(this.resources());
@@ -292,7 +308,8 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
                     device,
                     this.generation,
                     this.programs,
-                    IrisMetalRenderTargetFormats.from(this.directives)
+                    IrisMetalRenderTargetFormats.from(this.directives),
+                    IrisMetalShadowTargets.colorFormats(this.programSet)
             );
         } else if (!this.compiledPrograms.isOwnedBy(device)) {
             throw new IllegalStateException("Iris Metal compiled generation crossed Metal device ownership");
@@ -404,14 +421,22 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
             this.executionGraph.executePrepare(this.resources());
         }
         this.receipts.recordEvent("shadow.render.begin");
-        super.renderShadows(levelRenderer, camera, cameraRenderState);
+        boolean castersRendered = false;
+        if (!MetalDebugSwitches.NO_SHADOWS) {
+            IrisMetalShadowRenderer renderer = this.shadowRenderer;
+            if (renderer == null) {
+                renderer = new IrisMetalShadowRenderer(this);
+                this.shadowRenderer = renderer;
+            }
+            castersRendered = renderer.render(levelRenderer, camera, cameraRenderState);
+        }
         this.receipts.recordEvent("shadow.render.end");
         if (!this.directives.isPrepareBeforeShadow()) {
             this.receipts.recordEvent("prepare");
             this.executionGraph.executePrepare(this.resources());
         }
         this.receipts.recordEvent("shadow.composite");
-        this.executionGraph.executeShadowComposite(this.resources());
+        this.executionGraph.executeShadowComposite(this.resources(), castersRendered);
     }
 
     @Override
@@ -449,6 +474,9 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
     public void destroy() {
         IrisMetalPackLifecycle.onSemanticPipelineDestroyed();
         this.frameState.endWorldRendering();
+        // Defensive: a driver that threw mid-pass must not leave Iris's
+        // process-wide shadow flag set for the next generation.
+        ShadowRenderer.ACTIVE = false;
         this.receipts.recordEvent("generation.destroy");
         if (this.compiledPrograms != null) {
             this.compiledPrograms.close();

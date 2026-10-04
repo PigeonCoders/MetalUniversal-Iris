@@ -22,6 +22,27 @@ public final class MetalDebugSwitches {
     public static final boolean NO_VANILLA_CLOUDS = Boolean.getBoolean("metallum.iris.debug.noVanillaClouds");
     public static final boolean NO_CLOUDS_HARD = Boolean.getBoolean("metallum.iris.debug.noCloudsHard");
     public static final boolean MAGENTA_CLEAR = Boolean.getBoolean("metallum.iris.debug.magentaClear");
+    /**
+     * Real terrain shadow-caster pass; on by default.
+     * {@code -Dmetallum.iris.shadowPass=off} restores the old placeholder
+     * behavior: casters are not rendered and the shadow maps are cleared to
+     * "nothing occludes" before shadowcomp runs.
+     */
+    public static final boolean SHADOW_PASS = !"off".equalsIgnoreCase(
+            System.getProperty("metallum.iris.shadowPass", "on").trim()
+    );
+    /**
+     * Debug kill switch: skips the shadow caster pass <em>and</em> the
+     * shadowcomp stage, leaving the cleared shadow maps for the main pass to
+     * sample (i.e. no shadows at all). {@code -Dmetallum.iris.debug.noShadows}.
+     */
+    public static final boolean NO_SHADOWS = Boolean.getBoolean("metallum.iris.debug.noShadows");
+    /**
+     * Shadow culling override: {@code advanced}, {@code box} or {@code none}.
+     * Empty (default) follows the pack's {@code shadow.culling} directive.
+     * {@code -Dmetallum.iris.debug.shadowCulling=advanced|box|none}.
+     */
+    public static final String SHADOW_CULLING = System.getProperty("metallum.iris.debug.shadowCulling", "").trim();
     /** Non-terrain world-program override; on by default, {@code -Dmetallum.iris.worldPass=off} disables it. */
     public static final boolean WORLD_PASS = !"off".equalsIgnoreCase(
             System.getProperty("metallum.iris.worldPass", "on").trim()
@@ -104,11 +125,13 @@ public final class MetalDebugSwitches {
     static {
         if (SKIP_DEFERRED || SKIP_POST || !VIEW.isEmpty() || !SKIP_PASS_NAMES.isEmpty()
                 || NO_SHADOW_MATRICES || ZERO_VL || ZERO_BLOOM || !STAGE_STRIP.isEmpty()
-                || NO_VANILLA_SKY || NO_VANILLA_CLOUDS || NO_CLOUDS_HARD || MAGENTA_CLEAR) {
-            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: build={} skipDeferred={} skipPost={} view={} skipPass={} noShadowMatrices={} zeroVl={} zeroBloom={} stageStrip={} noVanillaSky={} noVanillaClouds={} noCloudsHard={} magentaClear={}",
+                || NO_VANILLA_SKY || NO_VANILLA_CLOUDS || NO_CLOUDS_HARD || MAGENTA_CLEAR
+                || !SHADOW_PASS || NO_SHADOWS || !SHADOW_CULLING.isEmpty()) {
+            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: build={} skipDeferred={} skipPost={} view={} skipPass={} noShadowMatrices={} zeroVl={} zeroBloom={} stageStrip={} noVanillaSky={} noVanillaClouds={} noCloudsHard={} magentaClear={} shadowPass={} noShadows={} shadowCulling={}",
                     BUILD_TAG, SKIP_DEFERRED, SKIP_POST, VIEW, SKIP_PASS, NO_SHADOW_MATRICES, ZERO_VL, ZERO_BLOOM,
                     System.getProperty("metallum.iris.debug.stageStrip", ""),
-                    NO_VANILLA_SKY, NO_VANILLA_CLOUDS, NO_CLOUDS_HARD, MAGENTA_CLEAR);
+                    NO_VANILLA_SKY, NO_VANILLA_CLOUDS, NO_CLOUDS_HARD, MAGENTA_CLEAR,
+                    SHADOW_PASS, NO_SHADOWS, SHADOW_CULLING);
         }
     }
 }

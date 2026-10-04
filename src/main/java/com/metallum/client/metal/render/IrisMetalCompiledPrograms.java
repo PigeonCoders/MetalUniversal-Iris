@@ -16,6 +16,7 @@ import net.irisshaders.iris.gl.blending.BlendMode;
 import net.irisshaders.iris.gl.blending.BlendModeFunction;
 import net.irisshaders.iris.gl.blending.BlendModeOverride;
 import net.irisshaders.iris.gl.state.ShaderAttributeInputs;
+import net.irisshaders.iris.shaderpack.loading.ProgramGroup;
 import net.irisshaders.iris.shaderpack.loading.ProgramId;
 import org.jspecify.annotations.Nullable;
 
@@ -40,6 +41,7 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
     private final int generation;
     private final IrisMetalWorldPrograms sources;
     private final GpuFormat[] targetFormats;
+    private final GpuFormat[] shadowTargetFormats;
     private final Map<SodiumKey, MetalCompiledRenderPipeline> sodiumPipelines = new HashMap<>();
     private final Map<VanillaKey, MetalCompiledRenderPipeline> vanillaPipelines = new HashMap<>();
     private boolean closed;
@@ -48,7 +50,8 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
             final MetalDevice device,
             final int generation,
             final IrisMetalWorldPrograms sources,
-            final GpuFormat[] targetFormats
+            final GpuFormat[] targetFormats,
+            final GpuFormat[] shadowTargetFormats
     ) {
         this.device = Objects.requireNonNull(device, "device");
         if (generation <= 0) {
@@ -68,6 +71,15 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
         }
         for (int index = 0; index < this.targetFormats.length; index++) {
             Objects.requireNonNull(this.targetFormats[index], "targetFormats[" + index + "]");
+        }
+        this.shadowTargetFormats = Objects.requireNonNull(
+                shadowTargetFormats, "shadowTargetFormats"
+        ).clone();
+        if (this.shadowTargetFormats.length == 0) {
+            throw new IllegalArgumentException("Iris generation has no shadow-target formats");
+        }
+        for (int index = 0; index < this.shadowTargetFormats.length; index++) {
+            Objects.requireNonNull(this.shadowTargetFormats[index], "shadowTargetFormats[" + index + "]");
         }
     }
 
@@ -195,6 +207,7 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
                             + ColorTargetState.MAX_COLOR_TARGETS
             );
         }
+        GpuFormat[] formats = programFormats(program);
 
         Optional<BlendFunction> globalBlend = state.blendFunction();
         BlendModeOverride globalOverride = program.program().directives()
@@ -211,11 +224,10 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
         ColorTargetState[] targets = new ColorTargetState[drawBuffers.length];
         for (int slot = 0; slot < drawBuffers.length; slot++) {
             int logicalTarget = drawBuffers[slot];
-            if (logicalTarget < 0 || logicalTarget >= this.targetFormats.length) {
+            if (logicalTarget < 0 || logicalTarget >= formats.length) {
                 throw new IllegalArgumentException(
                         "Iris program " + program.name() + " writes colortex" + logicalTarget
-                                + " but generation " + this.generation + " owns only 0.."
-                                + (this.targetFormats.length - 1)
+                                + " but this generation owns only 0.." + (formats.length - 1)
                 );
             }
             if (!written.add(logicalTarget)) {
@@ -235,11 +247,24 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
             }
             targets[slot] = new ColorTargetState(
                     blend,
-                    this.targetFormats[logicalTarget],
+                    formats[logicalTarget],
                     state.writeMask()
             );
         }
         return targets;
+    }
+
+    /**
+     * Shadow-group programs bind the shadowcolor attachments (pack-configured
+     * formats), not the main colortex targets; compiling them against the main
+     * table made {@code MetalRenderPass.validateAttachmentSignature} reject the
+     * shadow pass. Everything else keeps the main table.
+     */
+    private GpuFormat[] programFormats(final IrisMetalGlslLinker.LinkedRasterProgram program) {
+        ProgramId requested = program.program().resolution().requested();
+        return requested != null && requested.getGroup() == ProgramGroup.Shadow
+                ? this.shadowTargetFormats
+                : this.targetFormats;
     }
 
     private static void validateReflectedResources(

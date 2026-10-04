@@ -460,7 +460,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         executeStage(Stage.COMPOSITE, resources);
     }
 
-    void executeShadowComposite(final IrisMetalWorldResources resources) {
+    void executeShadowComposite(final IrisMetalWorldResources resources, final boolean castersRendered) {
         ensurePrepared();
         IrisMetalShadowTargets shadows = resources.shadowTargets();
         if (shadows == null) {
@@ -469,12 +469,17 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             // be a no-op, not an exception, even if shadowcomp programs exist.
             return;
         }
-        // Shadow casters are not rendered yet (the Metal shadow pass is still
-        // unwired), so shadowtex/shadowcolor would hold undefined contents.
-        // BSL's shadowcomp consumes them every frame and mixes the result
-        // into the scene, which showed up as persistent streaking artifacts.
-        // Clear the targets to "no shadow" until the real shadow pass exists.
-        clearEmptyShadowTargets(shadows);
+        if (!castersRendered) {
+            // The real caster pass did not run this frame (shadowPass=off,
+            // no shadow render-list scope, fallback matrices, ...). Keep the
+            // pre-M6.1 deterministic "nothing occludes" state so BSL's
+            // shadowcomp cannot consume undefined contents.
+            clearEmptyShadowTargets(shadows);
+        }
+        if (MetalDebugSwitches.NO_SHADOWS) {
+            // Debug kill switch: leave the cleared maps and skip shadowcomp.
+            return;
+        }
         currentResourcesForDispatch = resources.renderTargets();
         try {
             for (OrderedOperation operation : orderedOperations.get(Stage.SHADOW_COMPOSITE)) {
@@ -500,27 +505,43 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
     }
 
     /**
-     * Clears every shadow attachment to the "nothing occludes" state.
-     *
-     * <p>Only used while the real shadow-caster pass is not implemented: the
-     * clear makes the shadow resources deterministic (previously they were
-     * never initialized, so packs sampled undefined memory). The depth value
-     * {@code 0.0} is the engine's reverse-z far value; the encoder's
-     * {@code irisDepthClear} complement turns it into {@code 1.0} (standard-z
-     * far) while a pack is active.
+     * Clears every shadow attachment to the "nothing occludes" state at the
+     * start of the frame, before any caster pass. The depth value {@code 0.0}
+     * is the engine's reverse-z far value; the encoder's {@code irisDepthClear}
+     * complement turns it into {@code 1.0} (standard-z far) while a pack is
+     * active. Shadowcolor targets follow the pack's per-target
+     * {@code shadowcolorNClear} settings (a target with {@code clear=false} is
+     * left untouched, as OptiFine specifies).
+     */
+    void initializeShadowTargets(final IrisMetalWorldResources resources) {
+        IrisMetalShadowTargets shadows = resources.shadowTargets();
+        if (shadows == null) {
+            return;
+        }
+        clearShadowTargets(shadows);
+    }
+
+    /**
+     * Fallback clear used when the real caster pass did not run this frame
+     * ({@code shadowPass=off}, no Sodium shadow render-list scope, fallback
+     * matrices, ...), keeping the pre-M6.1 deterministic no-shadow state.
      */
     private void clearEmptyShadowTargets(final IrisMetalShadowTargets shadows) {
+        clearShadowTargets(shadows);
+    }
+
+    private void clearShadowTargets(final IrisMetalShadowTargets shadows) {
         MetalCommandEncoder encoder = activeEncoder();
         int targetCount = shadows.colorTargets().targetCount();
         int[] drawBuffers = new int[targetCount];
         Vector4fc[] clearColors = new Vector4fc[targetCount];
         for (int index = 0; index < targetCount; index++) {
             drawBuffers[index] = index;
-            clearColors[index] = NO_SHADOW_CLEAR_COLOR;
+            clearColors[index] = shadows.clearsColor(index) ? shadows.colorClearColor(index) : null;
         }
         IrisMetalRenderTargets.RenderPassDescriptorWithViews descriptor =
                 shadows.createShadowWriteDescriptor(
-                        "Iris shadow-empty-clear", drawBuffers, clearColors, 0.0);
+                        "Iris shadow-init", drawBuffers, clearColors, 0.0);
         try {
             encoder.createRenderPass(descriptor.descriptor());
             // This pass performs no draws, so its encoder is only materialized
@@ -538,7 +559,18 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         shadows.captureNoTranslucentsDepth(encoder);
     }
 
-    private static final Vector4fc NO_SHADOW_CLEAR_COLOR = new Vector4f(1.0F, 1.0F, 1.0F, 1.0F);
+    /**
+     * Copies shadowtex0 into shadowtex1 after the opaque terrain has rendered
+     * and before translucent terrain, so water is absent from shadowtex1 (the
+     * pack's "no translucent shadow" map).
+     */
+    void captureShadowNoTranslucents(final IrisMetalWorldResources resources) {
+        IrisMetalShadowTargets shadows = resources.shadowTargets();
+        if (shadows == null) {
+            return;
+        }
+        shadows.captureNoTranslucentsDepth(activeEncoder());
+    }
 
     void captureNoTranslucentsDepth(final IrisMetalWorldResources resources, final GpuTexture sceneDepth) {
         IrisMetalRenderTargets targets = resources.renderTargets();
@@ -618,7 +650,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                 executeRaster(finalPlan, finalPipeline, resources, mainColor);
             }
         }
-        copyDebugView(colors, targets, mainColor);
+        copyDebugView(resources, colors, targets, mainColor);
         targets.resetMipmaps();
         for (int target = state.nextSetBit(0); target >= 0; target = state.nextSetBit(target + 1)) {
             MetalGpuTexture source = colors.readTexture(target);
@@ -633,41 +665,59 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
     }
 
     /**
-     * Copies one of the pack color targets (picked via
-     * {@code metallum.iris.debug.view=colortexN}) over the normal final output.
-     * Used only for on-device artifact bisection; a no-op when the switch is
-     * unset.
+     * Copies one of the pack color targets over the normal final output,
+     * selected via {@code metallum.iris.debug.view=colortexN} or
+     * {@code shadowcolorN} (shadow targets, copied at their resolution). Used
+     * only for on-device artifact bisection; a no-op when the switch is unset.
      */
     private void copyDebugView(
+            final IrisMetalWorldResources resources,
             final IrisMetalPingPongTargets colors,
             final IrisMetalRenderTargets targets,
             final GpuTextureView mainColor
     ) {
+        int shadowIndex = debugShadowViewIndex();
+        if (shadowIndex != -1) {
+            IrisMetalShadowTargets shadows = resources.shadowTargets();
+            if (shadowIndex < 0 || shadows == null
+                    || shadowIndex >= shadows.colorTargets().targetCount()) {
+                warnInvalidDebugView("shadowcolorN");
+                return;
+            }
+            int size = Math.min(
+                    shadows.resolution(), Math.min(targets.width(), targets.height())
+            );
+            activeEncoder().copyTextureToTexture(
+                    shadows.colorTexture(shadowIndex, shadowReadSnapshot()), mainColor.texture(),
+                    0, 0, 0, 0, 0, size, size
+            );
+            return;
+        }
         int index = debugViewIndex();
         if (index < 0) {
-            if (index == DEBUG_VIEW_INVALID && !warnedInvalidDebugView) {
-                warnedInvalidDebugView = true;
-                Metallum.LOGGER.warn(
-                        "[metallum-iris][debug] invalid debug view '{}' (expected colortexN); ignoring",
-                        MetalDebugSwitches.VIEW
-                );
+            if (index == DEBUG_VIEW_INVALID) {
+                warnInvalidDebugView("colortexN");
             }
             return;
         }
         if (index >= colors.targetCount()) {
-            if (!warnedInvalidDebugView) {
-                warnedInvalidDebugView = true;
-                Metallum.LOGGER.warn(
-                        "[metallum-iris][debug] debug view colortex{} out of range (target count {}); ignoring",
-                        index, colors.targetCount()
-                );
-            }
+            warnInvalidDebugView("colortexN (out of range)");
             return;
         }
         activeEncoder().copyTextureToTexture(
                 colors.readTexture(index), mainColor.texture(), 0, 0, 0, 0, 0,
                 targets.width(), targets.height()
         );
+    }
+
+    private void warnInvalidDebugView(final String expected) {
+        if (!warnedInvalidDebugView) {
+            warnedInvalidDebugView = true;
+            Metallum.LOGGER.warn(
+                    "[metallum-iris][debug] invalid debug view '{}' (expected {}); ignoring",
+                    MetalDebugSwitches.VIEW, expected
+            );
+        }
     }
 
     /**
@@ -689,6 +739,20 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                 return DEBUG_VIEW_INVALID;
             }
             return index;
+        } catch (NumberFormatException malformed) {
+            return DEBUG_VIEW_INVALID;
+        }
+    }
+
+    /** Parses a {@code shadowcolorN} debug view; {@code -1} when it is not one. */
+    private static int debugShadowViewIndex() {
+        String view = MetalDebugSwitches.VIEW;
+        if (!view.startsWith("shadowcolor")) {
+            return -1;
+        }
+        try {
+            int index = Integer.parseInt(view.substring("shadowcolor".length()));
+            return index < 0 ? DEBUG_VIEW_INVALID : index;
         } catch (NumberFormatException malformed) {
             return DEBUG_VIEW_INVALID;
         }

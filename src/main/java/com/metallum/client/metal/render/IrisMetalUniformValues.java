@@ -93,6 +93,7 @@ final class IrisMetalUniformValues implements AutoCloseable {
     private final Matrix4f previousModelView = new Matrix4f();
     private final Matrix4f previousProjection = new Matrix4f();
     private final Vector3d previousCameraPosition = new Vector3d();
+    private @Nullable ShadowMatrixSet currentShadowMatrices;
     private boolean warnedIdentityMatrices;
     private boolean warnedShadowFallback;
     private boolean closed;
@@ -687,9 +688,11 @@ final class IrisMetalUniformValues implements AutoCloseable {
         Vector4f shadowLight = celestial.getShadowLightPosition();
         boolean day = CelestialUniforms.isDay();
         float shadowAngle = CelestialUniforms.getSunAngle(day) / 360.0f;
-        ShadowMatrices shadowMatrices = computeShadowMatrices(
-                modelView, modelViewInverse, projection, projectionInverse, cameraPosition, shadowAngle
+        ShadowMatrixSet shadowMatrices = computeShadowMatrices(
+                modelView, modelViewInverse, projection, projectionInverse,
+                new Matrix4f(state.getGbufferProjection()), cameraPosition, shadowAngle
         );
+        this.currentShadowMatrices = shadowMatrices;
         Vector4f sun = day
                 ? new Vector4f(shadowLight)
                 : new Vector4f(-shadowLight.x, -shadowLight.y, -shadowLight.z, shadowLight.w);
@@ -752,8 +755,8 @@ final class IrisMetalUniformValues implements AutoCloseable {
                 projectionInverse,
                 shadowMatrices.modelView(),
                 shadowMatrices.modelViewInverse(),
-                shadowMatrices.projection(),
-                shadowMatrices.projectionInverse(),
+                shadowMatrices.packProjection(),
+                shadowMatrices.packProjectionInverse(),
                 normalMatrix,
                 cameraPosition,
                 sun,
@@ -794,11 +797,12 @@ final class IrisMetalUniformValues implements AutoCloseable {
      * when the pack requests a perspective shadow projection (not implemented
      * here), the directives are missing, or the A/B switch is enabled.
      */
-    private ShadowMatrices computeShadowMatrices(
+    private ShadowMatrixSet computeShadowMatrices(
             final Matrix4f cameraModelView,
             final Matrix4f cameraModelViewInverse,
-            final Matrix4f cameraProjection,
-            final Matrix4f cameraProjectionInverse,
+            final Matrix4f cameraProjectionPack,
+            final Matrix4f cameraProjectionInversePack,
+            final Matrix4f cameraProjectionZeroToOne,
             final Vector3d cameraPosition,
             final float shadowAngle
     ) {
@@ -813,21 +817,27 @@ final class IrisMetalUniformValues implements AutoCloseable {
                                 : "pack requests a perspective shadow projection"
                 );
             }
-            return new ShadowMatrices(
-                    cameraModelView, cameraModelViewInverse, cameraProjection, cameraProjectionInverse
+            return new ShadowMatrixSet(
+                    cameraModelView,
+                    cameraModelViewInverse,
+                    cameraProjectionZeroToOne,
+                    cameraProjectionPack,
+                    cameraProjectionInversePack,
+                    false
             );
         }
 
         float halfPlaneLength = this.shadowDirectives.getDistance();
-        // Ortho is built in the port's zero-to-one depth convention and then
-        // converted into the [-1, 1] space packs expect — the same handling
-        // sampleLiveFrame applies to the gbuffer projection.
-        Matrix4f shadowProjection = MetalIrisDepthConvention.packProjection(
-                new Matrix4f().setOrthoSymmetric(
-                        halfPlaneLength * 2.0F, halfPlaneLength * 2.0F,
-                        this.shadowDirectives.getNearPlane(), this.shadowDirectives.getFarPlane(), true
-                )
+        // Ortho is built in the port's zero-to-one depth convention for the
+        // engine (Sodium ChunkRenderMatrices) and converted into the [-1, 1]
+        // space packs expect for the uniform block. Computing both here keeps
+        // the sun-angle rotation and grid snapping identical between the
+        // caster pass and the shaderpack uniforms.
+        Matrix4f zeroToOneProjection = new Matrix4f().setOrthoSymmetric(
+                halfPlaneLength * 2.0F, halfPlaneLength * 2.0F,
+                this.shadowDirectives.getNearPlane(), this.shadowDirectives.getFarPlane(), true
         );
+        Matrix4f shadowProjection = MetalIrisDepthConvention.packProjection(zeroToOneProjection);
         Matrix4f shadowProjectionInverse = new Matrix4f(shadowProjection).invert();
 
         float skyAngle = shadowAngle < 0.25F ? shadowAngle + 0.75F : shadowAngle - 0.25F;
@@ -845,16 +855,69 @@ final class IrisMetalUniformValues implements AutoCloseable {
         }
         Matrix4f shadowModelViewInverse = new Matrix4f(shadowModelView).invert();
 
-        return new ShadowMatrices(
-                shadowModelView, shadowModelViewInverse, shadowProjection, shadowProjectionInverse
+        return new ShadowMatrixSet(
+                shadowModelView,
+                shadowModelViewInverse,
+                zeroToOneProjection,
+                shadowProjection,
+                shadowProjectionInverse,
+                true
         );
     }
 
-    private record ShadowMatrices(
+    /**
+     * Shadow matrices from the current captured frame state. Used as the
+     * fallback when a caller (the caster pass) asks before the per-frame
+     * uniform sample has produced {@link #currentShadowMatrices()}.
+     */
+    private ShadowMatrixSet computeLiveShadowMatrices() {
+        CapturedRenderingState state = CapturedRenderingState.INSTANCE;
+        Matrix4f modelView = new Matrix4f(state.getGbufferModelView());
+        Matrix4f projectionPack = MetalIrisDepthConvention.packProjection(state.getGbufferProjection());
+        Camera camera = Minecraft.getInstance().gameRenderer.mainCamera();
+        Vec3 cameraPos = camera == null ? Vec3.ZERO : camera.position();
+        Vector3d cameraPosition = new Vector3d(cameraPos.x, cameraPos.y, cameraPos.z);
+        float shadowAngle = CelestialUniforms.getSunAngle(CelestialUniforms.isDay()) / 360.0f;
+        return computeShadowMatrices(
+                modelView,
+                new Matrix4f(modelView).invert(),
+                projectionPack,
+                new Matrix4f(projectionPack).invert(),
+                new Matrix4f(state.getGbufferProjection()),
+                cameraPosition,
+                shadowAngle
+        );
+    }
+
+    /**
+     * The shadow matrices computed by this frame's uniform sample (or a live
+     * computation if the frame has not been sampled yet), shared with the
+     * shadow caster pass so grid snapping happens exactly once per frame.
+     */
+    ShadowMatrixSet currentShadowMatrices() {
+        ShadowMatrixSet cached = this.currentShadowMatrices;
+        if (cached != null) {
+            return cached;
+        }
+        ShadowMatrixSet computed = computeLiveShadowMatrices();
+        this.currentShadowMatrices = computed;
+        return computed;
+    }
+
+    /**
+     * One shadow-matrix computation, two depth conventions: the engine
+     * zero-to-one ortho for {@code ChunkRenderMatrices}/culling and the pack
+     * [-1, 1] ortho for the uniform block. {@code packValid} is false when the
+     * pack cannot use real shadow matrices (no directives, perspective FOV or
+     * the A/B switch), in which case the camera matrices are carried through.
+     */
+    record ShadowMatrixSet(
             Matrix4f modelView,
             Matrix4f modelViewInverse,
-            Matrix4f projection,
-            Matrix4f projectionInverse
+            Matrix4f zeroToOneProjection,
+            Matrix4f packProjection,
+            Matrix4f packProjectionInverse,
+            boolean packValid
     ) {
     }
 
