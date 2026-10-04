@@ -79,6 +79,10 @@ public final class MetalProbeReport {
         content.append("  view=").append(MetalDebugSwitches.VIEW).append(System.lineSeparator());
         content.append("  skipPass=").append(MetalDebugSwitches.SKIP_PASS).append(System.lineSeparator());
         content.append("  noShadowMatrices=").append(MetalDebugSwitches.NO_SHADOW_MATRICES).append(System.lineSeparator());
+        content.append("  shadowPass=").append(MetalDebugSwitches.SHADOW_PASS).append(System.lineSeparator());
+        content.append("  noShadows=").append(MetalDebugSwitches.NO_SHADOWS).append(System.lineSeparator());
+        content.append("  shadowCulling=").append(MetalDebugSwitches.SHADOW_CULLING).append(System.lineSeparator());
+        content.append("  shadowDepthFix=").append(MetalDebugSwitches.SHADOW_DEPTH_FIX).append(System.lineSeparator());
         content.append("  zeroVl=").append(MetalDebugSwitches.ZERO_VL).append(System.lineSeparator());
         content.append("  zeroBloom=").append(MetalDebugSwitches.ZERO_BLOOM).append(System.lineSeparator());
         content.append("  noVanillaSky=").append(MetalDebugSwitches.NO_VANILLA_SKY).append(System.lineSeparator());
@@ -119,6 +123,12 @@ public final class MetalProbeReport {
         addIf(active, "skipDeferred", MetalDebugSwitches.SKIP_DEFERRED);
         addIf(active, "skipPost", MetalDebugSwitches.SKIP_POST);
         addIf(active, "noShadowMatrices", MetalDebugSwitches.NO_SHADOW_MATRICES);
+        addIf(active, "shadowPass=off", !MetalDebugSwitches.SHADOW_PASS);
+        addIf(active, "noShadows", MetalDebugSwitches.NO_SHADOWS);
+        if (!MetalDebugSwitches.SHADOW_CULLING.isEmpty()) {
+            active.add("shadowCulling=" + MetalDebugSwitches.SHADOW_CULLING);
+        }
+        addIf(active, "shadowDepthFix=off", !MetalDebugSwitches.SHADOW_DEPTH_FIX);
         addIf(active, "zeroVl", MetalDebugSwitches.ZERO_VL);
         addIf(active, "zeroBloom", MetalDebugSwitches.ZERO_BLOOM);
         addIf(active, "noVanillaSky", MetalDebugSwitches.NO_VANILLA_SKY);

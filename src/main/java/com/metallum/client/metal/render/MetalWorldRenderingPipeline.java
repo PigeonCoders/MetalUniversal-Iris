@@ -76,6 +76,8 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
     private int receiptWidth = -1;
     private int receiptHeight = -1;
     private boolean blockIdsInitialized;
+    /** Last M6.4 shadow-status line; a new line is emitted only when it changes. */
+    private @Nullable String reportedShadowStatus;
 
     public MetalWorldRenderingPipeline(final ProgramSet programSet) {
         this.generation = GENERATIONS.incrementAndGet();
@@ -442,6 +444,44 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
         }
         this.receipts.recordEvent("shadow.composite");
         this.executionGraph.executeShadowComposite(this.resources(), castersRendered);
+        reportShadowStatus(castersRendered);
+    }
+
+    /**
+     * M6.4 probe: one shadow status summary per status change (never per
+     * frame), assembled from the same facts the {@code shadow.*} receipt events
+     * carry. Written to the runtime receipt when one is configured, and to
+     * {@code metallum-probe.txt} only while a debug switch is active.
+     */
+    private void reportShadowStatus(final boolean castersRendered) {
+        if (!MetalDebugSwitches.PROBES_ACTIVE && !this.receipts.enabled()) {
+            // Neither the probe file nor a runtime receipt consumes the line;
+            // keep the per-frame path free of status-string allocation.
+            return;
+        }
+        IrisMetalShadowTargets shadows = this.resources().shadowTargets();
+        String status;
+        if (shadows == null) {
+            status = "shadow status: pass=false resolution=n/a culling=n/a frustum=n/a"
+                    + " compute=" + this.executionGraph.shadowComputeCounts()
+                    + " colorTargets=0";
+        } else {
+            IrisMetalShadowRenderer renderer = this.shadowRenderer;
+            status = "shadow status: pass=" + castersRendered
+                    + " resolution=" + shadows.resolution()
+                    + " culling=" + (renderer == null ? "n/a" : renderer.shadowCullingMode())
+                    + " frustum=" + (renderer == null ? "n/a" : renderer.shadowEntityFrustumMode())
+                    + " compute=" + this.executionGraph.shadowComputeCounts()
+                    + " colorTargets=" + shadows.colorTargets().targetCount();
+        }
+        if (status.equals(this.reportedShadowStatus)) {
+            return;
+        }
+        this.reportedShadowStatus = status;
+        this.receipts.recordEvent(status);
+        if (MetalDebugSwitches.PROBES_ACTIVE) {
+            MetalProbeReport.record(status);
+        }
     }
 
     @Override

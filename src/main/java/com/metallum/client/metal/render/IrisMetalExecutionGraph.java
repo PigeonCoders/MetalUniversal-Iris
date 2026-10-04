@@ -24,7 +24,6 @@ import net.irisshaders.iris.shaderpack.programs.ProgramSet;
 import net.irisshaders.iris.shaderpack.programs.ProgramSource;
 import net.irisshaders.iris.shaderpack.texture.TextureStage;
 import net.minecraft.client.Minecraft;
-import net.minecraft.resources.Identifier;
 import org.joml.Vector4f;
 import org.joml.Vector4fc;
 import org.jspecify.annotations.Nullable;
@@ -40,7 +39,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.OptionalDouble;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -692,9 +690,9 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
     }
 
     /**
-     * Copies shadowtex0 into shadowtex1 after the opaque terrain has rendered
-     * and before translucent terrain, so water is absent from shadowtex1 (the
-     * pack's "no translucent shadow" map).
+     * Copies shadowtex0 into shadowtex1 after the opaque terrain and entity
+     * caster passes and before translucent terrain, so water is absent from
+     * shadowtex1 (the pack's "no translucent shadow" map).
      */
     void captureShadowNoTranslucents(final IrisMetalWorldResources resources) {
         IrisMetalShadowTargets shadows = resources.shadowTargets();
@@ -1354,6 +1352,15 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         return (BitSet) shadowState.clone();
     }
 
+    /**
+     * {@code shadow.csh} computes / shadowcomp computes plan counts, for the
+     * M6.4 shadow-status probe line (one summary instead of per-pass events).
+     */
+    String shadowComputeCounts() {
+        ensureOpen();
+        return shadowComputes.size() + "/" + computePlans.get(Stage.SHADOW_COMPOSITE).size();
+    }
+
     void beginFrame(final IrisMetalWorldResources resources, final Vector4fc fogColor) {
         ensureOpen();
         Objects.requireNonNull(resources, "resources");
@@ -1550,18 +1557,6 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                     "Failed to compile Iris compute " + plan.source().getName(), failure
             );
         }
-    }
-
-    private @Nullable MetalCompiledRenderPipeline pipelineFor(final RasterPlan plan) {
-        return plan == finalPlan ? finalPipeline : rasterPipelines.get(plan);
-    }
-
-    private MetalComputePipeline computePipelineFor(final ComputePlan plan) {
-        MetalComputePipeline pipeline = computePipelines.get(plan);
-        if (pipeline != null) {
-            return pipeline;
-        }
-        throw new IllegalStateException("Compute plan disappeared: " + plan.source().getName());
     }
 
     private static List<ComputeBinding> reflectComputeBindings(final String source, final String name) {

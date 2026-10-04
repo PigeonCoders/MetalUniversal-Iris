@@ -565,4 +565,20 @@ final class IrisMetalShadowRenderer {
             this.pipeline.receipts().recordEvent("shadow.depthFix=" + mode);
         }
     }
+
+    /**
+     * Terrain culling mode from the last caster pass ({@code advanced},
+     * {@code box}, {@code none}) or {@code n/a} before the first pass, for the
+     * M6.4 shadow-status probe line. The full receipt description stays in the
+     * {@code shadow.culling=...} event.
+     */
+    String shadowCullingMode() {
+        String description = this.reportedCulling.get("shadow.culling");
+        return description == null ? "n/a" : description.split(" ", 2)[0];
+    }
+
+    /** {@code shared}, {@code separate} or {@code n/a} before the first caster pass. */
+    String shadowEntityFrustumMode() {
+        return this.reportedEntityFrustum == null ? "n/a" : this.reportedEntityFrustum;
+    }
 }

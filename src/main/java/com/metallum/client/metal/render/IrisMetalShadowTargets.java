@@ -53,22 +53,6 @@ final class IrisMetalShadowTargets implements AutoCloseable {
     IrisMetalShadowTargets(
             final MetalDevice device,
             final GpuFormat[] shadowColorFormats,
-            final int resolution
-    ) {
-        this(
-                device,
-                shadowColorFormats,
-                resolution,
-                new boolean[shadowColorFormats.length],
-                new boolean[shadowColorFormats.length],
-                new boolean[2],
-                new boolean[2]
-        );
-    }
-
-    IrisMetalShadowTargets(
-            final MetalDevice device,
-            final GpuFormat[] shadowColorFormats,
             final int resolution,
             final boolean[] nearestColor,
             final boolean[] nearestDepth,
@@ -345,6 +329,12 @@ final class IrisMetalShadowTargets implements AutoCloseable {
         return resolution;
     }
 
+    /**
+     * Copies shadowtex0 into shadowtex1, the pack's "no translucent" depth map.
+     * Called after the opaque terrain and entity caster passes at the
+     * opaque/translucent boundary, and at frame start (and in the no-caster
+     * fallback clear) to seed shadowtex1 with the cleared far value.
+     */
     void captureNoTranslucentsDepth(final MetalCommandEncoder encoder) {
         ensureOpen();
         encoder.copyTextureToTexture(
@@ -471,6 +461,19 @@ final class IrisMetalShadowTargets implements AutoCloseable {
         colorTargets.restore(finalReadsFromAlt);
     }
 
+    /**
+     * Resizes the shadowcolor ping-pong targets and both depth textures.
+     *
+     * <p>TODO(M6.4): no production caller. The shadow resolution comes from the
+     * pack's {@code shadow.resolution} directive when the generation is built,
+     * and the pinned upstream tree has no runtime shadow-resolution override
+     * (only shadow distance), so changing shader settings or packs rebuilds the
+     * whole generation (a new {@link IrisMetalWorldResources}) instead of
+     * calling this. If a runtime resolution override is ever added, it must
+     * call this and reset the execution graph's {@code shadowFullClearRequired}
+     * (a resize requires clearing every shadowcolor target, as upstream's
+     * {@code isFullClearRequired} does).</p>
+     */
     void resize(final int newResolution) {
         ensureOpen();
         if (newResolution == resolution) {

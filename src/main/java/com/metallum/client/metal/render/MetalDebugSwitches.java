@@ -85,6 +85,16 @@ public final class MetalDebugSwitches {
             System.getProperty("metallum.iris.debug.stageStrip", "").trim()
     );
     private static final Set<String> SKIP_PASS_NAMES = parsePassNames(SKIP_PASS);
+    /**
+     * True when at least one probe/debug switch is active. Gates probe output
+     * such as {@link MetalProbeReport} lines (and mirrors the condition for the
+     * startup switch log) so release runs stay inert.
+     */
+    public static final boolean PROBES_ACTIVE = SKIP_DEFERRED || SKIP_POST || !VIEW.isEmpty()
+            || !SKIP_PASS_NAMES.isEmpty() || NO_SHADOW_MATRICES || ZERO_VL || ZERO_BLOOM
+            || !STAGE_STRIP.isEmpty() || NO_VANILLA_SKY || NO_VANILLA_CLOUDS
+            || NO_CLOUDS_HARD || MAGENTA_CLEAR || !SHADOW_PASS || NO_SHADOWS
+            || !SHADOW_CULLING.isEmpty() || !SHADOW_DEPTH_FIX;
 
     /** One {@code stageStrip} entry: a pass name plus the target index to tile. */
     public record StripEntry(String passName, int targetIndex) {
@@ -135,10 +145,7 @@ public final class MetalDebugSwitches {
     }
 
     static {
-        if (SKIP_DEFERRED || SKIP_POST || !VIEW.isEmpty() || !SKIP_PASS_NAMES.isEmpty()
-                || NO_SHADOW_MATRICES || ZERO_VL || ZERO_BLOOM || !STAGE_STRIP.isEmpty()
-                || NO_VANILLA_SKY || NO_VANILLA_CLOUDS || NO_CLOUDS_HARD || MAGENTA_CLEAR
-                || !SHADOW_PASS || NO_SHADOWS || !SHADOW_CULLING.isEmpty() || !SHADOW_DEPTH_FIX) {
+        if (PROBES_ACTIVE) {
             Metallum.LOGGER.warn("[metallum-iris][debug] switches active: build={} skipDeferred={} skipPost={} view={} skipPass={} noShadowMatrices={} zeroVl={} zeroBloom={} stageStrip={} noVanillaSky={} noVanillaClouds={} noCloudsHard={} magentaClear={} shadowPass={} noShadows={} shadowCulling={} shadowDepthFix={}",
                     BUILD_TAG, SKIP_DEFERRED, SKIP_POST, VIEW, SKIP_PASS, NO_SHADOW_MATRICES, ZERO_VL, ZERO_BLOOM,
                     System.getProperty("metallum.iris.debug.stageStrip", ""),
