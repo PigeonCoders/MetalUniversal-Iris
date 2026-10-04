@@ -23,6 +23,14 @@ public final class MetalDebugSwitches {
     public static final boolean NO_CLOUDS_HARD = Boolean.getBoolean("metallum.iris.debug.noCloudsHard");
     public static final boolean MAGENTA_CLEAR = Boolean.getBoolean("metallum.iris.debug.magentaClear");
     /**
+     * Probe-only: logs every per-drawbuffer {@code blend.*} override that
+     * {@code IrisMetalCompiledPrograms.colorTargets} folds into the Metal PSO
+     * blend state (once per program+slot+target), so the colortex&rarr;slot
+     * mapping can be verified on device.
+     * {@code -Dmetallum.iris.debug.blendOverrides}.
+     */
+    public static final boolean BLEND_OVERRIDES = Boolean.getBoolean("metallum.iris.debug.blendOverrides");
+    /**
      * Real terrain shadow-caster pass; on by default.
      * {@code -Dmetallum.iris.shadowPass=off} restores the old placeholder
      * behavior: casters are not rendered and the shadow maps are cleared to
@@ -94,7 +102,7 @@ public final class MetalDebugSwitches {
             || !SKIP_PASS_NAMES.isEmpty() || NO_SHADOW_MATRICES || ZERO_VL || ZERO_BLOOM
             || !STAGE_STRIP.isEmpty() || NO_VANILLA_SKY || NO_VANILLA_CLOUDS
             || NO_CLOUDS_HARD || MAGENTA_CLEAR || !SHADOW_PASS || NO_SHADOWS
-            || !SHADOW_CULLING.isEmpty() || !SHADOW_DEPTH_FIX;
+            || !SHADOW_CULLING.isEmpty() || !SHADOW_DEPTH_FIX || BLEND_OVERRIDES;
 
     /** One {@code stageStrip} entry: a pass name plus the target index to tile. */
     public record StripEntry(String passName, int targetIndex) {
@@ -146,11 +154,11 @@ public final class MetalDebugSwitches {
 
     static {
         if (PROBES_ACTIVE) {
-            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: build={} skipDeferred={} skipPost={} view={} skipPass={} noShadowMatrices={} zeroVl={} zeroBloom={} stageStrip={} noVanillaSky={} noVanillaClouds={} noCloudsHard={} magentaClear={} shadowPass={} noShadows={} shadowCulling={} shadowDepthFix={}",
+            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: build={} skipDeferred={} skipPost={} view={} skipPass={} noShadowMatrices={} zeroVl={} zeroBloom={} stageStrip={} noVanillaSky={} noVanillaClouds={} noCloudsHard={} magentaClear={} shadowPass={} noShadows={} shadowCulling={} shadowDepthFix={} blendOverrides={}",
                     BUILD_TAG, SKIP_DEFERRED, SKIP_POST, VIEW, SKIP_PASS, NO_SHADOW_MATRICES, ZERO_VL, ZERO_BLOOM,
                     System.getProperty("metallum.iris.debug.stageStrip", ""),
                     NO_VANILLA_SKY, NO_VANILLA_CLOUDS, NO_CLOUDS_HARD, MAGENTA_CLEAR,
-                    SHADOW_PASS, NO_SHADOWS, SHADOW_CULLING, SHADOW_DEPTH_FIX);
+                    SHADOW_PASS, NO_SHADOWS, SHADOW_CULLING, SHADOW_DEPTH_FIX, BLEND_OVERRIDES);
         }
     }
 }

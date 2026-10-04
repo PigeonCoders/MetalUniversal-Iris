@@ -89,6 +89,7 @@ public final class MetalProbeReport {
         content.append("  noVanillaClouds=").append(MetalDebugSwitches.NO_VANILLA_CLOUDS).append(System.lineSeparator());
         content.append("  noCloudsHard=").append(MetalDebugSwitches.NO_CLOUDS_HARD).append(System.lineSeparator());
         content.append("  magentaClear=").append(MetalDebugSwitches.MAGENTA_CLEAR).append(System.lineSeparator());
+        content.append("  blendOverrides=").append(MetalDebugSwitches.BLEND_OVERRIDES).append(System.lineSeparator());
         content.append("  stageStrip=").append(System.getProperty("metallum.iris.debug.stageStrip", ""))
                 .append(System.lineSeparator());
         if (!RECORDED_LINES.isEmpty()) {
@@ -135,6 +136,7 @@ public final class MetalProbeReport {
         addIf(active, "noVanillaClouds", MetalDebugSwitches.NO_VANILLA_CLOUDS);
         addIf(active, "noCloudsHard", MetalDebugSwitches.NO_CLOUDS_HARD);
         addIf(active, "magentaClear", MetalDebugSwitches.MAGENTA_CLEAR);
+        addIf(active, "blendOverrides", MetalDebugSwitches.BLEND_OVERRIDES);
         if (!MetalDebugSwitches.VIEW.isEmpty()) {
             active.add("view=" + MetalDebugSwitches.VIEW);
         }

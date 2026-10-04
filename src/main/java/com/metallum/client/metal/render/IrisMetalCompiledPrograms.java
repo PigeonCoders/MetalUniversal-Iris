@@ -44,6 +44,8 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
     private final GpuFormat[] shadowTargetFormats;
     private final Map<SodiumKey, MetalCompiledRenderPipeline> sodiumPipelines = new HashMap<>();
     private final Map<VanillaKey, MetalCompiledRenderPipeline> vanillaPipelines = new HashMap<>();
+    /** Probe dedup ({@code -Dmetallum.iris.debug.blendOverrides}): program+slot+target. */
+    private final Set<String> loggedBlendOverrides = new HashSet<>();
     private boolean closed;
 
     IrisMetalCompiledPrograms(
@@ -246,6 +248,9 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
                     blend = override.blendMode() == null
                             ? Optional.empty()
                             : Optional.of(irisBlendFunction(override.blendMode()));
+                    if (MetalDebugSwitches.BLEND_OVERRIDES) {
+                        recordBlendOverride(program.name(), slot, logicalTarget, override.blendMode());
+                    }
                 }
             }
             targets[slot] = new ColorTargetState(
@@ -255,6 +260,29 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
             );
         }
         return targets;
+    }
+
+    /**
+     * Probe-only ({@code -Dmetallum.iris.debug.blendOverrides}): records each
+     * per-drawbuffer {@code blend.*} override folded into the Metal PSO, once
+     * per program+slot+target, so the colortex&rarr;DRAWBUFFERS mapping can be
+     * checked on device.
+     */
+    private void recordBlendOverride(
+            final String program,
+            final int slot,
+            final int logicalTarget,
+            final BlendMode blendMode
+    ) {
+        if (!this.loggedBlendOverrides.add(program + "/" + slot + "/" + logicalTarget)) {
+            return;
+        }
+        MetalProbeReport.record(
+                "blend.override program=" + program
+                        + " slot=" + slot
+                        + " target=colortex" + logicalTarget
+                        + " mode=" + (blendMode == null ? "off" : blendMode)
+        );
     }
 
     /**
