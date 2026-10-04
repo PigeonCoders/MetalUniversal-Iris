@@ -109,7 +109,8 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
                 customUniforms,
                 this.frameState.updateNotifier(),
                 () -> this.frameState.phase().ordinal(),
-                this.directives.getShadowDirectives()
+                this.directives.getShadowDirectives(),
+                this.directives.isOldHandLight()
         );
         this.executionGraph.attachUniformValues(this.uniformValues);
         publishWorldSettings();

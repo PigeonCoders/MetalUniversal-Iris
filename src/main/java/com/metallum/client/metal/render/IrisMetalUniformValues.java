@@ -3,26 +3,41 @@ package com.metallum.client.metal.render;
 import com.metallum.Metallum;
 import com.mojang.blaze3d.buffers.GpuBuffer;
 import com.mojang.blaze3d.buffers.GpuBufferSlice;
+import it.unimi.dsi.fastutil.objects.Object2IntFunction;
 import kroppeb.stareval.function.FunctionReturn;
 import net.caffeinemc.mods.sodium.client.util.FogStorage;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
+import net.irisshaders.iris.api.v0.item.IrisItemLightProvider;
 import net.irisshaders.iris.uniforms.CapturedRenderingState;
 import net.irisshaders.iris.uniforms.CelestialUniforms;
 import net.irisshaders.iris.uniforms.FrameUpdateNotifier;
 import net.irisshaders.iris.uniforms.SystemTimeUniforms;
 import net.irisshaders.iris.uniforms.custom.CustomUniforms;
 import net.irisshaders.iris.pipeline.programs.ShaderKey;
+import net.irisshaders.iris.shaderpack.materialmap.NamespacedId;
+import net.irisshaders.iris.shaderpack.materialmap.WorldRenderingSettings;
 import net.irisshaders.iris.shaderpack.properties.PackShadowDirectives;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.client.renderer.GameRenderer;
+import net.minecraft.client.renderer.texture.AbstractTexture;
+import net.minecraft.client.renderer.texture.TextureAtlas;
+import net.minecraft.core.component.DataComponents;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.Identifier;
 import net.minecraft.util.Mth;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.attribute.EnvironmentAttributes;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LightningBolt;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.Vec3;
 import org.jspecify.annotations.Nullable;
 import org.joml.Matrix3f;
@@ -88,6 +103,13 @@ final class IrisMetalUniformValues implements AutoCloseable {
     private final @Nullable FrameUpdateNotifier updateNotifier;
     private final IntSupplier renderStageSource;
     private final boolean strict;
+    /**
+     * Pack directive {@code oldHandLight}: main-hand emission is raised to the
+     * off-hand's when the off-hand is brighter. Only the switch fallbacks for
+     * {@code heldBlockLightValue} use it; the production custom-uniform graph
+     * applies it itself inside Iris's {@code IdMapUniforms.HeldItemSupplier}.
+     */
+    private final boolean oldHandLight;
     private final List<Block> blocks = new ArrayList<>();
     private final Set<String> unsupported = new HashSet<>();
     private final Matrix4f previousModelView = new Matrix4f();
@@ -145,11 +167,11 @@ final class IrisMetalUniformValues implements AutoCloseable {
     }
 
     IrisMetalUniformValues(final float sunPathRotation) {
-        this(sunPathRotation, null, null, () -> 0, false, null);
+        this(sunPathRotation, null, null, () -> 0, false, null, false);
     }
 
     IrisMetalUniformValues(final float sunPathRotation, final IntSupplier renderStageSource) {
-        this(sunPathRotation, null, null, renderStageSource, false, null);
+        this(sunPathRotation, null, null, renderStageSource, false, null, false);
     }
 
     IrisMetalUniformValues(
@@ -159,7 +181,18 @@ final class IrisMetalUniformValues implements AutoCloseable {
             final IntSupplier renderStageSource,
             final PackShadowDirectives shadowDirectives
     ) {
-        this(sunPathRotation, customUniforms, updateNotifier, renderStageSource, true, shadowDirectives);
+        this(sunPathRotation, customUniforms, updateNotifier, renderStageSource, shadowDirectives, false);
+    }
+
+    IrisMetalUniformValues(
+            final float sunPathRotation,
+            final CustomUniforms customUniforms,
+            final FrameUpdateNotifier updateNotifier,
+            final IntSupplier renderStageSource,
+            final PackShadowDirectives shadowDirectives,
+            final boolean oldHandLight
+    ) {
+        this(sunPathRotation, customUniforms, updateNotifier, renderStageSource, true, shadowDirectives, oldHandLight);
     }
 
     private IrisMetalUniformValues(
@@ -168,7 +201,8 @@ final class IrisMetalUniformValues implements AutoCloseable {
             final @Nullable FrameUpdateNotifier updateNotifier,
             final IntSupplier renderStageSource,
             final boolean strict,
-            final @Nullable PackShadowDirectives shadowDirectives
+            final @Nullable PackShadowDirectives shadowDirectives,
+            final boolean oldHandLight
     ) {
         if ((customUniforms == null) != (updateNotifier == null)) {
             throw new IllegalArgumentException("Iris custom uniforms and frame notifier must be supplied together");
@@ -179,6 +213,7 @@ final class IrisMetalUniformValues implements AutoCloseable {
         this.updateNotifier = updateNotifier;
         this.renderStageSource = Objects.requireNonNull(renderStageSource, "renderStageSource");
         this.strict = strict;
+        this.oldHandLight = oldHandLight;
     }
 
     private static OptionalDouble alphaTestReference(final IrisMetalGlslLinker.LinkedRasterProgram program) {
@@ -616,7 +651,19 @@ final class IrisMetalUniformValues implements AutoCloseable {
             float nightVision,
             float blindFactor,
             float darknessFactor,
-            int bedrockLevel
+            int bedrockLevel,
+            int currentRenderedEntity,
+            Vector2i atlasSize,
+            int heldItemId,
+            int heldItemId2,
+            int heldBlockLightValue,
+            int heldBlockLightValue2,
+            boolean isElytraFlying,
+            boolean heavyFog,
+            float playerMood,
+            float darknessLightFactor,
+            float velocity,
+            Vector4f lightningBoltPosition
     ) {
     }
 
@@ -659,7 +706,8 @@ final class IrisMetalUniformValues implements AutoCloseable {
                 new Vector3d(), 0.0f, 0.0f, 256.0f, 0.0f, systemTime.frameTime(),
                 0.25f, 0.25f, 0.0f, 1.0f, 1.0f, 1.0f, 256.0f,
                 systemTime.frameTimeCounter(), 0, 0, systemTime.frameCounter(),
-                0, 192.0f, 0.0f, 0.0f, 0.0f, 0
+                0, 192.0f, 0.0f, 0.0f, 0.0f, 0,
+                -1, new Vector2i(), -1, -1, 0, 0, false, false, 0.0f, 0.0f, 0.0f, new Vector4f()
         );
     }
 
@@ -748,6 +796,44 @@ final class IrisMetalUniformValues implements AutoCloseable {
         }
         int bedrockLevel = level == null ? 0 : level.dimensionType().minY();
 
+        // World-program uniforms whose upstream value sources live in Iris's
+        // dynamic holder (CommonUniforms.addDynamicUniforms) or in a per-draw
+        // attribute. The production custom-uniform graph carries most of the
+        // player-state names below; these sampled values are the writer's
+        // switch fallbacks and the only source for entityId and atlasSize.
+        int currentRenderedEntity = state.getCurrentRenderedEntity();
+        float darknessLightFactor = state.getDarknessLightFactor();
+        Vector2i atlasSize = sampleAtlasSize();
+
+        LocalPlayer player = minecraft.player;
+        int heldItemId = -1;
+        int heldItemId2 = -1;
+        int heldBlockLightValue = 0;
+        int heldBlockLightValue2 = 0;
+        boolean isElytraFlying = false;
+        if (player != null) {
+            isElytraFlying = player.isFallFlying();
+            heldItemId = heldItemId(player, InteractionHand.MAIN_HAND);
+            heldItemId2 = heldItemId(player, InteractionHand.OFF_HAND);
+            heldBlockLightValue = heldBlockLightValue(player, InteractionHand.MAIN_HAND, this.oldHandLight);
+            heldBlockLightValue2 = heldBlockLightValue(player, InteractionHand.OFF_HAND, false);
+        }
+        float playerMood = minecraft.getCameraEntity() instanceof LocalPlayer cameraPlayer
+                ? Mth.clamp(cameraPlayer.getCurrentMood(), 0.0f, 1.0f)
+                : 0.0f;
+        boolean heavyFog = level != null
+                && minecraft.gui.hud.getBossOverlay().shouldCreateWorldFog();
+        // Upstream reads getGameTimeDeltaPartialTick(true) here (ignore freeze),
+        // while CapturedRenderingState.tickDelta comes from the (false) variant.
+        float lightningPartialTick = minecraft.getDeltaTracker() == null
+                ? tickDelta
+                : minecraft.getDeltaTracker().getGameTimeDeltaPartialTick(true);
+        Vector4f lightningBoltPosition = sampleLightningBolt(level, lightningPartialTick, cameraPosition);
+        // Upstream HardcodedCustomUniforms.getVelocity (never registered by the
+        // port's non-dynamic graph): camera travel since the previous sampled
+        // frame, i.e. the same delta the CameraPositionTracker smooths on.
+        float velocity = (float) cameraPosition.distance(this.previousCameraPosition);
+
         return new Frame(
                 modelView,
                 modelViewInverse,
@@ -785,8 +871,102 @@ final class IrisMetalUniformValues implements AutoCloseable {
                 nightVision,
                 blindFactor,
                 darknessFactor,
-                bedrockLevel
+                bedrockLevel,
+                currentRenderedEntity,
+                atlasSize,
+                heldItemId,
+                heldItemId2,
+                heldBlockLightValue,
+                heldBlockLightValue2,
+                isElytraFlying,
+                heavyFog,
+                playerMood,
+                darknessLightFactor,
+                velocity,
+                lightningBoltPosition
         );
+    }
+
+    /**
+     * Upstream {@code IdMapUniforms.HeldItemSupplier.update()}: the pack's
+     * item id map keyed by the stack's item-model id (falling back to the
+     * registry id). Returns -1 when there is no item-id map yet.
+     */
+    private static int heldItemId(final LocalPlayer player, final InteractionHand hand) {
+        ItemStack stack = player.getItemInHand(hand);
+        Item item = stack.getItem();
+        Identifier model = stack.get(DataComponents.ITEM_MODEL);
+        Identifier id = model != null ? model : BuiltInRegistries.ITEM.getKey(item);
+        Object2IntFunction<NamespacedId> itemIds = WorldRenderingSettings.INSTANCE.getItemIds();
+        if (itemIds == null) {
+            return -1;
+        }
+        return itemIds.applyAsInt(new NamespacedId(id.getNamespace(), id.getPath()));
+    }
+
+    /**
+     * Upstream {@code IdMapUniforms.HeldItemSupplier.update()}: the held
+     * item's light emission. With the pack's {@code oldHandLight} directive
+     * the main hand reports the brighter of the two hands.
+     */
+    private static int heldBlockLightValue(
+            final LocalPlayer player,
+            final InteractionHand hand,
+            final boolean applyOldHandLight
+    ) {
+        ItemStack stack = player.getItemInHand(hand);
+        int emission = ((IrisItemLightProvider) stack.getItem()).getLightEmission(player, stack);
+        if (applyOldHandLight && hand == InteractionHand.MAIN_HAND) {
+            ItemStack offHand = player.getItemInHand(InteractionHand.OFF_HAND);
+            int offEmission = ((IrisItemLightProvider) offHand.getItem()).getLightEmission(player, offHand);
+            if (emission < offEmission) {
+                emission = offEmission;
+            }
+        }
+        return emission;
+    }
+
+    /**
+     * Upstream {@code IrisExclusiveUniforms}: the first lightning bolt in the
+     * level relative to the unshifted camera position, w=1; (0,0,0,0) when no
+     * bolt exists (or there is no level).
+     */
+    private static Vector4f sampleLightningBolt(
+            final @Nullable ClientLevel level,
+            final float partialTick,
+            final Vector3d cameraPosition
+    ) {
+        if (level == null) {
+            return new Vector4f();
+        }
+        for (Entity entity : level.entitiesForRendering()) {
+            if (entity instanceof LightningBolt bolt) {
+                Vec3 pos = bolt.getPosition(partialTick);
+                return new Vector4f(
+                        (float) (pos.x - cameraPosition.x),
+                        (float) (pos.y - cameraPosition.y),
+                        (float) (pos.z - cameraPosition.z),
+                        1.0f
+                );
+            }
+        }
+        return new Vector4f();
+    }
+
+    /**
+     * Upstream {@code CommonUniforms.addDynamicUniforms}'s atlasSize. The
+     * world pipeline's albedo texture is the block atlas, read through the
+     * engine texture manager because the Metal path resolves Sampler0 at draw
+     * time instead of from a GL texture binding. Returns (0,0) when the atlas
+     * is not resident, matching the upstream zero fallback.
+     */
+    private static Vector2i sampleAtlasSize() {
+        AbstractTexture atlas = Minecraft.getInstance().getTextureManager()
+                .getTexture(TextureAtlas.LOCATION_BLOCKS);
+        if (atlas == null || atlas.getTexture() == null) {
+            return new Vector2i();
+        }
+        return new Vector2i(atlas.getTexture().getWidth(0), atlas.getTexture().getHeight(0));
     }
 
     /**
@@ -1049,8 +1229,80 @@ final class IrisMetalUniformValues implements AutoCloseable {
             case "isDesert", "isMesa", "isCold", "isSwamp", "isMushroom",
                  "isSavanna", "isJungle" -> out.putFloat(at, 0.0f);
 
+            // --- dynamic / per-draw world uniforms (CR world programs) ---
+            // entityId: CommonUniforms.addDynamicUniforms' fallback supplier
+            // (CommonUniforms.java:73) reading the captured draw entity. The
+            // entity path goes through its own attribute in Iris; this is the
+            // value prewarm and non-entity draws see (-1 by default).
+            case "entityId" -> out.putInt(at, frame.currentRenderedEntity());
+            // entityColor / blockEntityId / currentRenderedItemId: the ONCE
+            // defaults generalCommonUniforms registers when no vertex
+            // attribute or draw-time item id supplies them (CommonUniforms
+            // .java:162-164).
+            case "entityColor" -> putVec4(out, at, 0.0f, 0.0f, 0.0f, 0.0f);
+            case "blockEntityId", "currentRenderedItemId" -> out.putInt(at, -1);
+            // IdMapUniforms.java:33-37 held-item uniforms. Frame sampling
+            // mirrors HeldItemSupplier.update(), including invalidate(): id -1
+            // and light 0 with no player.
+            case "heldItemId" -> out.putInt(at, frame.heldItemId());
+            case "heldItemId2" -> out.putInt(at, frame.heldItemId2());
+            case "heldBlockLightValue" -> out.putInt(at, frame.heldBlockLightValue());
+            case "heldBlockLightValue2" -> out.putInt(at, frame.heldBlockLightValue2());
+            // IrisExclusiveUniforms.java:58/65 PER_TICK booleans.
+            case "isElytraFlying" -> out.putInt(at, frame.isElytraFlying() ? 1 : 0);
+            case "heavyFog" -> out.putInt(at, frame.heavyFog() ? 1 : 0);
+            // CommonUniforms.getPlayerMood (CommonUniforms.java:173) and
+            // CapturedRenderingState.getDarknessLightFactor (line 149).
+            case "playerMood" -> out.putFloat(at, frame.playerMood());
+            case "darknessLightFactor" -> out.putFloat(at, frame.darknessLightFactor());
+            // HardcodedCustomUniforms.getVelocity (pinned tree L54): camera
+            // travel since the previous sampled frame. The port never registers
+            // that holder, so CR's unconditional `uniform float velocity;`
+            // needs this case or prewarm throws.
+            case "velocity" -> out.putFloat(at, frame.velocity());
+            // IrisExclusiveUniforms.java:92-102: bolt position relative to the
+            // unshifted camera, w=1; all zeros without a bolt.
+            case "lightningBoltPosition" -> putVec4(
+                    out, at,
+                    frame.lightningBoltPosition().x,
+                    frame.lightningBoltPosition().y,
+                    frame.lightningBoltPosition().z,
+                    frame.lightningBoltPosition().w
+            );
+            // CommonUniforms.addDynamicUniforms atlasSize (line 58): for world
+            // passes the albedo texture is the block atlas, sampled into the
+            // frame.
+            case "atlasSize" -> putIVec2(out, at, frame.atlasSize().x, frame.atlasSize().y);
+            // maxBlindnessDarkness has no upstream Iris supplier anywhere (not
+            // in generalCommonUniforms, not in ExternallyManagedUniforms, and
+            // absent from the pinned tree). Packs that define it, like CR's
+            // `uniform.float.maxBlindnessDarkness = max(blindness,
+            // darknessFactor)`, are evaluated by the custom-uniform graph; when
+            // nothing supplies it Iris GL leaves the GLSL default. Write the
+            // faithful 0, following the biome-flags precedent above.
+            case "maxBlindnessDarkness" -> out.putFloat(at, 0.0f);
+
             default -> reportUnsupported(out, member);
         }
+    }
+
+    /**
+     * Test gate: dispatches one linked uniform member through the real
+     * value-source resolution using a neutral frame. Build the writer with the
+     * relaxed constructor so unsupported names are recorded by
+     * {@link #reportUnsupported} instead of thrown; {@link #unsupportedNames()}
+     * then tells the gate which members a live writer would have rejected.
+     */
+    void writeUniformForGate(final IrisMetalGlslLinker.UniformMember member) {
+        ByteBuffer scratch = ByteBuffer.allocate(
+                member.offset() + Math.max(1, member.byteSize())
+        ).order(ByteOrder.nativeOrder());
+        write(scratch, member, neutralFrame(), OptionalDouble.empty());
+    }
+
+    /** Names recorded as having no value source (relaxed writers only). */
+    Set<String> unsupportedNames() {
+        return Set.copyOf(this.unsupported);
     }
 
     /** Writes a value evaluated by Iris's own fixed/custom uniform graph. */
