@@ -1,9 +1,12 @@
 package com.metallum.client.metal.render;
 
 import com.metallum.Metallum;
+import com.mojang.blaze3d.ProjectionType;
+import com.mojang.blaze3d.buffers.GpuBufferSlice;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.textures.FilterMode;
 import com.mojang.blaze3d.textures.GpuSampler;
+import com.mojang.blaze3d.vertex.PoseStack;
 import net.caffeinemc.mods.sodium.client.render.SodiumWorldRenderer;
 import net.caffeinemc.mods.sodium.client.render.chunk.ChunkRenderMatrices;
 import net.caffeinemc.mods.sodium.client.render.viewport.ViewportProvider;
@@ -27,9 +30,24 @@ import net.irisshaders.iris.uniforms.CapturedRenderingState;
 import net.irisshaders.iris.uniforms.CelestialUniforms;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.player.AbstractClientPlayer;
+import net.minecraft.client.renderer.ProjectionMatrixBuffer;
+import net.minecraft.client.renderer.RenderBuffers;
+import net.minecraft.client.renderer.SubmitNodeStorage;
+import net.minecraft.client.renderer.blockentity.BlockEntityRenderDispatcher;
+import net.minecraft.client.renderer.blockentity.state.BlockEntityRenderState;
 import net.minecraft.client.renderer.chunk.ChunkSectionLayerGroup;
 import net.minecraft.client.renderer.culling.Frustum;
+import net.minecraft.client.renderer.entity.EntityRenderDispatcher;
+import net.minecraft.client.renderer.entity.state.EntityRenderState;
+import net.minecraft.client.renderer.feature.FeatureRenderDispatcher;
 import net.minecraft.client.renderer.state.level.CameraRenderState;
+import net.minecraft.client.renderer.state.level.LevelRenderState;
+import net.minecraft.core.BlockPos;
+import net.minecraft.util.Mth;
+import net.minecraft.world.TickRateManager;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
@@ -39,23 +57,26 @@ import org.jspecify.annotations.Nullable;
 import java.util.Objects;
 
 /**
- * M6.1: the first real shadow caster pass — terrain only. Mirrors upstream
- * {@code ShadowRenderer.renderShadows} for the terrain slice:
+ * M6.1/M6.2: the real shadow caster pass — terrain, entities and block
+ * entities. Mirrors upstream {@code ShadowRenderer.renderShadows}:
  *
  * <ol>
  * <li>flips Iris's process-wide {@link ShadowRenderer#ACTIVE} flag so the
  *     Sodium integration shipped inside the Iris jar swaps to its shadow
  *     render lists, and this port's terrain bridge maps Sodium draws to the
  *     {@code SHADOW_SODIUM_TERRAIN_*} keys;</li>
- * <li>installs the pack shadow matrices (sun-relative view, zero-to-one ortho)
- *     on Sodium's {@code ChunkRenderMatrices};</li>
+ * <li>installs the pack shadow matrices (sun-relative view, GL ortho) on
+ *     Sodium's {@code ChunkRenderMatrices};</li>
  * <li>runs {@code setupTerrain} with the shadow culling frustum, then draws
- *     the opaque group, copies shadowtex0 to shadowtex1, and optionally draws
- *     the translucent group.</li>
+ *     the opaque terrain group;</li>
+ * <li>M6.2: extracts/submits entities and block entities into a dedicated
+ *     {@link FeatureRenderDispatcher} and renders them through the same
+ *     {@code PreparedRenderType.drawFromBuffer} choke point the main pass
+ *     uses — {@code IrisMetalWorldBridge} maps those draws through the shadow
+ *     key table into the shadow targets;</li>
+ * <li>copies shadowtex0 to shadowtex1, then optionally draws the translucent
+ *     terrain group.</li>
  * </ol>
- *
- * <p>Entities are M6.2 and deliberately not rendered here;
- * {@code IrisMetalWorldBridge} keeps its existing shadow-time null behavior.</p>
  */
 @Environment(EnvType.CLIENT)
 final class IrisMetalShadowRenderer {
@@ -63,6 +84,11 @@ final class IrisMetalShadowRenderer {
     private @Nullable String reportedCulling;
     private @Nullable String reportedDepthMode;
     private boolean warnedSafeZone;
+    private @Nullable LevelRenderState entityLevelRenderState;
+    private @Nullable SubmitNodeStorage entitySubmitStorage;
+    private @Nullable FeatureRenderDispatcher entityFeatureDispatcher;
+    private @Nullable RenderBuffers entityBuffers;
+    private @Nullable ProjectionMatrixBuffer entityProjectionBuffer;
 
     IrisMetalShadowRenderer(final MetalWorldRenderingPipeline pipeline) {
         this.pipeline = Objects.requireNonNull(pipeline, "pipeline");
@@ -163,6 +189,16 @@ final class IrisMetalShadowRenderer {
                     ChunkSectionLayerGroup.OPAQUE, shadowMatrices, cameraX, cameraY, cameraZ, sampler
             );
             pipeline.setPhase(WorldRenderingPhase.NONE);
+            // M6.2: entities and block entities are submitted/rendered after
+            // the opaque terrain and before the shadowtex1 copy, matching
+            // upstream ShadowRenderer (translucent water then only shows up in
+            // shadowtex0).
+            pipeline.setPhase(WorldRenderingPhase.ENTITIES);
+            renderEntityAndBlockEntityCasters(
+                    levelRenderer, sodiumWorldRenderer, camera, frustum, directives,
+                    matrixSet, cameraX, cameraY, cameraZ
+            );
+            pipeline.setPhase(WorldRenderingPhase.NONE);
             this.pipeline.captureShadowNoTranslucents();
             if (directives.shouldRenderTranslucent()) {
                 pipeline.setPhase(WorldRenderingPhase.TERRAIN_TRANSLUCENT);
@@ -193,6 +229,198 @@ final class IrisMetalShadowRenderer {
         this.pipeline.receipts().recordEvent(
                 "shadow.terrain stats=" + stats + " translucent=" + translucent
         );
+    }
+
+    /**
+     * M6.2 entity/block-entity caster submission, mirroring upstream
+     * {@code ShadowRenderer}: entity meshes are submitted against the shadow
+     * model view while the engine model view is identity (so the baked poses
+     * carry the view exactly once), and the engine projection is the pack GL
+     * shadow ortho consumed by the shadow programs' {@code iris_ProjMat}.
+     * Renders through a dedicated {@link FeatureRenderDispatcher}, whose
+     * {@code PreparedRenderType.drawFromBuffer} draws are taken over by
+     * {@code IrisMetalWorldBridge}.
+     */
+    private void renderEntityAndBlockEntityCasters(
+            final LevelRendererAccessor levelRenderer,
+            final SodiumWorldRenderer sodiumWorldRenderer,
+            final Camera camera,
+            final Frustum frustum,
+            final PackShadowDirectives directives,
+            final IrisMetalUniformValues.ShadowMatrixSet matrices,
+            final double cameraX,
+            final double cameraY,
+            final double cameraZ
+    ) {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft.level == null) {
+            return;
+        }
+        ensureEntityState(minecraft);
+        LevelRenderState state = this.entityLevelRenderState;
+        SubmitNodeStorage storage = this.entitySubmitStorage;
+        float tickDelta = CapturedRenderingState.INSTANCE.getTickDelta();
+
+        camera.extractRenderState(state.cameraRenderState, tickDelta);
+        Matrix4f savedViewRotation = new Matrix4f(state.cameraRenderState.viewRotationMatrix);
+        Matrix4f savedProjection = new Matrix4f(state.cameraRenderState.projectionMatrix);
+        state.cameraRenderState.viewRotationMatrix = new Matrix4f(matrices.modelView());
+        state.cameraRenderState.projectionMatrix = new Matrix4f(matrices.packProjection());
+        state.reset();
+
+        PoseStack modelView = new PoseStack();
+        modelView.mulPose(matrices.modelView());
+
+        GpuBufferSlice savedProjectionBuffer = RenderSystem.getProjectionMatrixBuffer();
+        ProjectionType savedProjectionType = RenderSystem.getProjectionType();
+        RenderSystem.setProjectionMatrix(
+                this.entityProjectionBuffer.getBuffer(matrices.packProjection()),
+                ProjectionType.ORTHOGRAPHIC
+        );
+        RenderSystem.getModelViewStack().pushMatrix();
+        RenderSystem.getModelViewStack().identity();
+        try {
+            EntityRenderDispatcher dispatcher = levelRenderer.getEntityRenderDispatcher();
+            if (directives.shouldRenderEntities()) {
+                extractVisibleEntities(state, dispatcher, frustum, minecraft);
+            } else if (directives.shouldRenderPlayer()) {
+                extractPlayer(state, dispatcher, minecraft);
+            }
+            for (EntityRenderState entityState : state.entityRenderStates) {
+                dispatcher.submit(
+                        entityState,
+                        state.cameraRenderState,
+                        entityState.x - cameraX,
+                        entityState.y - cameraY,
+                        entityState.z - cameraZ,
+                        modelView,
+                        storage
+                );
+            }
+
+            if (directives.shouldRenderBlockEntities() || directives.shouldRenderLightBlockEntities()) {
+                // The shadow render-list scope is active, so Sodium extracts
+                // the block entities visible to the shadow frustum.
+                sodiumWorldRenderer.extractBlockEntities(
+                        camera, tickDelta, minecraft.level.destructionProgress(), state
+                );
+            }
+            BlockEntityRenderDispatcher blockDispatcher = minecraft.getBlockEntityRenderDispatcher();
+            for (BlockEntityRenderState blockState : state.blockEntityRenderStates) {
+                BlockPos pos = blockState.blockPos;
+                modelView.pushPose();
+                modelView.translate(pos.getX() - cameraX, pos.getY() - cameraY, pos.getZ() - cameraZ);
+                blockDispatcher.submit(blockState, modelView, storage, state.cameraRenderState);
+                modelView.popPose();
+            }
+
+            this.entityFeatureDispatcher.renderAllFeatures(storage);
+            this.entityBuffers.endFrame();
+        } finally {
+            RenderSystem.getModelViewStack().popMatrix();
+            RenderSystem.setProjectionMatrix(savedProjectionBuffer, savedProjectionType);
+            state.cameraRenderState.viewRotationMatrix = savedViewRotation;
+            state.cameraRenderState.projectionMatrix = savedProjection;
+        }
+        this.pipeline.receipts().recordEvent(
+                "shadow.casters entities=" + state.entityRenderStates.size()
+                        + " blockEntities=" + state.blockEntityRenderStates.size()
+        );
+    }
+
+    private void ensureEntityState(final Minecraft minecraft) {
+        if (this.entityLevelRenderState != null) {
+            return;
+        }
+        this.entityLevelRenderState = new LevelRenderState();
+        this.entitySubmitStorage = new SubmitNodeStorage();
+        this.entityBuffers = new RenderBuffers(Runtime.getRuntime().availableProcessors());
+        this.entityFeatureDispatcher = new FeatureRenderDispatcher(
+                this.entityBuffers,
+                minecraft.getModelManager(),
+                minecraft.getAtlasManager(),
+                minecraft.font,
+                minecraft.gameRenderer.gameRenderState()
+        );
+        this.entityProjectionBuffer = new ProjectionMatrixBuffer("Iris shadow projection");
+    }
+
+    /** Entity extraction mirroring upstream {@code ShadowRenderer.extractVisibleEntities}. */
+    private static void extractVisibleEntities(
+            final LevelRenderState state,
+            final EntityRenderDispatcher dispatcher,
+            final Frustum frustum,
+            final Minecraft minecraft
+    ) {
+        Vec3 cameraPos = minecraft.gameRenderer.mainCamera().position();
+        double cameraX = cameraPos.x;
+        double cameraY = cameraPos.y;
+        double cameraZ = cameraPos.z;
+        TickRateManager tickRateManager = minecraft.level.tickRateManager();
+        Entity.setViewScale(Mth.clamp(
+                minecraft.options.getEffectiveRenderDistance() / 8.0,
+                1.0,
+                2.5
+        ) * minecraft.options.entityDistanceScaling().get());
+        for (Entity entity : minecraft.level.entitiesForRendering()) {
+            if (entity instanceof AbstractClientPlayer player && player.isSpectator()) {
+                continue;
+            }
+            if (!dispatcher.shouldRender(entity, frustum, cameraX, cameraY, cameraZ)
+                    && !entity.hasIndirectPassenger(minecraft.player)) {
+                continue;
+            }
+            BlockPos pos = entity.blockPosition();
+            if (!minecraft.level.isOutsideBuildHeight(pos.getY())
+                    && !minecraft.levelRenderer.isSectionCompiledAndVisible(pos)) {
+                continue;
+            }
+            if (entity.tickCount == 0) {
+                entity.xOld = entity.getX();
+                entity.yOld = entity.getY();
+                entity.zOld = entity.getZ();
+            }
+            float partialTick = minecraft.getDeltaTracker()
+                    .getGameTimeDeltaPartialTick(!tickRateManager.isEntityFrozen(entity));
+            state.entityRenderStates.add(dispatcher.extractEntity(entity, partialTick));
+        }
+    }
+
+    /** Player-only extraction for packs that disable generic entity shadows. */
+    private static void extractPlayer(
+            final LevelRenderState state,
+            final EntityRenderDispatcher dispatcher,
+            final Minecraft minecraft
+    ) {
+        Player player = minecraft.player;
+        if (player == null) {
+            return;
+        }
+        float partialTick = minecraft.getDeltaTracker().getGameTimeDeltaPartialTick(false);
+        if (!player.isSpectator() && !player.isInvisible()) {
+            state.entityRenderStates.add(dispatcher.extractEntity(player, partialTick));
+        }
+        if (player.getVehicle() != null) {
+            state.entityRenderStates.add(dispatcher.extractEntity(player.getVehicle(), partialTick));
+        }
+    }
+
+    /** Releases the caster-pass render state; called from pipeline destroy. */
+    void close() {
+        if (this.entityFeatureDispatcher != null) {
+            this.entityFeatureDispatcher.close();
+            this.entityFeatureDispatcher = null;
+        }
+        if (this.entityBuffers != null) {
+            this.entityBuffers.close();
+            this.entityBuffers = null;
+        }
+        if (this.entityProjectionBuffer != null) {
+            this.entityProjectionBuffer.close();
+            this.entityProjectionBuffer = null;
+        }
+        this.entityLevelRenderState = null;
+        this.entitySubmitStorage = null;
     }
 
     /**

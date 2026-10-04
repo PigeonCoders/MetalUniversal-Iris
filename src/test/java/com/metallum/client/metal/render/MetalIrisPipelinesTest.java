@@ -77,7 +77,7 @@ final class MetalIrisPipelinesTest {
 
     @Test
     void constantMappingsFollowUpstreamBaseline() throws Exception {
-        Map<RenderPipeline, ShaderKey> upstream = upstreamConstantBaseline();
+        Map<RenderPipeline, ShaderKey> upstream = upstreamConstantBaseline("coreShaderMap");
         assertFalse(upstream.isEmpty(), "upstream coreShaderMap baseline was not readable");
         for (Map.Entry<RenderPipeline, ShaderKey> entry : upstream.entrySet()) {
             if (SELECTOR_NEUTRAL_EXPECTATIONS.containsKey(entry.getKey())) {
@@ -144,22 +144,49 @@ final class MetalIrisPipelinesTest {
     }
 
     @Test
-    void shadowPassKeepsVanillaRendering() throws Exception {
+    void shadowMappingsFollowUpstreamBaseline() throws Exception {
+        Map<RenderPipeline, ShaderKey> upstream = upstreamConstantBaseline("coreShaderMapShadow");
+        assertFalse(upstream.isEmpty(), "upstream coreShaderMapShadow baseline was not readable");
         Class<?> shadowRenderer = Class.forName("net.irisshaders.iris.shadows.ShadowRenderer");
         Field active = shadowRenderer.getField("ACTIVE");
         boolean previous = active.getBoolean(null);
         try {
             active.setBoolean(null, true);
-            // Sanity: upstream really is in shadow mode.
+            // M6.2 ports upstream assignToShadow in full; every upstream shadow
+            // entry must resolve identically.
+            for (Map.Entry<RenderPipeline, ShaderKey> entry : upstream.entrySet()) {
+                assertEquals(
+                        entry.getValue(),
+                        MetalIrisPipelines.getShaderKeyForPipeline(null, entry.getKey()),
+                        "shadow mapping disagrees with upstream for " + entry.getKey().getLocation()
+                );
+            }
+            // M6.2 caster paths: entities and block-entity models.
+            assertEquals(
+                    ShaderKey.SHADOW_ENTITIES_CUTOUT,
+                    MetalIrisPipelines.getShaderKeyForPipeline(null, RenderPipelines.ENTITY_CUTOUT)
+            );
+            assertEquals(
+                    ShaderKey.SHADOW_ENTITIES_CUTOUT,
+                    MetalIrisPipelines.getShaderKeyForPipeline(null, RenderPipelines.ENTITY_SOLID)
+            );
+            assertEquals(
+                    ShaderKey.SHADOW_BEACON_BEAM,
+                    MetalIrisPipelines.getShaderKeyForPipeline(null, RenderPipelines.BEACON_BEAM_OPAQUE)
+            );
+            assertEquals(
+                    ShaderKey.SHADOW_BLOCK,
+                    MetalIrisPipelines.getShaderKeyForPipeline(null, RenderPipelines.END_PORTAL)
+            );
+            // Moving blocks keep flowing through the shadow terrain keys.
             assertEquals(
                     ShaderKey.SHADOW_TERRAIN_CUTOUT,
-                    upstreamGetPipeline(RenderPipelines.SOLID_BLOCK)
+                    MetalIrisPipelines.getShaderKeyForPipeline(null, RenderPipelines.SOLID_BLOCK)
             );
-            // M1 does not port assignToShadow: the Metal port must leave
-            // these draws to vanilla.
-            assertNull(MetalIrisPipelines.getShaderKeyForPipeline(null, RenderPipelines.SOLID_BLOCK));
-            assertNull(MetalIrisPipelines.getShaderKeyForPipeline(null, RenderPipelines.LINES));
-            assertNull(MetalIrisPipelines.getShaderKeyForPipeline(null, RenderPipelines.ENTITY_CUTOUT));
+            assertEquals(
+                    ShaderKey.SHADOW_LINES,
+                    MetalIrisPipelines.getShaderKeyForPipeline(null, RenderPipelines.LINES)
+            );
         } finally {
             active.setBoolean(null, previous);
         }
@@ -266,10 +293,11 @@ final class MetalIrisPipelinesTest {
         return getPipeline.invoke(null, null, pipeline);
     }
 
-    private static Map<RenderPipeline, ShaderKey> upstreamConstantBaseline() throws Exception {
+    private static Map<RenderPipeline, ShaderKey> upstreamConstantBaseline(final String fieldName)
+            throws Exception {
         Class<?> irisPipelines = Class.forName("net.irisshaders.iris.pipeline.IrisPipelines");
-        Field field = irisPipelines.getDeclaredField("coreShaderMap");
-        assertTrue(field.trySetAccessible(), "upstream coreShaderMap is not accessible");
+        Field field = irisPipelines.getDeclaredField(fieldName);
+        assertTrue(field.trySetAccessible(), "upstream " + fieldName + " is not accessible");
         Map<?, ?> raw = (Map<?, ?>) field.get(null);
         Map<RenderPipeline, ShaderKey> baseline = new java.util.HashMap<>();
         for (Map.Entry<?, ?> entry : raw.entrySet()) {

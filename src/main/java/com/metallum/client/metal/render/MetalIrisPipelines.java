@@ -44,6 +44,14 @@ public final class MetalIrisPipelines {
             pipeline -> null;
     private static final Map<RenderPipeline, Function<MetalWorldRenderingPipeline, ShaderKey>> CORE_SHADER_MAP =
             new HashMap<>();
+    /**
+     * M6.2: upstream {@code IrisPipelines.coreShaderMapShadow}. All entries are
+     * constant, so the same table is used while {@code ShadowRenderer.ACTIVE}
+     * is set; the port's terrain bridge keeps Sodium draws on its own shadow
+     * keys.
+     */
+    private static final Map<RenderPipeline, Function<MetalWorldRenderingPipeline, ShaderKey>> CORE_SHADER_MAP_SHADOW =
+            new HashMap<>();
     private static final Set<RenderPipeline> SELECTOR_PIPELINES = new HashSet<>();
     private static int upstreamDriftCount;
     private static int upstreamAdoptedCount;
@@ -132,7 +140,67 @@ public final class MetalIrisPipelines {
         SELECTOR_PIPELINES.add(RenderPipelines.TEXT_GRAYSCALE);
         SELECTOR_PIPELINES.add(RenderPipelines.BANNER_PATTERN);
 
+        assignShadow(RenderPipelines.SOLID_BLOCK, ShaderKey.SHADOW_TERRAIN_CUTOUT);
+        assignShadow(RenderPipelines.SOLID_TERRAIN, ShaderKey.SHADOW_TERRAIN_CUTOUT);
+        assignShadow(RenderPipelines.CUTOUT_TERRAIN, ShaderKey.SHADOW_TERRAIN_CUTOUT);
+        assignShadow(RenderPipelines.TRANSLUCENT_TERRAIN, ShaderKey.SHADOW_TRANSLUCENT);
+        assignShadow(RenderPipelines.CUTOUT_BLOCK, ShaderKey.SHADOW_TERRAIN_CUTOUT);
+        assignShadow(RenderPipelines.TRANSLUCENT_BLOCK, ShaderKey.SHADOW_TRANSLUCENT);
+        assignShadow(RenderPipelines.ENTITY_CUTOUT, ShaderKey.SHADOW_ENTITIES_CUTOUT);
+        assignShadow(RenderPipelines.ARMOR_CUTOUT_NO_CULL, ShaderKey.SHADOW_ENTITIES_CUTOUT);
+        assignShadow(RenderPipelines.ARMOR_DECAL_CUTOUT_NO_CULL, ShaderKey.SHADOW_ENTITIES_CUTOUT);
+        assignShadow(RenderPipelines.ENTITY_SOLID, ShaderKey.SHADOW_ENTITIES_CUTOUT);
+        assignShadow(RenderPipelines.CRUMBLING, ShaderKey.SHADOW_TEX);
+        assignShadow(RenderPipelines.ENTITY_SOLID_Z_OFFSET_FORWARD, ShaderKey.SHADOW_ENTITIES_CUTOUT);
+        assignShadow(RenderPipelines.ENTITY_CUTOUT_CULL, ShaderKey.SHADOW_ENTITIES_CUTOUT);
+        assignShadow(RenderPipelines.ITEM_CUTOUT, ShaderKey.SHADOW_ENTITIES_CUTOUT);
+        assignShadow(RenderPipelines.ITEM_TRANSLUCENT, ShaderKey.SHADOW_ENTITIES_CUTOUT);
+        assignShadow(RenderPipelines.ENTITY_TRANSLUCENT, ShaderKey.SHADOW_ENTITIES_CUTOUT);
+        assignShadow(RenderPipelines.ENTITY_CUTOUT_DISSOLVE, ShaderKey.SHADOW_ENTITIES_CUTOUT);
+        assignShadow(RenderPipelines.ENTITY_TRANSLUCENT_CULL, ShaderKey.SHADOW_ENTITIES_CUTOUT);
+        assignShadow(RenderPipelines.END_CRYSTAL_BEAM, ShaderKey.SHADOW_ENTITIES_CUTOUT);
+        assignShadow(RenderPipelines.ENTITY_CUTOUT_Z_OFFSET, ShaderKey.SHADOW_ENTITIES_CUTOUT);
+        assignShadow(RenderPipelines.ENTITY_TRANSLUCENT_EMISSIVE, ShaderKey.SHADOW_ENTITIES_CUTOUT);
+        assignShadow(RenderPipelines.BREEZE_WIND, ShaderKey.SHADOW_ENTITIES_CUTOUT);
+        assignShadow(RenderPipelines.EYES, ShaderKey.SHADOW_ENTITIES_CUTOUT);
+        assignShadow(RenderPipelines.BANNER_PATTERN, ShaderKey.SHADOW_ENTITIES_CUTOUT);
+        assignShadow(RenderPipelines.ENERGY_SWIRL, ShaderKey.SHADOW_ENTITIES_CUTOUT);
+        assignShadow(RenderPipelines.GLINT, ShaderKey.SHADOW_ENTITIES_CUTOUT);
+        assignShadow(RenderPipelines.WEATHER_DEPTH_WRITE, ShaderKey.SHADOW_PARTICLES);
+        assignShadow(RenderPipelines.WEATHER_NO_DEPTH_WRITE, ShaderKey.SHADOW_PARTICLES);
+        assignShadow(RenderPipelines.OPAQUE_PARTICLE, ShaderKey.SHADOW_PARTICLES);
+        assignShadow(RenderPipelines.TRANSLUCENT_PARTICLE, ShaderKey.SHADOW_PARTICLES);
+        assignShadow(RenderPipelines.LINES, ShaderKey.SHADOW_LINES);
+        assignShadow(RenderPipelines.LEASH, ShaderKey.SHADOW_LEASH);
+        assignShadow(RenderPipelines.SECONDARY_BLOCK_OUTLINE, ShaderKey.SHADOW_LINES);
+        assignShadow(RenderPipelines.TEXT, ShaderKey.SHADOW_TEXT);
+        assignShadow(RenderPipelines.TEXT_POLYGON_OFFSET, ShaderKey.SHADOW_TEXT);
+        assignShadow(RenderPipelines.TEXT_SEE_THROUGH, ShaderKey.SHADOW_TEXT);
+        assignShadow(RenderPipelines.TEXT_GRAYSCALE_SEE_THROUGH, ShaderKey.SHADOW_TEXT_INTENSITY);
+        assignShadow(RenderPipelines.TEXT_BACKGROUND, ShaderKey.SHADOW_TEXT_BG);
+        assignShadow(RenderPipelines.TEXT_BACKGROUND_SEE_THROUGH, ShaderKey.SHADOW_TEXT_BG);
+        assignShadow(RenderPipelines.TEXT_GRAYSCALE, ShaderKey.SHADOW_TEXT_INTENSITY);
+        assignShadow(RenderPipelines.WATER_MASK, ShaderKey.SHADOW_BASIC);
+        assignShadow(RenderPipelines.BEACON_BEAM_OPAQUE, ShaderKey.SHADOW_BEACON_BEAM);
+        assignShadow(RenderPipelines.BEACON_BEAM_TRANSLUCENT, ShaderKey.SHADOW_BEACON_BEAM);
+        assignShadow(RenderPipelines.END_PORTAL, ShaderKey.SHADOW_BLOCK);
+        assignShadow(RenderPipelines.END_GATEWAY, ShaderKey.SHADOW_BLOCK);
+        assignShadow(RenderPipelines.ARMOR_TRANSLUCENT, ShaderKey.SHADOW_ENTITIES_CUTOUT);
+        assignShadow(RenderPipelines.LIGHTNING, ShaderKey.SHADOW_LIGHTNING);
+        assignShadow(RenderPipelines.DRAGON_RAYS, ShaderKey.SHADOW_LIGHTNING);
+
         applyUpstreamBaseline();
+    }
+
+    private static void assignShadow(final RenderPipeline pipeline, final ShaderKey key) {
+        Function<MetalWorldRenderingPipeline, ShaderKey> current =
+                CORE_SHADER_MAP_SHADOW.put(pipeline, pipeline1 -> key);
+        if (current != null) {
+            Iris.logger.warn(
+                    "[MetalUniversal/Iris] RenderPipelines shadow mapping already assigned: "
+                            + pipeline.getLocation()
+            );
+        }
     }
 
     private MetalIrisPipelines() {
@@ -157,12 +225,11 @@ public final class MetalIrisPipelines {
             final RenderPipeline source
     ) {
         Objects.requireNonNull(source, "source");
-        if (ShadowRenderingState.areShadowsCurrentlyBeingRendered()) {
-            // M1 does not port assignToShadow; keep vanilla rendering during
-            // shadow passes.
-            return null;
-        }
-        return CORE_SHADER_MAP.getOrDefault(source, NULL_MAPPING).apply(pipeline);
+        Map<RenderPipeline, Function<MetalWorldRenderingPipeline, ShaderKey>> table =
+                ShadowRenderingState.areShadowsCurrentlyBeingRendered()
+                        ? CORE_SHADER_MAP_SHADOW
+                        : CORE_SHADER_MAP;
+        return table.getOrDefault(source, NULL_MAPPING).apply(pipeline);
     }
 
     /** Number of constant entries where the reflected upstream value replaced the pinned one. */
@@ -255,30 +322,56 @@ public final class MetalIrisPipelines {
     }
 
     /**
-     * Re-reads upstream's private {@code coreShaderMap} and adopts its
-     * constant entries so the pinned table cannot silently drift from the
-     * loaded Iris version. Selector entries are excluded: they are
-     * state-dependent and evaluated by the port selectors.
+     * Re-reads upstream's private {@code coreShaderMap}/{@code coreShaderMapShadow}
+     * and adopts their constant entries so the pinned tables cannot silently
+     * drift from the loaded Iris version. Selector entries are excluded from
+     * the main map: they are state-dependent and evaluated by the port
+     * selectors (the shadow map has no selector entries upstream).
      */
     private static void applyUpstreamBaseline() {
-        Map<RenderPipeline, ShaderKey> baseline = upstreamConstantBaseline();
-        if (baseline == null) {
+        Map<RenderPipeline, ShaderKey> main = upstreamConstantBaseline("coreShaderMap");
+        if (main == null) {
             Iris.logger.warn(
                     "[MetalUniversal/Iris] Could not read upstream IrisPipelines.coreShaderMap; "
                             + "using the pinned Iris 1.11.2 RenderPipelines mapping table"
             );
-            return;
+        } else {
+            applyMainBaseline(main);
         }
+        Map<RenderPipeline, ShaderKey> shadow = upstreamConstantBaseline("coreShaderMapShadow");
+        if (shadow == null) {
+            Iris.logger.warn(
+                    "[MetalUniversal/Iris] Could not read upstream IrisPipelines.coreShaderMapShadow; "
+                            + "using the pinned Iris 1.11.2 shadow mapping table"
+            );
+        } else {
+            applyBaseline(
+                    CORE_SHADER_MAP_SHADOW, shadow, Set.of(), "shadow"
+            );
+        }
+    }
+
+    private static void applyMainBaseline(final Map<RenderPipeline, ShaderKey> baseline) {
+        applyBaseline(CORE_SHADER_MAP, baseline, SELECTOR_PIPELINES, "main");
+    }
+
+    private static void applyBaseline(
+            final Map<RenderPipeline, Function<MetalWorldRenderingPipeline, ShaderKey>> target,
+            final Map<RenderPipeline, ShaderKey> baseline,
+            final Set<RenderPipeline> selectors,
+            final String table
+    ) {
         for (Map.Entry<RenderPipeline, ShaderKey> entry : baseline.entrySet()) {
-            if (SELECTOR_PIPELINES.contains(entry.getKey())) {
+            if (selectors.contains(entry.getKey())) {
                 continue;
             }
-            Function<MetalWorldRenderingPipeline, ShaderKey> port = CORE_SHADER_MAP.get(entry.getKey());
+            Function<MetalWorldRenderingPipeline, ShaderKey> port = target.get(entry.getKey());
             if (port == null) {
                 upstreamAdoptedCount++;
-                CORE_SHADER_MAP.put(entry.getKey(), pipeline -> entry.getValue());
+                target.put(entry.getKey(), pipeline -> entry.getValue());
                 Iris.logger.warn(
-                        "[MetalUniversal/Iris] Adopting upstream-only RenderPipelines mapping "
+                        "[MetalUniversal/Iris] Adopting upstream-only " + table
+                                + " RenderPipelines mapping "
                                 + entry.getKey().getLocation() + " -> " + entry.getValue()
                 );
                 continue;
@@ -286,36 +379,37 @@ public final class MetalIrisPipelines {
             ShaderKey pinned = port.apply(null);
             if (pinned != entry.getValue()) {
                 upstreamDriftCount++;
-                CORE_SHADER_MAP.put(entry.getKey(), pipeline -> entry.getValue());
+                target.put(entry.getKey(), pipeline -> entry.getValue());
                 Iris.logger.warn(
-                        "[MetalUniversal/Iris] RenderPipelines mapping drifted for "
+                        "[MetalUniversal/Iris] " + table + " RenderPipelines mapping drifted for "
                                 + entry.getKey().getLocation() + ": pinned " + pinned
                                 + " -> upstream " + entry.getValue()
                 );
             }
         }
         for (Map.Entry<RenderPipeline, Function<MetalWorldRenderingPipeline, ShaderKey>> entry
-                : CORE_SHADER_MAP.entrySet()) {
-            if (SELECTOR_PIPELINES.contains(entry.getKey())) {
+                : target.entrySet()) {
+            if (selectors.contains(entry.getKey())) {
                 continue;
             }
             if (!baseline.containsKey(entry.getKey())) {
                 upstreamMissingCount++;
                 Iris.logger.warn(
-                        "[MetalUniversal/Iris] RenderPipelines mapping no longer exists upstream: "
+                        "[MetalUniversal/Iris] " + table
+                                + " RenderPipelines mapping no longer exists upstream: "
                                 + entry.getKey().getLocation()
                 );
             }
         }
     }
 
-    private static @Nullable Map<RenderPipeline, ShaderKey> upstreamConstantBaseline() {
+    private static @Nullable Map<RenderPipeline, ShaderKey> upstreamConstantBaseline(final String fieldName) {
         try {
             Class<?> upstream = Class.forName("net.irisshaders.iris.pipeline.IrisPipelines");
-            Field field = upstream.getDeclaredField("coreShaderMap");
+            Field field = upstream.getDeclaredField(fieldName);
             if (!field.trySetAccessible()) {
                 throw new IllegalStateException(
-                        "IrisPipelines.coreShaderMap is not accessible in this environment"
+                        "IrisPipelines." + fieldName + " is not accessible in this environment"
                 );
             }
             Map<?, ?> raw = (Map<?, ?>) field.get(null);

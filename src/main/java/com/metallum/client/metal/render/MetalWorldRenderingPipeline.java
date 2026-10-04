@@ -492,6 +492,10 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
             this.horizonRenderer.destroy();
             this.horizonRenderer = null;
         }
+        if (this.shadowRenderer != null) {
+            this.shadowRenderer.close();
+            this.shadowRenderer = null;
+        }
         this.programs.close();
         if (this.resources != null) {
             this.resources.close();

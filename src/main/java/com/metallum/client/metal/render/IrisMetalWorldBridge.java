@@ -22,6 +22,7 @@ import net.irisshaders.iris.pipeline.programs.ShaderKey;
 import net.irisshaders.iris.shaderpack.loading.ProgramId;
 import net.irisshaders.iris.shadows.ShadowRenderingState;
 import net.minecraft.client.Minecraft;
+import org.joml.Vector4fc;
 import org.jspecify.annotations.Nullable;
 
 import java.nio.ByteBuffer;
@@ -71,6 +72,12 @@ public final class IrisMetalWorldBridge {
      * {@code PreparedRenderType.drawFromBuffer}, not Sodium terrain, so they
      * are whitelisted here (the Sodium terrain keys stay with
      * {@link IrisMetalTerrainBridge}).</p>
+     *
+     * <p>M6.2: during the shadow pass the same feature-renderer draws resolve
+     * through {@link MetalIrisPipelines}' {@code assignToShadow} table, so the
+     * shadow keys produced by that table are whitelisted as well (entities,
+     * block entities, moving blocks, text, lines, leashes, particles,
+     * beacon/end-portal block entities and lightning).</p>
      */
     static final Set<ShaderKey> WORLD_OVERRIDE_KEYS = Set.of(
             ShaderKey.ENTITIES_SOLID,
@@ -98,7 +105,21 @@ public final class IrisMetalWorldBridge {
             ShaderKey.WEATHER,
             ShaderKey.SKY_BASIC,
             ShaderKey.SKY_BASIC_COLOR,
-            ShaderKey.SKY_TEXTURED
+            ShaderKey.SKY_TEXTURED,
+            ShaderKey.SHADOW_TERRAIN_CUTOUT,
+            ShaderKey.SHADOW_TRANSLUCENT,
+            ShaderKey.SHADOW_ENTITIES_CUTOUT,
+            ShaderKey.SHADOW_BLOCK,
+            ShaderKey.SHADOW_TEX,
+            ShaderKey.SHADOW_PARTICLES,
+            ShaderKey.SHADOW_LINES,
+            ShaderKey.SHADOW_LEASH,
+            ShaderKey.SHADOW_TEXT,
+            ShaderKey.SHADOW_TEXT_INTENSITY,
+            ShaderKey.SHADOW_TEXT_BG,
+            ShaderKey.SHADOW_BASIC,
+            ShaderKey.SHADOW_BEACON_BEAM,
+            ShaderKey.SHADOW_LIGHTNING
     );
 
     private static final ThreadLocal<WorldContext> ACTIVE_WORLD_PASS = new ThreadLocal<>();
@@ -153,7 +174,7 @@ public final class IrisMetalWorldBridge {
         }
         PENDING_WORLD_KEY.remove();
         MetalWorldRenderingPipeline pipeline = activePipeline();
-        if (pipeline == null || ShadowRenderingState.areShadowsCurrentlyBeingRendered()) {
+        if (pipeline == null) {
             return false;
         }
         ShaderKey key = MetalIrisPipelines.getShaderKeyForPipeline(pipeline, source);
@@ -181,7 +202,7 @@ public final class IrisMetalWorldBridge {
         }
         PENDING_WORLD_KEY.remove();
         MetalWorldRenderingPipeline pipeline = activePipeline();
-        if (pipeline == null || ShadowRenderingState.areShadowsCurrentlyBeingRendered()) {
+        if (pipeline == null) {
             return false;
         }
         if (key == null || !WORLD_OVERRIDE_KEYS.contains(key)) {
@@ -225,10 +246,19 @@ public final class IrisMetalWorldBridge {
             return descriptor;
         }
         MetalWorldRenderingPipeline pipeline = activePipeline();
-        if (pipeline == null || !pipeline.shouldOverrideCoreShaders(true)) {
+        if (pipeline == null) {
             return descriptor;
         }
         if (ShadowRenderingState.areShadowsCurrentlyBeingRendered()) {
+            // M6.2: entity / block-entity / moving-block draws resolve through
+            // the shadow mapping table and are rewritten into the shadow
+            // targets instead of the main gbuffer. The frame-state gate below
+            // is about the main GL framebuffer binding, which does not apply
+            // while the standalone caster pass runs.
+            RenderPassDescriptor shadowDescriptor = rewriteShadowDescriptor(pipeline, key, descriptor);
+            return shadowDescriptor == null ? descriptor : shadowDescriptor;
+        }
+        if (!pipeline.shouldOverrideCoreShaders(true)) {
             return descriptor;
         }
         ProgramRequest request = shaderKeyToProgramRequest(key);
@@ -277,6 +307,79 @@ public final class IrisMetalWorldBridge {
         return renderTargets.createWorldWriteDescriptor(
                 descriptor.label().get(), drawBuffers, descriptor.renderArea, depthView, depthClear
         );
+    }
+
+    /**
+     * M6.2 caster descriptor: swaps the draw's engine attachments for the
+     * generation-owned shadow targets (shadowtex0 depth + the program's
+     * DRAWBUFFERS shadowcolor targets) while the shadow pass is active.
+     * Returns {@code null} when the draw must stay vanilla.
+     */
+    private static @Nullable RenderPassDescriptor rewriteShadowDescriptor(
+            final MetalWorldRenderingPipeline pipeline,
+            final ShaderKey key,
+            final RenderPassDescriptor descriptor
+    ) {
+        ProgramRequest request = shaderKeyToProgramRequest(key);
+        Optional<IrisMetalGlslLinker.LinkedRasterProgram> linked =
+                pipeline.programs().vanilla(
+                        request.program(), request.alphaTest(), request.lines(), request.clouds(), request.inputs()
+                );
+        if (linked.isEmpty()) {
+            recordSkip(key, "no-program");
+            return null;
+        }
+        IrisMetalGlslLinker.LinkedRasterProgram program = linked.orElseThrow();
+        int[] drawBuffers = program.program().drawBuffers();
+        if (drawBuffers.length == 0) {
+            drawBuffers = new int[]{0};
+        }
+        IrisMetalShadowTargets shadows = pipeline.resources().shadowTargets();
+        if (shadows == null) {
+            recordSkip(key, "no-shadow-targets");
+            return null;
+        }
+        ACTIVE_WORLD_PASS.set(new WorldContext(pipeline, key));
+        recordInstall(key, program.name(), drawBuffers, "shadow");
+        return shadows.createShadowGbufferDescriptor(
+                descriptor.label().get(),
+                drawBuffers,
+                shadowClearColors(descriptor, drawBuffers),
+                shadowClearDepth(descriptor)
+        ).descriptor();
+    }
+
+    /** Carries a vanilla draw's color clears over to the shadow attachments. */
+    private static @Nullable Vector4fc[] shadowClearColors(
+            final RenderPassDescriptor descriptor,
+            final int[] drawBuffers
+    ) {
+        List<RenderPassDescriptor.Attachment<Optional<Vector4fc>>> colors = descriptor.colorAttachments();
+        Vector4fc[] clearColors = null;
+        int count = Math.min(drawBuffers.length, colors.size());
+        for (int index = 0; index < count; index++) {
+            RenderPassDescriptor.Attachment<Optional<Vector4fc>> attachment = colors.get(index);
+            if (attachment == null || attachment.clearValue() == null) {
+                continue;
+            }
+            Optional<Vector4fc> clear = attachment.clearValue();
+            if (clear.isPresent()) {
+                if (clearColors == null) {
+                    clearColors = new Vector4fc[drawBuffers.length];
+                }
+                clearColors[index] = clear.get();
+            }
+        }
+        return clearColors;
+    }
+
+    /** Carries a vanilla draw's depth clear over to shadowtex0 when present. */
+    private static @Nullable Double shadowClearDepth(final RenderPassDescriptor descriptor) {
+        RenderPassDescriptor.Attachment<OptionalDouble> depth = descriptor.depthAttachment();
+        if (depth == null || depth.clearValue() == null || depth.clearValue().isEmpty()) {
+            return null;
+        }
+        return depth.clearValue().getAsDouble();
     }
 
     /**
