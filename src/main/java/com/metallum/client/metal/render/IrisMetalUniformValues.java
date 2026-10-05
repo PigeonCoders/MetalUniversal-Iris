@@ -1449,6 +1449,16 @@ final class IrisMetalUniformValues implements AutoCloseable {
             // AA-enabled config still uses the pack's own expression.
             case "ditherShift" -> out.putFloat(at, 0.0f);
             case "taaOffset" -> putVec2(out, at, 0.0f, 0.0f);
+            // Complementary Unbound r5.9.3 defines these biome smooth-flags in
+            // shaders.properties:269-275 as smooth(..., if(in(biome, BIOME_*), 1, 0), ...),
+            // but no upstream Iris build (pinned 20e226b included) supplies the
+            // BIOME_* constants, so stareval drops the variables and desktop GL
+            // leaves the GLSL default 0. Write that faithful 0; if upstream ever
+            // adds the constants, the custom-uniform graph resolves first and
+            // these cases become inert.
+            case "inNetherWastes", "inCrimsonForest", "inWarpedForest",
+                 "inBasaltDeltas", "inSoulValley", "inPaleGarden", "inSulfurCaves" ->
+                    out.putFloat(at, 0.0f);
 
             default -> reportUnsupported(out, member);
         }
