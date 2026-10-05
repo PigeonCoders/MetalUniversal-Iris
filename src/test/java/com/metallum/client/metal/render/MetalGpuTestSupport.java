@@ -58,6 +58,36 @@ final class MetalGpuTestSupport {
     }
 
     /**
+     * Copies a 3D texture's whole mip-0 volume into a host buffer. The blit
+     * path copies every depth slice, so the staging buffer is sized with the
+     * layer count.
+     */
+    static ByteBuffer readback3D(
+            final MetalDevice device,
+            final MetalCommandEncoder encoder,
+            final MetalGpuTexture texture,
+            final String label
+    ) {
+        int size = texture.getWidth(0) * texture.getHeight(0)
+                * texture.getDepthOrLayers() * texture.pixelSize();
+        try (MetalGpuBuffer buffer = (MetalGpuBuffer) device.createBuffer(
+                () -> label,
+                GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST,
+                size
+        )) {
+            encoder.copyTextureToBuffer(texture, buffer, 0L, () -> {
+            }, 0);
+            encoder.submit();
+            device.waitForSubmittedGpuWork();
+            ByteBuffer source = buffer.currentStorage().limit(size).slice().order(ByteOrder.nativeOrder());
+            ByteBuffer copy = ByteBuffer.allocate(size).order(ByteOrder.nativeOrder());
+            copy.put(source);
+            copy.flip();
+            return copy;
+        }
+    }
+
+    /**
      * Copies one mip level of a texture into a host buffer. The caller submits
      * through {@code encoder}; this helper waits for the GPU work before
      * copying out of the mapped staging storage.

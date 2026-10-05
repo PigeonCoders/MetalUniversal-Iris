@@ -57,6 +57,7 @@ final class IrisMetalWorldResources implements AutoCloseable {
                 programSet.getPackDirectives().getRenderTargetDirectives().getRenderTargetSettings(),
                 mipmappedTargets(programSet),
                 programSet.getPack().getCustomTextureDataMap(),
+                programSet.getPack().getIrisCustomTextureDataMap(),
                 programSet.getPackDirectives().getNoiseTextureResolution(),
                 programSet.getPack().getCustomNoiseTexture(),
                 programSet.getPackDirectives(),
@@ -75,6 +76,7 @@ final class IrisMetalWorldResources implements AutoCloseable {
             final Map<Integer, RenderTargetSettings> targetSettings,
             final Set<Integer> mipmappedTargets,
             final Map<TextureStage, ? extends Map<String, CustomTextureData>> customDefinitions,
+            final Map<String, CustomTextureData> irisCustomDefinitions,
             final int noiseResolution,
             final @Nullable CustomTextureData customNoise
     ) {
@@ -87,6 +89,7 @@ final class IrisMetalWorldResources implements AutoCloseable {
                 targetSettings,
                 mipmappedTargets,
                 customDefinitions,
+                irisCustomDefinitions,
                 noiseResolution,
                 customNoise,
                 null,
@@ -105,6 +108,7 @@ final class IrisMetalWorldResources implements AutoCloseable {
             final Map<Integer, RenderTargetSettings> targetSettings,
             final Set<Integer> mipmappedTargets,
             final Map<TextureStage, ? extends Map<String, CustomTextureData>> customDefinitions,
+            final Map<String, CustomTextureData> irisCustomDefinitions,
             final int noiseResolution,
             final @Nullable CustomTextureData customNoise,
             final @Nullable PackDirectives directives,
@@ -130,7 +134,7 @@ final class IrisMetalWorldResources implements AutoCloseable {
             newTargets = new IrisMetalRenderTargets(
                     device, formats, width, height, targetSettings, mipmappedTargets, directives
             );
-            newCustomTextures = new IrisMetalCustomTextures(device, customDefinitions);
+            newCustomTextures = new IrisMetalCustomTextures(device, customDefinitions, irisCustomDefinitions);
             newCustomTextures.prewarmAll();
             newNoiseTexture = new IrisMetalNoiseTexture(device, noiseResolution, customNoise);
             newWhitePixel = new IrisMetalWhitePixel(device);

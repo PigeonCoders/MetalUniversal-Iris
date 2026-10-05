@@ -171,6 +171,7 @@ final class IrisMetalPingPongTargetsIntegrationTest {
                 Map.of(),
                 Set.of(),
                 Map.of(),
+                Map.of(),
                 8,
                 null
         );

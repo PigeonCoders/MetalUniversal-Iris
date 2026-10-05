@@ -123,7 +123,8 @@ final class ShaderpackSamplerCoverage {
                     ? net.irisshaders.iris.shaderpack.properties.PackShadowDirectives.MAX_SHADOW_COLOR_BUFFERS_IRIS
                     : net.irisshaders.iris.shaderpack.properties.PackShadowDirectives.MAX_SHADOW_COLOR_BUFFERS_OF;
             Map<TextureStage, ?> customTextures = shaderPack.getCustomTextureDataMap();
-            Resolver resolver = new Resolver(targetCount, shadowColorCount, customTextures);
+            Set<String> irisCustomTextures = Set.copyOf(shaderPack.getIrisCustomTextureDataMap().keySet());
+            Resolver resolver = new Resolver(targetCount, shadowColorCount, customTextures, irisCustomTextures);
             List<ProgramCoverage> coverage = new ArrayList<>();
 
             try (IrisMetalWorldPrograms programs = new IrisMetalWorldPrograms(1, programSet)) {
@@ -220,11 +221,18 @@ final class ShaderpackSamplerCoverage {
         private final int targetCount;
         private final int shadowColorCount;
         private final Map<TextureStage, ?> customTextures;
+        private final Set<String> irisCustomTextures;
 
-        Resolver(final int targetCount, final int shadowColorCount, final Map<TextureStage, ?> customTextures) {
+        Resolver(
+                final int targetCount,
+                final int shadowColorCount,
+                final Map<TextureStage, ?> customTextures,
+                final Set<String> irisCustomTextures
+        ) {
             this.targetCount = targetCount;
             this.shadowColorCount = shadowColorCount;
             this.customTextures = customTextures;
+            this.irisCustomTextures = irisCustomTextures;
         }
 
         boolean canResolve(
@@ -233,6 +241,13 @@ final class ShaderpackSamplerCoverage {
                 final Object customStageTextures
         ) {
             if (customStageTextures instanceof Map<?, ?> map && map.containsKey(name)) {
+                return true;
+            }
+            if (this.irisCustomTextures.contains(name)) {
+                // Raw directives (customtexN) are global; upstream's
+                // TextureTransformer renames their sampler references before
+                // linking and IrisSamplers.addCustomTextures resolves them on
+                // every stage.
                 return true;
             }
             if (rasterProgram && (IrisMetalWorldBridge.isAlbedoAlias(name)
