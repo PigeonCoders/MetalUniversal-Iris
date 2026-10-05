@@ -1459,6 +1459,32 @@ final class IrisMetalUniformValues implements AutoCloseable {
             case "inNetherWastes", "inCrimsonForest", "inWarpedForest",
                  "inBasaltDeltas", "inSoulValley", "inPaleGarden", "inSulfurCaves" ->
                     out.putFloat(at, 0.0f);
+            // Mellow v3.4.1a integrates Voxy (an absent mod): under
+            // `#ifndef VOXY_TERRAIN` its normal gbuffers/deferred/composite
+            // programs declare the vx* family, and the following
+            // `#ifdef VOXY / #else` declares dh* because the port (like any
+            // build without the mod) never defines VOXY. Both families are in
+            // the linked uniform block. Desktop GL treats statically unused
+            // vx* as inactive and never assigns them without a Voxy mod, so
+            // they read the GLSL default zero. The dh* matrix family is
+            // supplied by MatrixUniforms (pinned Iris), so only the vx* names
+            // need writer defaults; the pack custom-uniform graph is
+            // consulted first, so a future Voxy bridge that starts supplying
+            // these names would win automatically.
+            case "vxProjInv", "vxProj", "vxProjPrev", "vxModelView", "vxModelViewInv",
+                 "vxModelViewPrev" ->
+                    putZeroMat4(out, at);
+            case "vxRenderDistance" -> out.putInt(at, 0);
+            // Mellow defines these custom uniforms in shaders.properties but the
+            // pinned stareval (20e226b) cannot resolve their expressions:
+            // nightStrength/dayStrength use an undefined `pi` constant
+            // (lines 213-214), and the MC_VERSION >= 12104 fogAmount branch
+            // (line 239) references the undefined BIOME_PALE_GARDEN constant.
+            // The upstream graph drops those variables, and desktop GL leaves
+            // the declared uniforms at the GLSL default 0. Write that faithful
+            // zero; the graph is consulted first, so a future upstream fix
+            // makes these cases inert automatically.
+            case "nightStrength", "dayStrength", "fogAmount" -> out.putFloat(at, 0.0f);
 
             default -> reportUnsupported(out, member);
         }
@@ -1648,6 +1674,13 @@ final class IrisMetalUniformValues implements AutoCloseable {
         matrix.get(values);
         for (int index = 0; index < 16; index++) {
             out.putFloat(offset + index * Float.BYTES, values[index]);
+        }
+    }
+
+    /** GLSL default for a mat4 uniform that no supplier ever assigned. */
+    private static void putZeroMat4(final ByteBuffer out, final int offset) {
+        for (int index = 0; index < 16; index++) {
+            out.putFloat(offset + index * Float.BYTES, 0.0f);
         }
     }
 
