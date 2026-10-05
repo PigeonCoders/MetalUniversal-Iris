@@ -7,6 +7,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class IrisMetalExecutionGraphTest {
     @Test
@@ -69,5 +70,48 @@ final class IrisMetalExecutionGraphTest {
                 false,
                 new IrisMetalGlslLinker.SamplerDecl("voxeltex", "sampler3D").storageImage()
         );
+    }
+
+    /**
+     * The {@code beginFrame} aliasing regression: {@code executeStage} assigns
+     * {@code state = plan.stateAfter()} and the next frame's {@code beginFrame}
+     * clears that graph field in place. With the record's default accessor the
+     * clear also wiped the plan's own bookmark, so every later frame ran with
+     * an empty flip state: MakeUp's exposure history was never canonicalized
+     * back to {@code main} and its output stayed black. The accessors (and the
+     * compact constructor) must copy.
+     */
+    @Test
+    void rasterPlanAccessorsReturnIndependentSnapshots() {
+        BitSet reads = new BitSet();
+        reads.set(1);
+        BitSet after = new BitSet();
+        after.set(4);
+        after.set(6);
+        IrisMetalExecutionGraph.RasterPlan plan = new IrisMetalExecutionGraph.RasterPlan(
+                IrisMetalExecutionGraph.Stage.COMPOSITE, 0, "composite", null,
+                new int[]{0, 3}, reads, after, "token"
+        );
+
+        // Constructor copies: reusing/clearing the caller's BitSets is safe.
+        reads.clear();
+        after.clear();
+        assertTrue(plan.readsFromAlt().get(1), "constructor must copy readsFromAlt");
+        assertTrue(plan.stateAfter().get(6), "constructor must copy stateAfter");
+
+        // The exact bug: the graph field aliases the accessor result, then
+        // beginFrame() clears it in place.
+        BitSet state = plan.stateAfter();
+        state.clear();
+        assertTrue(plan.stateAfter().get(4), "stateAfter must survive an in-place clear");
+        assertTrue(plan.stateAfter().get(6), "stateAfter must survive an in-place clear");
+        BitSet shadowState = plan.readsFromAlt();
+        shadowState.clear();
+        assertTrue(plan.readsFromAlt().get(1), "readsFromAlt must survive an in-place clear");
+
+        // Callers cannot reach the plan's draw-buffer array either.
+        int[] buffers = plan.drawBuffers();
+        buffers[0] = 99;
+        assertEquals(0, plan.drawBuffers()[0], "drawBuffers must return a copy");
     }
 }

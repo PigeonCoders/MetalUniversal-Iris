@@ -107,7 +107,17 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         }
     }
 
-    private record RasterPlan(
+    /**
+     * One planned raster pass. The flip snapshots are copied in <em>and</em>
+     * out: {@code executeStage} aliases {@code state}/{@code shadowState} to
+     * {@link #stateAfter()}/{@link #readsFromAlt()}, and the next frame's
+     * {@code beginFrame} clears those graph fields in place. Without the
+     * accessor copies, that clear also wiped the plan's bookmark, leaving every
+     * later frame with an empty flip state (MakeUp's exposure history stopped
+     * being canonicalized back to {@code main} and its output went black).
+     * Mirrors {@link FlipTransition}'s defensive accessors.
+     */
+    record RasterPlan(
             Stage stage,
             int index,
             String name,
@@ -121,6 +131,21 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             drawBuffers = drawBuffers.clone();
             readsFromAlt = (BitSet) readsFromAlt.clone();
             stateAfter = (BitSet) stateAfter.clone();
+        }
+
+        @Override
+        public int[] drawBuffers() {
+            return drawBuffers.clone();
+        }
+
+        @Override
+        public BitSet readsFromAlt() {
+            return (BitSet) readsFromAlt.clone();
+        }
+
+        @Override
+        public BitSet stateAfter() {
+            return (BitSet) stateAfter.clone();
         }
     }
 
