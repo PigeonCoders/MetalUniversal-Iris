@@ -25,8 +25,14 @@ final class IrisMetalWorldResources implements AutoCloseable {
     private final MetalDevice device;
     private final int generation;
     private final IrisMetalRenderTargets renderTargets;
+    /**
+     * Always non-null for a generation built from a {@link ProgramSet} (the
+     * production path); only the lightweight render-target test constructor
+     * leaves it null.
+     */
     @Nullable
     private final IrisMetalShadowTargets shadowTargets;
+    private final boolean hasShadowProgram;
     private final IrisMetalCustomTextures customTextures;
     private final IrisMetalNoiseTexture noiseTexture;
     private final IrisMetalWhitePixel whitePixel;
@@ -54,7 +60,8 @@ final class IrisMetalWorldResources implements AutoCloseable {
                 programSet.getPack().getCustomNoiseTexture(),
                 programSet.getPackDirectives(),
                 createShadowTargets(device, programSet),
-                programSet.getPack()
+                programSet.getPack(),
+                hasShadowProgram(programSet)
         );
     }
 
@@ -83,7 +90,8 @@ final class IrisMetalWorldResources implements AutoCloseable {
                 customNoise,
                 null,
                 null,
-                null
+                null,
+                false
         );
     }
 
@@ -100,13 +108,15 @@ final class IrisMetalWorldResources implements AutoCloseable {
             final @Nullable CustomTextureData customNoise,
             final @Nullable PackDirectives directives,
             final @Nullable IrisMetalShadowTargets shadowTargets,
-            final @Nullable ShaderPack computePack
+            final @Nullable ShaderPack computePack,
+            final boolean hasShadowProgram
     ) {
         this.device = Objects.requireNonNull(device, "device");
         if (generation <= 0) {
             throw new IllegalArgumentException("Iris generation must be positive: " + generation);
         }
         this.generation = generation;
+        this.hasShadowProgram = hasShadowProgram;
 
         IrisMetalRenderTargets newTargets = null;
         IrisMetalShadowTargets newShadowTargets = shadowTargets;
@@ -174,6 +184,19 @@ final class IrisMetalWorldResources implements AutoCloseable {
         return this.shadowTargets;
     }
 
+    /**
+     * Whether the generation's {@link ProgramSet} resolves a shadow caster
+     * program ({@link ProgramId#ShadowSolid}, directly or through its
+     * fallbacks). Computed once per generation, so it follows the dimension's
+     * program gates (e.g. BSL gates its nether shadow program on
+     * {@code MULTICOLORED_BLOCKLIGHT}). A generation without a shadow program
+     * still owns shadow targets; the caster pass must not run into them.
+     */
+    boolean hasShadowProgram() {
+        ensureOpen();
+        return this.hasShadowProgram;
+    }
+
     @Nullable
     IrisMetalComputeResources computeResources() {
         ensureOpen();
@@ -238,18 +261,29 @@ final class IrisMetalWorldResources implements AutoCloseable {
         );
     }
 
-    @Nullable
+    /**
+     * Whether {@code programSet} resolves a shadow caster program
+     * ({@link ProgramId#ShadowSolid}, directly or through its fallbacks).
+     * Static so the per-dimension gate is testable without a Metal device.
+     */
+    static boolean hasShadowProgram(final ProgramSet programSet) {
+        return new ProgramFallbackResolver(programSet).resolveNullable(ProgramId.ShadowSolid) != null;
+    }
+
+    /**
+     * Allocates the generation's shadow targets unconditionally, mirroring
+     * upstream GL where {@code ShadowRenderTargets} are created lazily on the
+     * first sampler binding: a pack may sample {@code shadowtex0} even when its
+     * shadow program is gated off (BSL's nether composite does), and a missing
+     * target would fail that binding. Until a caster pass runs, the maps stay
+     * cleared (= fully lit).
+     */
     private static IrisMetalShadowTargets createShadowTargets(
             final MetalDevice device,
             final ProgramSet programSet
     ) {
         PackDirectives directives = programSet.getPackDirectives();
         PackShadowDirectives shadow = directives.getShadowDirectives();
-        if (!shadow.isShadowEnabled().orElse(true)
-                || new ProgramFallbackResolver(programSet).resolveNullable(ProgramId.ShadowSolid) == null) {
-            return null;
-        }
-
         int targetCount = programSet.getPack().hasFeature(FeatureFlags.HIGHER_SHADOWCOLOR)
                 ? PackShadowDirectives.MAX_SHADOW_COLOR_BUFFERS_IRIS
                 : PackShadowDirectives.MAX_SHADOW_COLOR_BUFFERS_OF;

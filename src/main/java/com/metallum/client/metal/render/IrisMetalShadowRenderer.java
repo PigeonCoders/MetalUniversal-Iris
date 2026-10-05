@@ -115,6 +115,13 @@ final class IrisMetalShadowRenderer {
             this.pipeline.receipts().recordEvent("shadow.pass.no-targets");
             return false;
         }
+        if (!this.pipeline.resources().hasShadowProgram()) {
+            // The dimension's program set has no shadow caster program (e.g.
+            // BSL nether with MULTICOLORED_BLOCKLIGHT off). Targets still
+            // exist so samplers resolve; the caller clears them to fully lit.
+            this.pipeline.receipts().recordEvent("shadow.pass.no-program");
+            return false;
+        }
         PackShadowDirectives directives = this.pipeline.shadowDirectives();
         if (!directives.shouldRenderTerrain()) {
             this.pipeline.receipts().recordEvent("shadow.pass.no-terrain");

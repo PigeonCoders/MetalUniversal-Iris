@@ -550,9 +550,9 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         ensurePrepared();
         IrisMetalShadowTargets shadows = resources.shadowTargets();
         if (shadows == null) {
-            // Shadows are disabled (pack directive or the in-game SHADOW
-            // toggle) or the pack has no shadow solid program. The stage must
-            // be a no-op, not an exception, even if shadowcomp programs exist.
+            // Defensive: production generations always own shadow targets.
+            // The stage must be a no-op, not an exception, even if shadowcomp
+            // programs exist.
             return;
         }
         if (!castersRendered) {
