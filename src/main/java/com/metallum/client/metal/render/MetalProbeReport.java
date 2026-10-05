@@ -97,6 +97,9 @@ public final class MetalProbeReport {
         content.append("  blendOverrides=").append(MetalDebugSwitches.BLEND_OVERRIDES).append(System.lineSeparator());
         content.append("  dumpBindings=").append(MetalDebugSwitches.DUMP_BINDINGS).append(System.lineSeparator());
         content.append("  logUniforms=").append(MetalDebugSwitches.LOG_UNIFORMS).append(System.lineSeparator());
+        content.append("  flipTrace=").append(MetalDebugSwitches.FLIP_TRACE).append(System.lineSeparator());
+        content.append("  viewGain=").append(IrisMetalDebugViewBlitter.formatGain(MetalDebugSwitches.VIEW_GAIN))
+                .append(System.lineSeparator());
         content.append("  frameHistory=").append(MetalDebugSwitches.FRAME_HISTORY).append(System.lineSeparator());
         content.append("  stageStrip=").append(System.getProperty("metallum.iris.debug.stageStrip", ""))
                 .append(System.lineSeparator());
@@ -147,6 +150,10 @@ public final class MetalProbeReport {
         addIf(active, "blendOverrides", MetalDebugSwitches.BLEND_OVERRIDES);
         addIf(active, "dumpBindings", MetalDebugSwitches.DUMP_BINDINGS);
         addIf(active, "logUniforms", MetalDebugSwitches.LOG_UNIFORMS);
+        addIf(active, "flipTrace", MetalDebugSwitches.FLIP_TRACE);
+        if (MetalDebugSwitches.VIEW_GAIN != 1.0f) {
+            active.add("viewGain=" + IrisMetalDebugViewBlitter.formatGain(MetalDebugSwitches.VIEW_GAIN));
+        }
         addIf(active, "frameHistory=off", !MetalDebugSwitches.FRAME_HISTORY);
         if (!MetalDebugSwitches.VIEW.isEmpty()) {
             active.add("view=" + MetalDebugSwitches.VIEW);

@@ -1,6 +1,8 @@
 package com.metallum.client.metal.render;
 
 import com.mojang.blaze3d.GpuFormat;
+import com.mojang.blaze3d.textures.GpuTexture;
+import com.metallum.client.metal.render.mtl.MTLPixelFormat;
 import net.irisshaders.iris.Iris;
 import net.irisshaders.iris.gl.shader.StandardMacros;
 import net.irisshaders.iris.shaderpack.ShaderPack;
@@ -82,5 +84,29 @@ final class IrisMetalDebugViewBlitTest {
                     formats[1].blockSize(), GpuFormat.RGBA8_UNORM.blockSize()),
                     "colortex1 is the historical same-size pair");
         }
+    }
+
+    /**
+     * Round-4 R16F write-chain review, pinned native-free: MakeUp's
+     * {@code gaux3} color target must (a) be created with render-attachment
+     * usage like every other target, and (b) lower to Metal's
+     * {@code MTLPixelFormat.r16Float} (25) exactly. Either one wrong would
+     * silently drop the composite attachment write and leave the exposure
+     * history zero.
+     */
+    @Test
+    void r16fTargetIsRenderableAndLowersToR16Float() {
+        assertTrue(
+                (IrisMetalPingPongTargets.TEXTURE_USAGE & GpuTexture.USAGE_RENDER_ATTACHMENT) != 0,
+                "color ping-pong targets must carry USAGE_RENDER_ATTACHMENT"
+        );
+        assertTrue(
+                (IrisMetalPingPongTargets.TEXTURE_USAGE & GpuTexture.USAGE_TEXTURE_BINDING) != 0,
+                "color ping-pong targets must be sampleable"
+        );
+        assertEquals(25L, MTLPixelFormat.R16Float.value,
+                "MTLPixelFormat.r16Float raw value must be 25");
+        assertEquals(MTLPixelFormat.R16Float, MTLPixelFormat.from(GpuFormat.R16_FLOAT),
+                "GpuFormat.R16_FLOAT must lower to MTLPixelFormat.r16Float");
     }
 }

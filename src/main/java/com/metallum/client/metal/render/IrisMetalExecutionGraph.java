@@ -208,6 +208,10 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
     private boolean warnedDebugViewBlitter;
     /** View strings already receipted into the probe file, one line each. */
     private final Set<String> recordedDebugViewTargets = new HashSet<>();
+    /** Flip/side receipts already written to the probe (content-deduped). */
+    private final Set<String> recordedFlipReceipts = new LinkedHashSet<>();
+    /** Frames begun this generation; labels the canonicalization receipts. */
+    private int frameNumber;
     private @Nullable MetalDevice preparedDevice;
     private @Nullable IrisMetalDebugViewBlitter debugViewBlitter;
     private @Nullable GpuFormat debugViewBlitterFormat;
@@ -828,6 +832,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         }
         copyDebugView(resources, colors, targets, mainColor);
         targets.resetMipmaps();
+        BitSet canonicalized = new BitSet(colors.targetCount());
         for (int target = state.nextSetBit(0); target >= 0; target = state.nextSetBit(target + 1)) {
             MetalGpuTexture source = colors.readTexture(target);
             MetalGpuTexture destination = colors.mainTexture(target);
@@ -836,7 +841,12 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                         source, destination, 0, 0, 0, 0, 0,
                         colors.width(target), colors.height(target)
                 );
+                canonicalized.set(target);
             }
+        }
+        if (MetalDebugSwitches.FLIP_TRACE) {
+            recordFlipReceipt("flip canon frame=" + this.frameNumber
+                    + " bits=" + formatBits(canonicalized));
         }
     }
 
@@ -946,10 +956,12 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         }
         blitter.blit(source, mainColor, width, height);
         // Receipt for the probe file: distinguishes "the overlay really drew"
-        // from a black debug view that carries no information.
+        // from a black debug view that carries no information. The gain shows
+        // the multiplier baked into the blit shader.
         String view = MetalDebugSwitches.VIEW;
         if (this.recordedDebugViewTargets.add(view)) {
-            MetalProbeReport.record("debug view target=" + view + " blitter=ok");
+            MetalProbeReport.record("debug view target=" + view + " blitter=ok gain="
+                    + IrisMetalDebugViewBlitter.formatGain(blitter.gain()));
         }
     }
 
@@ -974,7 +986,9 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             this.debugViewBlitter = null;
         }
         try {
-            this.debugViewBlitter = new IrisMetalDebugViewBlitter(device, generation, destinationFormat);
+            this.debugViewBlitter = new IrisMetalDebugViewBlitter(
+                    device, generation, destinationFormat, MetalDebugSwitches.VIEW_GAIN
+            );
             this.debugViewBlitterFormat = destinationFormat;
             this.debugViewBlitterDevice = device;
             return this.debugViewBlitter;
@@ -1092,6 +1106,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                 continue;
             }
             resources.renderTargets().colorTargets().restore(plan.readsFromAlt());
+            recordRasterFlipReceipt(stage, plan, resources.renderTargets().colorTargets());
             executeRaster(plan, rasterPipelines.get(plan), resources, null);
             resources.renderTargets().colorTargets().restore(plan.stateAfter());
             state = plan.stateAfter();
@@ -1099,6 +1114,65 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             zeroBloom(plan, resources);
             stripTile(plan, resources);
         }
+    }
+
+    /**
+     * Flip/side receipt for the MakeUp black-screen bisection. Called right
+     * after {@code restore(plan.readsFromAlt())}, so the sides read here are the
+     * ones the pass actually uses: composite reports colortex6's read/write
+     * side, final reports colortex6/colortex1's read side. Deduplicated by
+     * content and capped by {@link #recordFlipReceipt}.
+     */
+    private void recordRasterFlipReceipt(
+            final Stage stage,
+            final RasterPlan plan,
+            final IrisMetalPingPongTargets colors
+    ) {
+        if (!MetalDebugSwitches.FLIP_TRACE) {
+            return;
+        }
+        if (stage == Stage.COMPOSITE && plan.name().startsWith("composite") && colors.targetCount() > 6) {
+            recordFlipReceipt("flip " + plan.name()
+                    + " t6 read=" + flipSide(colors, 6, false)
+                    + " write=" + flipSide(colors, 6, true));
+        } else if (stage == Stage.FINAL && colors.targetCount() > 6) {
+            recordFlipReceipt("flip " + plan.name()
+                    + " t6 read=" + flipSide(colors, 6, false)
+                    + " t1 read=" + flipSide(colors, 1, false));
+        }
+    }
+
+    private static String flipSide(
+            final IrisMetalPingPongTargets colors,
+            final int target,
+            final boolean write
+    ) {
+        MetalGpuTexture texture = write ? colors.writeTexture(target) : colors.readTexture(target);
+        return texture == colors.mainTexture(target) ? "main" : "alt";
+    }
+
+    /** One content-deduplicated, capped probe line per distinct flip receipt. */
+    private void recordFlipReceipt(final String line) {
+        if (this.recordedFlipReceipts.size() >= FLIP_RECEIPT_LIMIT) {
+            return;
+        }
+        if (this.recordedFlipReceipts.add(line)) {
+            MetalProbeReport.record(line);
+        }
+    }
+
+    /** Cap on distinct flip receipt lines, so a shifting flip state cannot flood the probe. */
+    private static final int FLIP_RECEIPT_LIMIT = 20;
+
+    private static String formatBits(final BitSet bits) {
+        StringBuilder text = new StringBuilder("[");
+        for (int index = bits.nextSetBit(0); index >= 0; index = bits.nextSetBit(index + 1)) {
+            if (text.length() > 1) {
+                text.append(", ");
+            }
+            text.append(index);
+        }
+        return text.append(']').toString();
     }
 
     /**
@@ -1627,6 +1701,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         ensureOpen();
         Objects.requireNonNull(resources, "resources");
         Objects.requireNonNull(fogColor, "fogColor");
+        this.frameNumber++;
         canonicalizeHistory(resources);
         state.clear();
         shadowState.clear();
@@ -1660,6 +1735,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             return;
         }
         IrisMetalPingPongTargets colors = resources.renderTargets().colorTargets();
+        BitSet canonicalized = new BitSet(colors.targetCount());
         for (int target = state.nextSetBit(0); target >= 0; target = state.nextSetBit(target + 1)) {
             MetalGpuTexture source = colors.readTexture(target, state);
             MetalGpuTexture destination = colors.mainTexture(target);
@@ -1668,7 +1744,12 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                         source, destination, 0, 0, 0, 0, 0,
                         colors.width(target), colors.height(target)
                 );
+                canonicalized.set(target);
             }
+        }
+        if (MetalDebugSwitches.FLIP_TRACE) {
+            recordFlipReceipt("flip canon frame=" + this.frameNumber
+                    + " bits=" + formatBits(canonicalized));
         }
     }
 

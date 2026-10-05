@@ -14,6 +14,15 @@ public final class MetalDebugSwitches {
     public static final boolean SKIP_DEFERRED = Boolean.getBoolean("metallum.iris.debug.skipDeferred");
     public static final boolean SKIP_POST = Boolean.getBoolean("metallum.iris.debug.skipPost");
     public static final String VIEW = System.getProperty("metallum.iris.debug.view", "").trim();
+    /**
+     * Debug-view brightness multiplier ({@code -Dmetallum.iris.debug.viewGain=<float>}),
+     * baked as a literal into the sampled debug-view blit so an almost-black
+     * target (MakeUp's {@code gaux3} exposure history) becomes readable. Only
+     * finite positive values are accepted; default 1 (byte-identical shader).
+     */
+    public static final float VIEW_GAIN = parseViewGain(
+            System.getProperty("metallum.iris.debug.viewGain", "1").trim()
+    );
     public static final String SKIP_PASS = System.getProperty("metallum.iris.debug.skipPass", "").trim();
     public static final boolean NO_SHADOW_MATRICES = Boolean.getBoolean("metallum.iris.debug.noShadowMatrices");
     public static final boolean ZERO_VL = Boolean.getBoolean("metallum.iris.debug.zeroVl");
@@ -124,6 +133,18 @@ public final class MetalDebugSwitches {
      * viewWidth/viewHeight). {@code -Dmetallum.iris.debug.logUniforms}.
      */
     public static final boolean LOG_UNIFORMS = Boolean.getBoolean("metallum.iris.debug.logUniforms");
+    /**
+     * Flip/side receipts into {@link MetalProbeReport}: composite's colortex6
+     * read/write side, final's colortex6/colortex1 read side, and the
+     * end-of-frame canonicalization bits ({@code 6} missing there is the red
+     * flag for MakeUp's dead exposure history). Content-deduplicated and capped
+     * so it cannot flood the probe. Enabled by its own
+     * {@code -Dmetallum.iris.debug.flipTrace} or automatically by any probe
+     * session flag (view/dumpBindings/logUniforms) so the evidence rides along
+     * with the existing diagnostics.
+     */
+    public static final boolean FLIP_TRACE = Boolean.getBoolean("metallum.iris.debug.flipTrace")
+            || DUMP_BINDINGS || LOG_UNIFORMS || !VIEW.isEmpty();
     public static final List<StripEntry> STAGE_STRIP = parseStageStrip(
             System.getProperty("metallum.iris.debug.stageStrip", "").trim()
     );
@@ -138,7 +159,7 @@ public final class MetalDebugSwitches {
             || !STAGE_STRIP.isEmpty() || NO_VANILLA_SKY || NO_VANILLA_CLOUDS
             || NO_CLOUDS_HARD || MAGENTA_CLEAR || !SHADOW_PASS || NO_SHADOWS
             || !SHADOW_CULLING.isEmpty() || !SHADOW_DEPTH_FIX || BLEND_OVERRIDES
-            || !SIZE_BUFFER || DUMP_BINDINGS || LOG_UNIFORMS;
+            || !SIZE_BUFFER || DUMP_BINDINGS || LOG_UNIFORMS || FLIP_TRACE;
 
     /** One {@code stageStrip} entry: a pass name plus the target index to tile. */
     public record StripEntry(String passName, int targetIndex) {
@@ -161,6 +182,16 @@ public final class MetalDebugSwitches {
             }
         }
         return Set.copyOf(names);
+    }
+
+    /** Finite positive gain only; anything else (unset, NaN, 0, negative) stays 1. */
+    private static float parseViewGain(final String raw) {
+        try {
+            float gain = Float.parseFloat(raw);
+            return Float.isFinite(gain) && gain > 0.0f ? gain : 1.0f;
+        } catch (NumberFormatException malformed) {
+            return 1.0f;
+        }
     }
 
     private static List<StripEntry> parseStageStrip(final String raw) {
@@ -190,12 +221,12 @@ public final class MetalDebugSwitches {
 
     static {
         if (PROBES_ACTIVE) {
-            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: build={} skipDeferred={} skipPost={} view={} skipPass={} noShadowMatrices={} zeroVl={} zeroBloom={} stageStrip={} noVanillaSky={} noVanillaClouds={} noCloudsHard={} magentaClear={} shadowPass={} noShadows={} shadowCulling={} shadowDepthFix={} blendOverrides={} sizeBuffer={} dumpBindings={} logUniforms={}",
-                    BUILD_TAG, SKIP_DEFERRED, SKIP_POST, VIEW, SKIP_PASS, NO_SHADOW_MATRICES, ZERO_VL, ZERO_BLOOM,
+            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: build={} skipDeferred={} skipPost={} view={} viewGain={} skipPass={} noShadowMatrices={} zeroVl={} zeroBloom={} stageStrip={} noVanillaSky={} noVanillaClouds={} noCloudsHard={} magentaClear={} shadowPass={} noShadows={} shadowCulling={} shadowDepthFix={} blendOverrides={} sizeBuffer={} dumpBindings={} logUniforms={} flipTrace={}",
+                    BUILD_TAG, SKIP_DEFERRED, SKIP_POST, VIEW, VIEW_GAIN, SKIP_PASS, NO_SHADOW_MATRICES, ZERO_VL, ZERO_BLOOM,
                     System.getProperty("metallum.iris.debug.stageStrip", ""),
                     NO_VANILLA_SKY, NO_VANILLA_CLOUDS, NO_CLOUDS_HARD, MAGENTA_CLEAR,
                     SHADOW_PASS, NO_SHADOWS, SHADOW_CULLING, SHADOW_DEPTH_FIX, BLEND_OVERRIDES, SIZE_BUFFER,
-                    DUMP_BINDINGS, LOG_UNIFORMS);
+                    DUMP_BINDINGS, LOG_UNIFORMS, FLIP_TRACE);
         }
     }
 }

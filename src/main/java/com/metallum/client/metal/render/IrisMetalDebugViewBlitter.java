@@ -63,30 +63,40 @@ final class IrisMetalDebugViewBlitter implements AutoCloseable {
             layout(location = 0) out vec4 iris_fragColor;
 
             void main() {
-                iris_fragColor = vec4(texture(metallum_debug_view, texCoord).rgb, 1.0);
+                iris_fragColor = vec4(texture(metallum_debug_view, texCoord).rgb * __VIEW_GAIN__, 1.0);
             }
             """;
 
     private final MetalDevice device;
     private final MetalGpuSampler sampler;
     private final RenderPipeline pipeline;
+    private final float gain;
     private boolean closed;
 
     IrisMetalDebugViewBlitter(
             final MetalDevice device,
             final int generation,
-            final GpuFormat destinationFormat
+            final GpuFormat destinationFormat,
+            final float gain
     ) {
         this.device = Objects.requireNonNull(device, "device");
+        this.gain = gain > 0.0f && Float.isFinite(gain) ? gain : 1.0f;
         String base = "iris/gen" + generation + "/debug_view";
         Identifier vertexId = Identifier.fromNamespaceAndPath("metallum", base + "_v");
         Identifier fragmentId = Identifier.fromNamespaceAndPath("metallum", base + "_f");
+        // The gain is baked into the fragment source instead of a uniform: the
+        // blit pipeline has no uniform block and the value is fixed for the
+        // process, so a literal is the only dependency-free option.
+        // Float.toString may emit an uppercase exponent ("1.0E-5"); keep the
+        // GLSL literal lowercase.
+        String gainLiteral = Float.toString(this.gain).replace('E', 'e');
+        String fragmentSource = FRAGMENT_SOURCE.replace("__VIEW_GAIN__", gainLiteral);
         ShaderSource source = (identifier, type) -> {
             if (identifier.equals(vertexId) && type == ShaderType.VERTEX) {
                 return VERTEX_SOURCE;
             }
             if (identifier.equals(fragmentId) && type == ShaderType.FRAGMENT) {
-                return FRAGMENT_SOURCE;
+                return fragmentSource;
             }
             throw new IllegalStateException(
                     "Unexpected fallback shader lookup while creating Iris debug-view blit: "
@@ -154,6 +164,19 @@ final class IrisMetalDebugViewBlitter implements AutoCloseable {
         } finally {
             encoder.submitRenderPass();
         }
+    }
+
+    /** Brightness multiplier baked into the fragment shader. */
+    float gain() {
+        return this.gain;
+    }
+
+    /** Readable gain for probe receipts: {@code 50} rather than {@code 50.0}. */
+    static String formatGain(final float gain) {
+        if (Float.isFinite(gain) && gain == Math.floor(gain) && Math.abs(gain) < 1.0e15f) {
+            return Long.toString((long) gain);
+        }
+        return Float.toString(gain);
     }
 
     /**
