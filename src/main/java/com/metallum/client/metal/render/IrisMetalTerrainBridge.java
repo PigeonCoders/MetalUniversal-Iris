@@ -246,7 +246,7 @@ public final class IrisMetalTerrainBridge {
                     shadowTargets.depthSampler(depthIndex, comparison)
             );
         }
-        int shadowColorTarget = shadowColorIndex(name);
+        int shadowColorTarget = IrisMetalRenderTargets.shadowColorIndex(name);
         if (shadowColorTarget >= 0) {
             return new MetalRenderPass.TextureViewAndSampler(
                     shadowTargets.colorView(shadowColorTarget, context.pipeline().shadowReadSnapshot()),
@@ -254,20 +254,6 @@ public final class IrisMetalTerrainBridge {
             );
         }
         return null;
-    }
-
-    private static int shadowColorIndex(final String name) {
-        if (name.equals("shadowcolor")) {
-            return 0;
-        }
-        if (!name.startsWith("shadowcolor") || name.startsWith("shadowcolorimg")) {
-            return -1;
-        }
-        try {
-            return Integer.parseInt(name.substring("shadowcolor".length()));
-        } catch (NumberFormatException ignored) {
-            return -1;
-        }
     }
 
     /** Records the first custom-texture hit per (kind, sampler) so a probe run can confirm the override. */

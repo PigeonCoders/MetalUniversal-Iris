@@ -1807,7 +1807,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                         shadows.depthSampler(shadowDepth, comparison)
                 );
             } else {
-                int shadowColor = name.equals("shadowcolor") ? 0 : parseSuffix(name, "shadowcolor");
+                int shadowColor = IrisMetalRenderTargets.shadowColorIndex(name);
                 if (shadowColor >= 0 && shadowColor < shadowTargetCount()) {
                     standard = new MetalRenderPass.TextureViewAndSampler(
                             shadows.colorView(shadowColor, shadowState), shadows.colorSampler(shadowColor)

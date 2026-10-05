@@ -806,7 +806,7 @@ public final class IrisMetalWorldBridge {
                     shadowTargets.depthSampler(shadowDepthIndex, comparison)
             );
         }
-        int shadowColorTarget = shadowColorIndex(name);
+        int shadowColorTarget = IrisMetalRenderTargets.shadowColorIndex(name);
         if (shadowColorTarget >= 0) {
             return new MetalRenderPass.TextureViewAndSampler(
                     shadowTargets.colorView(shadowColorTarget, context.pipeline().shadowReadSnapshot()),
@@ -869,19 +869,6 @@ public final class IrisMetalWorldBridge {
         return key == ShaderKey.SKY_BASIC
                 || key == ShaderKey.SKY_BASIC_COLOR
                 || key == ShaderKey.SKY_TEXTURED;
-    }
-
-    private static int shadowColorIndex(final String name) {        if (name.equals("shadowcolor")) {
-            return 0;
-        }
-        if (!name.startsWith("shadowcolor") || name.startsWith("shadowcolorimg")) {
-            return -1;
-        }
-        try {
-            return Integer.parseInt(name.substring("shadowcolor".length()));
-        } catch (NumberFormatException ignored) {
-            return -1;
-        }
     }
 
     private static @Nullable WorldContext currentContext() {

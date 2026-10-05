@@ -66,4 +66,31 @@ final class IrisMetalRenderTargetsTest {
         assertEquals(-1, IrisMetalRenderTargets.renderTargetIndex("noisetex"));
         assertEquals(-1, IrisMetalRenderTargets.renderTargetIndex(""));
     }
+
+    /**
+     * P1-1: the three former copies (world bridge, terrain bridge, execution
+     * graph) of the shadowcolor parser now share this one. The explicit name
+     * is target 0, {@code shadowcolorN} is N (callers bounds-check N against
+     * the generation's target count), and {@code shadowcolorimg} / malformed
+     * suffixes / other prefixes are misses.
+     */
+    @Test
+    void shadowColorNamesResolveToTheirIndex() {
+        assertEquals(0, IrisMetalRenderTargets.shadowColorIndex("shadowcolor"));
+        assertEquals(1, IrisMetalRenderTargets.shadowColorIndex("shadowcolor1"));
+        assertEquals(7, IrisMetalRenderTargets.shadowColorIndex("shadowcolor7"));
+        // Out-of-range indices still parse; the caller rejects them against
+        // the actual shadowcolor target count.
+        assertEquals(99, IrisMetalRenderTargets.shadowColorIndex("shadowcolor99"));
+        // The compute-style image name and malformed suffixes are misses.
+        assertEquals(-1, IrisMetalRenderTargets.shadowColorIndex("shadowcolorimg"));
+        assertEquals(-1, IrisMetalRenderTargets.shadowColorIndex("shadowcolorimg0"));
+        assertEquals(-1, IrisMetalRenderTargets.shadowColorIndex("shadowcolorx"));
+        assertEquals(-1, IrisMetalRenderTargets.shadowColorIndex("shadowcolor1x"));
+        // Negative and spaced suffixes parse-fail to the same miss sentinel.
+        assertEquals(-1, IrisMetalRenderTargets.shadowColorIndex("shadowcolor-1"));
+        assertEquals(-1, IrisMetalRenderTargets.shadowColorIndex("shadowcolor "));
+        assertEquals(-1, IrisMetalRenderTargets.shadowColorIndex("colortex1"));
+        assertEquals(-1, IrisMetalRenderTargets.shadowColorIndex(""));
+    }
 }

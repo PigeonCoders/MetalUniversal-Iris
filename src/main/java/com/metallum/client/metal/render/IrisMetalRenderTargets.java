@@ -200,6 +200,28 @@ final class IrisMetalRenderTargets implements AutoCloseable {
         return PackRenderTargetDirectives.LEGACY_RENDER_TARGETS.indexOf(name);
     }
 
+    /**
+     * Resolves a pack sampler name to its logical shadowcolor index: the
+     * explicit {@code shadowcolor} is 0, {@code shadowcolorN} is N, and
+     * anything else ({@code shadowcolorimg}, a non-numeric suffix, a
+     * different prefix) is {@code -1}. Callers bounds-check the result against
+     * the generation's shadowcolor target count. Shared by the world/terrain
+     * bridges and the execution graph so all three agree on the mapping.
+     */
+    static int shadowColorIndex(final String name) {
+        if (name.equals("shadowcolor")) {
+            return 0;
+        }
+        if (!name.startsWith("shadowcolor") || name.startsWith("shadowcolorimg")) {
+            return -1;
+        }
+        try {
+            return Integer.parseInt(name.substring("shadowcolor".length()));
+        } catch (NumberFormatException ignored) {
+            return -1;
+        }
+    }
+
     private void createDepthTextures(final int newWidth, final int newHeight) {
         if (newWidth <= 0 || newHeight <= 0) {
             throw new IllegalArgumentException("Target extent must be positive: " + newWidth + "x" + newHeight);

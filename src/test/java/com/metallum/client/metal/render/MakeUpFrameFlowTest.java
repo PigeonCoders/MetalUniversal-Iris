@@ -13,7 +13,6 @@ import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
-import java.util.BitSet;
 import java.util.List;
 import java.util.Map;
 
@@ -34,10 +33,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * and only saturated sky/sun pixels survive — the reported "nearly black
  * screen, sky flashing on camera movement" symptom.
  *
- * <p>This test runs the graph's real plans (no Metal device) through a symbolic
- * two-frame ping-pong simulation that mirrors {@code executeStage},
- * {@code executeFinal}'s end-of-frame canonicalization and the frame-start
- * history canonicalization, and pins:
+ * <p>This test runs the graph's real plans (no Metal device) through
+ * {@link FrameFlowSimulator}, the shared two-frame ping-pong simulation, and
+ * pins:
  * <ul>
  *   <li>{@code prepare} is planned with {@code DRAWBUFFERS:17} (colortex1 +
  *       gaux4);</li>
@@ -96,77 +94,20 @@ final class MakeUpFrameFlowTest {
                         Arrays.toString(composite.drawBuffers()),
                         label + ": composite draw buffers");
 
-                String[][] side = new String[targetCount][2]; // [target][0=main, 1=alt]
-                BitSet flipped = new BitSet();
-                String frame1CompositeRead = null;
-                String frame1CompositeWrite = null;
-                String frame2CompositeRead = null;
-                String frame2FinalExposure = null;
-                String frame2FinalScene = null;
+                // World draws land on the current read side of colortex1 before
+                // the graph pass that follows them.
+                FrameFlowSimulator flow = FrameFlowSimulator.simulate(passes, targetCount, List.of(
+                        new FrameFlowSimulator.WorldWrite("deferred", 1, "gbuffers"),
+                        new FrameFlowSimulator.WorldWrite("composite", 1, "translucent")
+                ));
 
-                for (int frame = 1; frame <= 2; frame++) {
-                    // beginFrame: canonicalize the previous frame's read side
-                    // into main, then reset the per-frame flip state.
-                    for (int t = flipped.nextSetBit(0); t >= 0; t = flipped.nextSetBit(t + 1)) {
-                        side[t][0] = side[t][1];
-                    }
-                    flipped.clear();
-                    if (frame == 1) {
-                        for (int t = 0; t < targetCount; t++) {
-                            side[t][0] = "clear";
-                            side[t][1] = "clear";
-                        }
-                    }
+                String frame2CompositeRead = flow.read(2, "composite", 6);
+                String frame2FinalExposure = flow.read(2, "final", 6);
+                String frame2FinalScene = flow.read(2, "final", 1);
 
-                    for (IrisMetalExecutionGraph.PlannedPass pass : passes) {
-                        int[] buffers = pass.drawBuffers();
-                        BitSet reads = pass.readsFromAlt();
-                        if (pass.name().equals("deferred")) {
-                            // World gbuffer draws target readView(1) before deferred.
-                            side[1][flipped.get(1) ? 1 : 0] = "f" + frame + ":gbuffers";
-                        }
-                        if (pass.name().equals("composite")) {
-                            // Translucent world draws target readView(1) before composite.
-                            side[1][flipped.get(1) ? 1 : 0] = "f" + frame + ":translucent";
-                        }
-                        if (pass.name().equals("composite")) {
-                            String read = side[6][reads.get(6) ? 1 : 0];
-                            if (frame == 1) {
-                                frame1CompositeRead = read;
-                            } else {
-                                frame2CompositeRead = read;
-                            }
-                        }
-                        if (pass.stage().equals("FINAL")) {
-                            // The final pass renders to the main target (override color);
-                            // it reads with its snapshot but writes no colortex.
-                            if (frame == 2) {
-                                frame2FinalExposure = side[6][reads.get(6) ? 1 : 0];
-                                frame2FinalScene = side[1][reads.get(1) ? 1 : 0];
-                            }
-                            flipped.clear();
-                            flipped.or(pass.stateAfter());
-                            continue;
-                        }
-                        for (int t : buffers) {
-                            int writeSide = reads.get(t) ? 0 : 1;
-                            side[t][writeSide] = "f" + frame + ":" + pass.name();
-                            if (frame == 1 && pass.name().equals("composite") && t == 6) {
-                                frame1CompositeWrite = side[t][writeSide];
-                            }
-                        }
-                        flipped.clear();
-                        flipped.or(pass.stateAfter());
-                    }
-                    // executeFinal: canonicalize every flipped target read -> main.
-                    for (int t = flipped.nextSetBit(0); t >= 0; t = flipped.nextSetBit(t + 1)) {
-                        side[t][0] = side[t][1];
-                    }
-                }
-
-                assertEquals("clear", frame1CompositeRead,
+                assertEquals("clear", flow.read(1, "composite", 6),
                         label + ": frame 1 composite must read the cleared gaux3 history");
-                assertEquals("f1:composite", frame1CompositeWrite,
+                assertEquals("f1:composite", flow.write(1, "composite", 6),
                         label + ": frame 1 composite must write the new exposure to gaux3");
                 assertEquals("f1:composite", frame2CompositeRead,
                         label + ": frame 2 composite must read frame 1's exposure, not the cleared side"
@@ -175,7 +116,7 @@ final class MakeUpFrameFlowTest {
                         label + ": final must read the same-frame composite exposure");
                 assertEquals("f2:composite2", frame2FinalScene,
                         label + ": final must read the same-frame composite2 scene output");
-                assertTrue(flipped.get(6),
+                assertTrue(flow.endState(2).get(6),
                         label + ": the end-of-frame state must mark gaux3 so the history"
                                 + " canonicalization covers it");
                 System.out.println("[makeup-frame-flow] " + label
