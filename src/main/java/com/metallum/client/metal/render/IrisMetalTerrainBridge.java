@@ -196,6 +196,11 @@ public final class IrisMetalTerrainBridge {
         if ("noisetex".equals(name)) {
             return context.pipeline().resources().noiseTexture().binding();
         }
+        if (IrisMetalPbrDefaults.isPbrSampler(name)) {
+            // Upstream level samplers bind the neutral PBR defaults when no
+            // _n/_s texture was loaded (Sildur's nMap, Unbound labPBR).
+            return context.pipeline().resources().pbrDefaults().binding(name);
+        }
         IrisMetalRenderTargets renderTargets = context.pipeline().resources().renderTargets();
         GpuTextureView depthView = switch (name) {
             case "depthtex0" -> renderTargets.mainDepthView();

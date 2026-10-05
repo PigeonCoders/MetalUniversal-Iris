@@ -36,6 +36,7 @@ final class IrisMetalWorldResources implements AutoCloseable {
     private final IrisMetalCustomTextures customTextures;
     private final IrisMetalNoiseTexture noiseTexture;
     private final IrisMetalWhitePixel whitePixel;
+    private final IrisMetalPbrDefaults pbrDefaults;
     @Nullable
     private final IrisMetalComputeResources computeResources;
     private boolean closed;
@@ -123,6 +124,7 @@ final class IrisMetalWorldResources implements AutoCloseable {
         IrisMetalCustomTextures newCustomTextures = null;
         IrisMetalNoiseTexture newNoiseTexture = null;
         IrisMetalWhitePixel newWhitePixel = null;
+        IrisMetalPbrDefaults newPbrDefaults = null;
         IrisMetalComputeResources newComputeResources = null;
         try {
             newTargets = new IrisMetalRenderTargets(
@@ -132,13 +134,14 @@ final class IrisMetalWorldResources implements AutoCloseable {
             newCustomTextures.prewarmAll();
             newNoiseTexture = new IrisMetalNoiseTexture(device, noiseResolution, customNoise);
             newWhitePixel = new IrisMetalWhitePixel(device);
+            newPbrDefaults = new IrisMetalPbrDefaults(device);
             if (computePack != null) {
                 newComputeResources = new IrisMetalComputeResources(device, computePack, width, height);
             }
         } catch (RuntimeException | Error failure) {
             closePartial(
                     newTargets, newShadowTargets, newCustomTextures,
-                    newNoiseTexture, newWhitePixel, newComputeResources
+                    newNoiseTexture, newWhitePixel, newPbrDefaults, newComputeResources
             );
             throw failure;
         }
@@ -147,6 +150,7 @@ final class IrisMetalWorldResources implements AutoCloseable {
         this.customTextures = newCustomTextures;
         this.noiseTexture = newNoiseTexture;
         this.whitePixel = newWhitePixel;
+        this.pbrDefaults = newPbrDefaults;
         this.computeResources = newComputeResources;
     }
 
@@ -176,6 +180,11 @@ final class IrisMetalWorldResources implements AutoCloseable {
     IrisMetalWhitePixel whitePixel() {
         ensureOpen();
         return this.whitePixel;
+    }
+
+    IrisMetalPbrDefaults pbrDefaults() {
+        ensureOpen();
+        return this.pbrDefaults;
     }
 
     @Nullable
@@ -217,6 +226,7 @@ final class IrisMetalWorldResources implements AutoCloseable {
             final @Nullable IrisMetalCustomTextures customTextures,
             final @Nullable IrisMetalNoiseTexture noiseTexture,
             final @Nullable IrisMetalWhitePixel whitePixel,
+            final @Nullable IrisMetalPbrDefaults pbrDefaults,
             final @Nullable IrisMetalComputeResources computeResources
     ) {
         if (noiseTexture != null) {
@@ -224,6 +234,9 @@ final class IrisMetalWorldResources implements AutoCloseable {
         }
         if (whitePixel != null) {
             whitePixel.close();
+        }
+        if (pbrDefaults != null) {
+            pbrDefaults.close();
         }
         if (customTextures != null) {
             customTextures.close();
@@ -257,6 +270,7 @@ final class IrisMetalWorldResources implements AutoCloseable {
                 this.customTextures,
                 this.noiseTexture,
                 this.whitePixel,
+                this.pbrDefaults,
                 this.computeResources
         );
     }
