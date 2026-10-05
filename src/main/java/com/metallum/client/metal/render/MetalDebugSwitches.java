@@ -96,6 +96,17 @@ public final class MetalDebugSwitches {
     public static final boolean SIZE_BUFFER = !"off".equalsIgnoreCase(
             System.getProperty("metallum.iris.sizeBuffer", "on").trim()
     );
+    /**
+     * Frame-boundary history canonicalization: moves each target's previous
+     * frame read side into its main texture before the per-frame flip reset,
+     * so cross-frame readers (MakeUp's {@code gaux3} auto-exposure history,
+     * TAA history) always see the last write even when the final pass was
+     * skipped. {@code -Dmetallum.iris.frameHistory=off} restores the old
+     * behavior (canonicalization only in {@code executeFinal}).
+     */
+    public static final boolean FRAME_HISTORY = !"off".equalsIgnoreCase(
+            System.getProperty("metallum.iris.frameHistory", "on").trim()
+    );
     /** Logs the sampler keys of the first non-terrain world pass once per process. */
     public static final boolean LOG_SAMPLERS = Boolean.getBoolean("metallum.iris.worldPass.logSamplers");
     public static final List<StripEntry> STAGE_STRIP = parseStageStrip(

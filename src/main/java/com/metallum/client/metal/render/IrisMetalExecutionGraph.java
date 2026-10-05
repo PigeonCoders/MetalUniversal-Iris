@@ -1472,10 +1472,69 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         return shadowComputes.size() + "/" + computePlans.get(Stage.SHADOW_COMPOSITE).size();
     }
 
+    /**
+     * The planned raster passes in execution order (setup/begin/prepare/
+     * deferred/composite), then the final pass under stage {@code "FINAL"}.
+     * Package-private so the native-free frame-flow tests can pin each pass's
+     * draw buffers and ping-pong read sides without a Metal device.
+     */
+    List<PlannedPass> plannedPasses() {
+        ensureOpen();
+        List<PlannedPass> result = new ArrayList<>();
+        for (Stage stage : new Stage[]{
+                Stage.SETUP, Stage.BEGIN, Stage.PREPARE, Stage.DEFERRED, Stage.COMPOSITE
+        }) {
+            for (RasterPlan plan : rasterPlans.get(stage)) {
+                result.add(new PlannedPass(
+                        stage.name(), plan.name(), plan.drawBuffers(),
+                        plan.readsFromAlt(), plan.stateAfter()
+                ));
+            }
+        }
+        if (finalPlan != null) {
+            result.add(new PlannedPass(
+                    "FINAL", finalPlan.name(), finalPlan.drawBuffers(),
+                    finalPlan.readsFromAlt(), finalPlan.stateAfter()
+            ));
+        }
+        return result;
+    }
+
+    /** One planned raster pass, exposed for the native-free frame-flow tests. */
+    record PlannedPass(
+            String stage,
+            String name,
+            int[] drawBuffers,
+            BitSet readsFromAlt,
+            BitSet stateAfter
+    ) {
+        PlannedPass {
+            drawBuffers = drawBuffers.clone();
+            readsFromAlt = (BitSet) readsFromAlt.clone();
+            stateAfter = (BitSet) stateAfter.clone();
+        }
+
+        @Override
+        public int[] drawBuffers() {
+            return drawBuffers.clone();
+        }
+
+        @Override
+        public BitSet readsFromAlt() {
+            return (BitSet) readsFromAlt.clone();
+        }
+
+        @Override
+        public BitSet stateAfter() {
+            return (BitSet) stateAfter.clone();
+        }
+    }
+
     void beginFrame(final IrisMetalWorldResources resources, final Vector4fc fogColor) {
         ensureOpen();
         Objects.requireNonNull(resources, "resources");
         Objects.requireNonNull(fogColor, "fogColor");
+        canonicalizeHistory(resources);
         state.clear();
         shadowState.clear();
         resources.renderTargets().colorTargets().restore(state);
@@ -1487,6 +1546,36 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         resources.renderTargets().clearForFrame(activeEncoder(), fogColor);
         if (resources.computeResources() != null) {
             resources.computeResources().clearForFrame(activeEncoder());
+        }
+    }
+
+    /**
+     * Moves the previous frame's read side into each target's main texture
+     * before the per-frame flip reset, using the previous frame's end
+     * {@link #state} snapshot. {@link #executeFinal} performs the same
+     * canonicalization at the end of a normal frame; doing it at the frame
+     * boundary as well keeps cross-frame readers correct when the final pass
+     * is skipped (stage-strip/debug or an aborted frame). Without it the next
+     * frame's first reader samples the never-written main side: MakeUp's
+     * {@code composite} would read a zero {@code gaux3} exposure history every
+     * frame, collapse auto-exposure to {@code (1-k)*f}, and render black with
+     * only saturated sky/sun pixels surviving.
+     * {@code -Dmetallum.iris.frameHistory=off} restores the old behavior.
+     */
+    private void canonicalizeHistory(final IrisMetalWorldResources resources) {
+        if (!MetalDebugSwitches.FRAME_HISTORY) {
+            return;
+        }
+        IrisMetalPingPongTargets colors = resources.renderTargets().colorTargets();
+        for (int target = state.nextSetBit(0); target >= 0; target = state.nextSetBit(target + 1)) {
+            MetalGpuTexture source = colors.readTexture(target, state);
+            MetalGpuTexture destination = colors.mainTexture(target);
+            if (source != destination) {
+                activeEncoder().copyTextureToTexture(
+                        source, destination, 0, 0, 0, 0, 0,
+                        colors.width(target), colors.height(target)
+                );
+            }
         }
     }
 
