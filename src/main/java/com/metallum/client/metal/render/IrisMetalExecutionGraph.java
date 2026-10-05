@@ -63,6 +63,9 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             Pattern.DOTALL
     );
 
+    /** Dedupes the one-line probe for legacy sampler targets a generation does not own. */
+    private static final Set<String> REPORTED_MISSING_SAMPLER_TARGETS = new HashSet<>();
+
     enum Stage {
         SETUP(ProgramArrayId.Setup, TextureStage.SETUP, null),
         BEGIN(ProgramArrayId.Begin, TextureStage.BEGIN, "begin_pre"),
@@ -1524,14 +1527,34 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                 }
             }
         } else {
-            int color = parseSuffix(name, "colortex");
+            // The shared table also maps the legacy aliases (eg gaux3 ->
+            // colortex6, composite -> colortex3) that pre-colortex packs declare
+            // in composite/deferred/final programs; without it the strict
+            // binding below threw "missing required sampler 'gaux3'".
+            int color = IrisMetalRenderTargets.renderTargetIndex(name);
             if (color >= 0) {
                 if (color >= targets.colorTargets().targetCount()) {
-                    throw new IllegalStateException("Iris sampler target out of range: " + name);
+                    if (name.startsWith("colortex")) {
+                        // Explicit colortexN stays strict: an out-of-range
+                        // request is a pack/generation error, not an alias
+                        // drift.
+                        throw new IllegalStateException("Iris sampler target out of range: " + name);
+                    }
+                    // Legacy names can outrun a generation that owns fewer
+                    // targets; mirror the world bridge: bind the shared white
+                    // pixel so the draw stays alive without masking a valid
+                    // target, recorded once per name.
+                    if (REPORTED_MISSING_SAMPLER_TARGETS.add(name + ":" + color)) {
+                        MetalProbeReport.record("graph sampler fallback name=" + name
+                                + " target=" + color
+                                + " owned=" + targets.colorTargets().targetCount());
+                    }
+                    standard = resources.whitePixel().binding();
+                } else {
+                    standard = new MetalRenderPass.TextureViewAndSampler(
+                            targets.colorTargets().readView(color, readsFromAlt), targets.colorSampler(color)
+                    );
                 }
-                standard = new MetalRenderPass.TextureViewAndSampler(
-                        targets.colorTargets().readView(color, readsFromAlt), targets.colorSampler(color)
-                );
             } else {
                 int image = parseSuffix(name, "colorimg");
                 if (image >= 0) {

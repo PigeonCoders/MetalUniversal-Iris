@@ -13,6 +13,7 @@ import com.mojang.blaze3d.textures.GpuTextureView;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.irisshaders.iris.shaderpack.properties.PackDirectives;
+import net.irisshaders.iris.shaderpack.properties.PackRenderTargetDirectives;
 import net.irisshaders.iris.shaderpack.properties.PackRenderTargetDirectives.RenderTargetSettings;
 import org.joml.Vector4f;
 import org.joml.Vector4fc;
@@ -178,6 +179,25 @@ final class IrisMetalRenderTargets implements AutoCloseable {
             return new Vector4f(1.0F, 1.0F, 1.0F, 1.0F);
         }
         return new Vector4f(0.0F, 0.0F, 0.0F, 0.0F);
+    }
+
+    /**
+     * Resolves a pack sampler name to its logical colortex index. Accepts
+     * {@code colortexN} directly and Iris's legacy render-target aliases
+     * ({@code gcolor}..{@code gaux4}) through
+     * {@link PackRenderTargetDirectives#LEGACY_RENDER_TARGETS}, whose list
+     * position <em>is</em> the colortex index. Names outside both tables (and a
+     * {@code colortex} prefix followed by a non-number) return {@code -1}.
+     */
+    static int renderTargetIndex(final String name) {
+        if (name.startsWith("colortex")) {
+            try {
+                return Integer.parseInt(name.substring("colortex".length()));
+            } catch (NumberFormatException ignored) {
+                return -1;
+            }
+        }
+        return PackRenderTargetDirectives.LEGACY_RENDER_TARGETS.indexOf(name);
     }
 
     private void createDepthTextures(final int newWidth, final int newHeight) {

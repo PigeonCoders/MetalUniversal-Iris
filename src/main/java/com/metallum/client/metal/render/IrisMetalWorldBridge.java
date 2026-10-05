@@ -764,7 +764,7 @@ public final class IrisMetalWorldBridge {
                     renderTargets.depthSampler()
             );
         }
-        int colorIndex = renderTargetIndex(name);
+        int colorIndex = IrisMetalRenderTargets.renderTargetIndex(name);
         if (colorIndex >= 0) {
             if (colorIndex >= renderTargets.colorTargets().targetCount()) {
                 // Legacy names (eg gaux1 -> colortex4) can outrun a generation
@@ -877,18 +877,6 @@ public final class IrisMetalWorldBridge {
         } catch (NumberFormatException ignored) {
             return -1;
         }
-    }
-
-    private static int renderTargetIndex(final String name) {
-        if (name.startsWith("colortex")) {
-            try {
-                return Integer.parseInt(name.substring("colortex".length()));
-            } catch (NumberFormatException ignored) {
-                return -1;
-            }
-        }
-        return net.irisshaders.iris.shaderpack.properties.PackRenderTargetDirectives
-                .LEGACY_RENDER_TARGETS.indexOf(name);
     }
 
     private static @Nullable WorldContext currentContext() {
