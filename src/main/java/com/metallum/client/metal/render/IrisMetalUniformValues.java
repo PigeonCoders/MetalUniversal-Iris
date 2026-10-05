@@ -25,6 +25,7 @@ import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.client.renderer.texture.AbstractTexture;
 import net.minecraft.client.renderer.texture.TextureAtlas;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
@@ -38,6 +39,8 @@ import net.minecraft.world.entity.LightningBolt;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.LightLayer;
+import net.minecraft.world.level.material.FogType;
 import net.minecraft.world.phys.Vec3;
 import org.jspecify.annotations.Nullable;
 import org.joml.Matrix3f;
@@ -663,7 +666,11 @@ final class IrisMetalUniformValues implements AutoCloseable {
             float playerMood,
             float darknessLightFactor,
             float velocity,
-            Vector4f lightningBoltPosition
+            Vector4f lightningBoltPosition,
+            int isEyeInWater,
+            Vector2i eyeBrightness,
+            Vector3d eyePosition,
+            Vector3d relativeEyePosition
     ) {
     }
 
@@ -707,7 +714,8 @@ final class IrisMetalUniformValues implements AutoCloseable {
                 0.25f, 0.25f, 0.0f, 1.0f, 1.0f, 1.0f, 256.0f,
                 systemTime.frameTimeCounter(), 0, 0, systemTime.frameCounter(),
                 0, 192.0f, 0.0f, 0.0f, 0.0f, 0,
-                -1, new Vector2i(), -1, -1, 0, 0, false, false, 0.0f, 0.0f, 0.0f, new Vector4f()
+                -1, new Vector2i(), -1, -1, 0, 0, false, false, 0.0f, 0.0f, 0.0f, new Vector4f(),
+                0, new Vector2i(), new Vector3d(), new Vector3d()
         );
     }
 
@@ -796,6 +804,19 @@ final class IrisMetalUniformValues implements AutoCloseable {
         }
         int bedrockLevel = level == null ? 0 : level.dimensionType().minY();
 
+        // IrisExclusiveUniforms.eyePosition (pinned 20e226b line 80) and
+        // relativeEyePosition (line 82): the camera entity's interpolated eye
+        // position and the unshifted camera position minus it. Both are zero
+        // without a camera entity.
+        Vector3d eyePosition = new Vector3d();
+        if (cameraEntity != null) {
+            Vec3 eyes = cameraEntity.getEyePosition(tickDelta);
+            eyePosition.set(eyes.x, eyes.y, eyes.z);
+        }
+        Vector3d relativeEyePosition = new Vector3d(cameraPosition).sub(eyePosition);
+        int eyeInWater = eyeInWater(minecraft);
+        Vector2i eyeBrightness = sampleEyeBrightness(minecraft);
+
         // World-program uniforms whose upstream value sources live in Iris's
         // dynamic holder (CommonUniforms.addDynamicUniforms) or in a per-draw
         // attribute. The production custom-uniform graph carries most of the
@@ -883,7 +904,11 @@ final class IrisMetalUniformValues implements AutoCloseable {
                 playerMood,
                 darknessLightFactor,
                 velocity,
-                lightningBoltPosition
+                lightningBoltPosition,
+                eyeInWater,
+                eyeBrightness,
+                eyePosition,
+                relativeEyePosition
         );
     }
 
@@ -967,6 +992,50 @@ final class IrisMetalUniformValues implements AutoCloseable {
             return new Vector2i();
         }
         return new Vector2i(atlas.getTexture().getWidth(0), atlas.getTexture().getHeight(0));
+    }
+
+    /**
+     * Upstream {@code CommonUniforms.isEyeInWater()} (pinned 20e226b,
+     * {@code CommonUniforms.java:363-376}): the fluid the main camera is in,
+     * with lava reported as air for spectators. {@code Camera.getFluidInCamera}
+     * and {@code FogType} both exist unchanged in the 26.2 tree the pinned Iris
+     * release compiles against.
+     */
+    private static int eyeInWater(final Minecraft minecraft) {
+        Camera camera = minecraft.gameRenderer.mainCamera();
+        if (camera == null) {
+            return 0;
+        }
+        FogType submersionType = camera.getFluidInCamera();
+        boolean isSpectator = minecraft.player != null && minecraft.player.isSpectator();
+        if (submersionType == FogType.WATER) {
+            return 1;
+        } else if (!isSpectator && submersionType == FogType.LAVA) {
+            return 2;
+        } else if (submersionType == FogType.POWDER_SNOW) {
+            return 3;
+        }
+        return 0;
+    }
+
+    /**
+     * Upstream {@code CommonUniforms.getEyeBrightness()} (20e226b
+     * {@code CommonUniforms.java:295-307}): the block and sky light at the
+     * camera entity's eye block, each already scaled by 16. Zero without a
+     * camera entity or level.
+     */
+    private static Vector2i sampleEyeBrightness(final Minecraft minecraft) {
+        var cameraEntity = minecraft.getCameraEntity();
+        ClientLevel level = minecraft.level;
+        if (cameraEntity == null || level == null) {
+            return new Vector2i();
+        }
+        Vec3 feet = cameraEntity.position();
+        Vec3 eyes = new Vec3(feet.x, cameraEntity.getEyeY(), feet.z);
+        BlockPos eyeBlockPos = BlockPos.containing(eyes);
+        int blockLight = level.getBrightness(LightLayer.BLOCK, eyeBlockPos);
+        int skyLight = level.getBrightness(LightLayer.SKY, eyeBlockPos);
+        return new Vector2i(blockLight * 16, skyLight * 16);
     }
 
     /**
@@ -1160,7 +1229,10 @@ final class IrisMetalUniformValues implements AutoCloseable {
             // --- positions (exact) ---
             case "cameraPosition" -> putVec3(out, at, frame.cameraPosition());
             case "previousCameraPosition" -> putVec3(out, at, this.previousCameraPosition);
-            case "relativeEyePosition", "eyePosition" -> putVec3(out, at, 0.0f, 0.0f, 0.0f);
+            // IrisExclusiveUniforms.java:80/82: real eye position and the
+            // unshifted camera position minus it, not zero.
+            case "relativeEyePosition" -> putVec3(out, at, frame.relativeEyePosition());
+            case "eyePosition" -> putVec3(out, at, frame.eyePosition());
             case "sunPosition" -> putVec3(out, at, frame.sunPosition().x, frame.sunPosition().y, frame.sunPosition().z);
             case "moonPosition" -> putVec3(out, at, frame.moonPosition().x, frame.moonPosition().y, frame.moonPosition().z);
             case "shadowLightPosition" ->
@@ -1191,6 +1263,8 @@ final class IrisMetalUniformValues implements AutoCloseable {
             case "viewWidth" -> out.putFloat(at, frame.viewWidth());
             case "viewHeight" -> out.putFloat(at, frame.viewHeight());
             case "aspectRatio" -> out.putFloat(at, frame.viewWidth() / Math.max(1.0f, frame.viewHeight()));
+            // VanillaUniforms.java:14 (world programs): main render target size.
+            case "iris_ScreenSize" -> putVec2(out, at, frame.viewWidth(), frame.viewHeight());
             case "near" -> out.putFloat(at, NEAR_PLANE);
             case "far" -> out.putFloat(at, frame.far());
 
@@ -1204,9 +1278,17 @@ final class IrisMetalUniformValues implements AutoCloseable {
             // is the eased OptiFine celestial angle and is not this input.
             case "timeBrightness" -> out.putFloat(at, Math.max(0.0f,
                     (float) Math.sin(frame.worldTime() / 24000.0 * Math.PI * 2.0)));
-            case "eyeBrightness", "eyeBrightnessSmooth" -> putIVec2(out, at, 0, 240);
+            case "eyeBrightness" -> putIVec2(out, at, frame.eyeBrightness().x, frame.eyeBrightness().y);
+            // CommonUniforms.generalCommonUniforms (line 176) computes
+            // eyeBrightnessSmooth as a SmoothedVec2f seeded from getEyeBrightness.
+            // Reproducing the smoothing needs PackDirectives.eyeBrightnessHalfLife,
+            // which is not plumbed into this writer; the production custom-uniform
+            // graph supplies the true smoothed value, so the no-graph fallback
+            // writes the unsmoothed brightness.
+            case "eyeBrightnessSmooth" -> putIVec2(out, at, frame.eyeBrightness().x, frame.eyeBrightness().y);
             case "eyeAltitude" -> out.putFloat(at, (float) frame.cameraPosition().y);
-            case "isEyeInWater" -> out.putInt(at, 0);
+            // CommonUniforms.isEyeInWater (20e226b CommonUniforms.java:363-376).
+            case "isEyeInWater" -> out.putInt(at, frame.isEyeInWater());
             // TODO(M6.1.1): upstream HardcodedCustomUniforms.getShadowFade()
             // (20e226b L161-163) feeds CelestialUniforms.getSunAngle in degrees
             // into a 0..1-shaped expression; that looks dimensionally broken in
@@ -1235,6 +1317,9 @@ final class IrisMetalUniformValues implements AutoCloseable {
             // entity path goes through its own attribute in Iris; this is the
             // value prewarm and non-entity draws see (-1 by default).
             case "entityId" -> out.putInt(at, frame.currentRenderedEntity());
+            // CommonUniforms.addDynamicUniforms (CommonUniforms.java:96): the
+            // resource reload counter, state-only and safe to read per fill.
+            case "textureReloadCount" -> out.putInt(at, CapturedRenderingState.INSTANCE.getTextureReloadCount());
             // entityColor / blockEntityId / currentRenderedItemId: the ONCE
             // defaults generalCommonUniforms registers when no vertex
             // attribute or draw-time item id supplies them (CommonUniforms
@@ -1326,10 +1411,13 @@ final class IrisMetalUniformValues implements AutoCloseable {
             out.putInt(member.offset(), this.renderStageSource.getAsInt());
             return true;
         }
-        if ("iris_currentAlphaTest".equals(member.name())) {
+        // iris_currentAlphaTest and alphaTestRef are the same upstream supplier
+        // (IrisInternalUniforms.java:41/45, both float PER-draw); alphaTestRef is
+        // OptiFine compatibility and had no writer case before.
+        if ("iris_currentAlphaTest".equals(member.name()) || "alphaTestRef".equals(member.name())) {
             if (member.arrayCount() != 0 || !"float".equals(member.type())) {
                 throw new IllegalStateException(
-                        "Iris internal uniform 'iris_currentAlphaTest' must be float, got "
+                        "Iris internal uniform '" + member.name() + "' must be float, got "
                                 + member.type() + (member.arrayCount() == 0 ? "" : "[]")
                 );
             }
