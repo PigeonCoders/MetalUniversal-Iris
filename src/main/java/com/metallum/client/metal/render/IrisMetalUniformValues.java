@@ -73,7 +73,7 @@ import java.util.function.IntSupplier;
  * <p>Iris on GL feeds a shader pack through ~200 individually-registered
  * uniforms. B2-1 does not reproduce that: the translation lane collects every
  * loose uniform a pack's {@code gbuffers_terrain} declares into one std140
- * block (offsets computed by {@link MetalIrisShaderCompiler} and verified
+ * block (offsets computed by {@link MetalCrossShaderCompiler} and verified
  * against SPIR-V reflection by the offline gate), and this class writes values
  * into it by name.</p>
  *
@@ -291,7 +291,7 @@ final class IrisMetalUniformValues implements AutoCloseable {
 
     /**
      * Allocates and fills every registered block. Must run outside any encoder
-     * — see {@link IrisMetalPipelineOverrides#updateFrame()}.
+     * — see {@link MetalWorldRenderingPipeline#beginLevelRendering()}.
      */
     void prewarm(final MetalDevice device) {
         if (this.closed || this.blocks.isEmpty()) {

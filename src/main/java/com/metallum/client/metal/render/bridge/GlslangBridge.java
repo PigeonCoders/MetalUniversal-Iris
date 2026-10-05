@@ -580,11 +580,6 @@ public final class GlslangBridge {
             this.infoLog = infoLog;
         }
 
-        /** @return the glslang info log captured at the point of failure, or {@code null}. */
-        public String getInfoLog() {
-            return infoLog;
-        }
-
         private static String appendLog(String message, String infoLog) {
             if (infoLog == null || infoLog.isEmpty()) {
                 return message;

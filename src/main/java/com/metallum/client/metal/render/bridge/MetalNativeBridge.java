@@ -307,12 +307,9 @@ public final class MetalNativeBridge {
             MTLDeviceMaxMemoryAllocationSize = downcall(lookup, "metallum_MTLDevice_maxMemoryAllocationSize", FunctionDescriptor.of(LONG, ValueLayout.ADDRESS));
             MTLDeviceMakeCommandQueue = downcall(lookup, "metallum_MTLDevice_makeCommandQueue", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
             MTLCommandQueueMakeCommandBuffer = downcall(lookup, "metallum_MTLCommandQueue_makeCommandBuffer", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
-            MTLCommandBufferCommit = downcall(lookup, "metallum_MTLCommandBuffer_commit", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
             createSemaphore = downcall(lookup, "metallum_create_semaphore", FunctionDescriptor.of(ValueLayout.ADDRESS));
             MTLCommandBufferCommitWithSignal = downcall(lookup, "metallum_MTLCommandBuffer_commitWithSignal", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
             semaphoreWait = downcallWithoutCritical(lookup, "metallum_semaphore_wait", FunctionDescriptor.of(INT, ValueLayout.ADDRESS, LONG));
-            MTLCommandBufferIsCompleted = downcall(lookup, "metallum_MTLCommandBuffer_isCompleted", FunctionDescriptor.of(INT, ValueLayout.ADDRESS));
-            MTLCommandBufferWaitUntilCompleted = downcallWithoutCritical(lookup, "metallum_MTLCommandBuffer_waitUntilCompleted", FunctionDescriptor.of(INT, ValueLayout.ADDRESS, LONG));
             MTLCommandBufferPushDebugGroup = downcall(lookup, "metallum_MTLCommandBuffer_pushDebugGroup", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
             MTLCommandBufferPopDebugGroup = downcall(lookup, "metallum_MTLCommandBuffer_popDebugGroup", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
             MTLCommandBufferMakeBlitCommandEncoder = downcall(lookup, "metallum_MTLCommandBuffer_makeBlitCommandEncoder", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -394,28 +391,9 @@ public final class MetalNativeBridge {
             MTLRenderCommandEncoderSetCullMode = downcall(lookup, "metallum_MTLRenderCommandEncoder_setCullMode", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, LONG));
             MTLRenderCommandEncoderSetTriangleFillMode = downcall(lookup, "metallum_MTLRenderCommandEncoder_setTriangleFillMode", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, INT));
             MTLRenderCommandEncoderSetBuffer = downcall(lookup, "metallum_MTLRenderCommandEncoder_setBuffer", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS, LONG, LONG, INT));
-            MTLRenderCommandEncoderSetBufferOffset = downcall(lookup, "metallum_MTLRenderCommandEncoder_setBufferOffset", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, LONG, LONG, INT));
             MTLRenderCommandEncoderSetTexture = downcall(lookup, "metallum_MTLRenderCommandEncoder_setTexture", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS, LONG, INT));
             MTLRenderCommandEncoderSetTextureAndSampler = downcall(lookup, "metallum_MTLRenderCommandEncoder_setTextureAndSampler", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, LONG, INT));
             MTLRenderCommandEncoderSetScissorRect = downcall(lookup, "metallum_MTLRenderCommandEncoder_setScissorRect", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, LONG, LONG, LONG, LONG));
-            MTLRenderCommandEncoderClearDraw = downcall(
-                    lookup,
-                    "metallum_MTLRenderCommandEncoder_clearDraw",
-                    FunctionDescriptor.ofVoid(
-                            ValueLayout.ADDRESS,
-                            ValueLayout.ADDRESS,
-                            ValueLayout.ADDRESS,
-                            DOUBLE,
-                            DOUBLE,
-                            INT,
-                            FLOAT,
-                            FLOAT,
-                            FLOAT,
-                            FLOAT,
-                            INT,
-                            DOUBLE
-                    )
-            );
             MTLRenderCommandEncoderDrawPrimitives = downcall(lookup, "metallum_MTLRenderCommandEncoder_drawPrimitives", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, LONG, LONG, LONG, LONG, LONG));
             MTLRenderCommandEncoderDrawIndexedPrimitives = downcall(
                     lookup,
@@ -803,12 +781,9 @@ public final class MetalNativeBridge {
     private static final MethodHandle MTLDeviceMaxMemoryAllocationSize;
     private static final MethodHandle MTLDeviceMakeCommandQueue;
     private static final MethodHandle MTLCommandQueueMakeCommandBuffer;
-    private static final MethodHandle MTLCommandBufferCommit;
     private static final MethodHandle createSemaphore;
     private static final MethodHandle MTLCommandBufferCommitWithSignal;
     private static final MethodHandle semaphoreWait;
-    private static final MethodHandle MTLCommandBufferIsCompleted;
-    private static final MethodHandle MTLCommandBufferWaitUntilCompleted;
     private static final MethodHandle MTLCommandBufferPushDebugGroup;
     private static final MethodHandle MTLCommandBufferPopDebugGroup;
     private static final MethodHandle MTLCommandBufferMakeBlitCommandEncoder;
@@ -829,11 +804,9 @@ public final class MetalNativeBridge {
     private static final MethodHandle MTLRenderCommandEncoderSetCullMode;
     private static final MethodHandle MTLRenderCommandEncoderSetTriangleFillMode;
     private static final MethodHandle MTLRenderCommandEncoderSetBuffer;
-    private static final MethodHandle MTLRenderCommandEncoderSetBufferOffset;
     private static final MethodHandle MTLRenderCommandEncoderSetTexture;
     private static final MethodHandle MTLRenderCommandEncoderSetTextureAndSampler;
     private static final MethodHandle MTLRenderCommandEncoderSetScissorRect;
-    private static final MethodHandle MTLRenderCommandEncoderClearDraw;
     private static final MethodHandle MTLRenderCommandEncoderDrawPrimitives;
     private static final MethodHandle MTLRenderCommandEncoderDrawIndexedPrimitives;
     private static final MethodHandle MTLRenderCommandEncoderMultiDrawIndexed;
@@ -1035,14 +1008,6 @@ public final class MetalNativeBridge {
         }
     }
 
-    public static void MTLCommandBuffer_commit(final MemorySegment commandBuffer) {
-        try {
-            MTLCommandBufferCommit.invokeExact(segment(commandBuffer));
-        } catch (Throwable throwable) {
-            throw bridgeFailure("metallum_MTLCommandBuffer_commit", throwable);
-        }
-    }
-
     public static MemorySegment metallum_create_semaphore() {
         try {
             return (MemorySegment) createSemaphore.invokeExact();
@@ -1064,22 +1029,6 @@ public final class MetalNativeBridge {
             return (int) semaphoreWait.invokeExact(segment(semaphore), timeoutMs);
         } catch (Throwable throwable) {
             throw bridgeFailure("metallum_semaphore_wait", throwable);
-        }
-    }
-
-    public static int MTLCommandBuffer_isCompleted(final MemorySegment commandBuffer) {
-        try {
-            return (int) MTLCommandBufferIsCompleted.invokeExact(segment(commandBuffer));
-        } catch (Throwable throwable) {
-            throw bridgeFailure("metallum_MTLCommandBuffer_isCompleted", throwable);
-        }
-    }
-
-    public static int MTLCommandBuffer_waitUntilCompleted(final MemorySegment commandBuffer, final long timeoutMs) {
-        try {
-            return (int) MTLCommandBufferWaitUntilCompleted.invokeExact(segment(commandBuffer), timeoutMs);
-        } catch (Throwable throwable) {
-            throw bridgeFailure("metallum_MTLCommandBuffer_waitUntilCompleted", throwable);
         }
     }
 
@@ -1527,40 +1476,6 @@ public final class MetalNativeBridge {
         }
     }
 
-    public static void MTLRenderCommandEncoder_clearDraw(
-            final MemorySegment encoder,
-            final MemorySegment colorTexture,
-            final MemorySegment depthTexture,
-            final double viewportWidth,
-            final double viewportHeight,
-            final int clearColorEnabled,
-            final float clearColorRed,
-            final float clearColorGreen,
-            final float clearColorBlue,
-            final float clearColorAlpha,
-            final int clearDepthEnabled,
-            final double clearDepth
-    ) {
-        try {
-            MTLRenderCommandEncoderClearDraw.invokeExact(
-                    segment(encoder),
-                    segment(colorTexture),
-                    segment(depthTexture),
-                    viewportWidth,
-                    viewportHeight,
-                    clearColorEnabled,
-                    clearColorRed,
-                    clearColorGreen,
-                    clearColorBlue,
-                    clearColorAlpha,
-                    clearDepthEnabled,
-                    clearDepth
-            );
-        } catch (Throwable throwable) {
-            throw bridgeFailure("metallum_MTLRenderCommandEncoder_clearDraw", throwable);
-        }
-    }
-
     public static void MTLRenderCommandEncoder_setRenderPipelineState(final MemorySegment encoder, final MemorySegment pipeline) {
         try {
             MTLRenderCommandEncoderSetRenderPipelineState.invokeExact(segment(encoder), segment(pipeline));
@@ -1614,14 +1529,6 @@ public final class MetalNativeBridge {
             MTLRenderCommandEncoderSetBuffer.invokeExact(segment(encoder), segment(buffer), offset, index, stageMask);
         } catch (Throwable throwable) {
             throw bridgeFailure("metallum_MTLRenderCommandEncoder_setBuffer", throwable);
-        }
-    }
-
-    public static void MTLRenderCommandEncoder_setBufferOffset(final MemorySegment encoder, final long offset, final long index, final int stageMask) {
-        try {
-            MTLRenderCommandEncoderSetBufferOffset.invokeExact(segment(encoder), offset, index, stageMask);
-        } catch (Throwable throwable) {
-            throw bridgeFailure("metallum_MTLRenderCommandEncoder_setBufferOffset", throwable);
         }
     }
 

@@ -6,7 +6,6 @@ import net.fabricmc.api.Environment;
 import net.irisshaders.iris.Iris;
 import net.irisshaders.iris.pathways.HandRenderer;
 import net.irisshaders.iris.pipeline.WorldRenderingPhase;
-import net.irisshaders.iris.pipeline.WorldRenderingPipeline;
 import net.irisshaders.iris.pipeline.programs.ShaderKey;
 import net.irisshaders.iris.shadows.ShadowRenderingState;
 import net.minecraft.client.renderer.RenderPipelines;
@@ -204,19 +203,6 @@ public final class MetalIrisPipelines {
     }
 
     private MetalIrisPipelines() {
-    }
-
-    /**
-     * Resolves the shader key for a non-terrain world draw through the active
-     * Metal world pipeline, or {@code null} to keep vanilla rendering (no
-     * Metal Iris pipeline active, or a shadow pass is being rendered).
-     */
-    public static @Nullable ShaderKey getShaderKey(final RenderPipeline pipeline) {
-        MetalWorldRenderingPipeline active = activePipeline();
-        if (active == null) {
-            return null;
-        }
-        return getShaderKeyForPipeline(active, pipeline);
     }
 
     /** Integration-layer entry point: maps a vanilla pipeline to its Iris shader key. */
@@ -430,10 +416,5 @@ public final class MetalIrisPipelines {
         } catch (Throwable throwable) {
             return null;
         }
-    }
-
-    private static @Nullable MetalWorldRenderingPipeline activePipeline() {
-        WorldRenderingPipeline pipeline = Iris.getPipelineManager().getPipelineNullable();
-        return pipeline instanceof MetalWorldRenderingPipeline metal ? metal : null;
     }
 }

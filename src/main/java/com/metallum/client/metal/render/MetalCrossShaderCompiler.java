@@ -349,24 +349,13 @@ public final class MetalCrossShaderCompiler {
     }
 
     /**
-     * Cache of shaderpack programs that have been successfully dry-compiled to
-     * MSL, keyed by program name. Populated by
-     * {@link #tryCompileShaderpackMsl} and intended for retrieval by the
-     * (forthcoming) full Iris&rarr;Metal pipeline-binding step, which needs the
-     * compiled MSL sources and entry points to construct a
-     * {@link MetalCompiledRenderPipeline}.
-     */
-    private static final Map<String, ShaderpackMslResult> SHADERPACK_MSL_CACHE = new ConcurrentHashMap<>();
-
-    /**
      * Dry-compile an Iris shaderpack program through the full
      * glslang&#8594;SPIRV-Cross&#8594;MSL pipeline WITHOUT creating a
      * {@link MetalCompiledRenderPipeline} or requiring a {@link MetalDevice}.
      *
      * <p>This entry point validates that a shaderpack program's GLSL (already
      * patched and {@code #include}-expanded by Iris's {@code TransformPatcher})
-     * can be cross-compiled to MSL, and caches the resulting MSL sources for
-     * the subsequent pipeline-binding step. It is the natural progression from
+     * can be cross-compiled to MSL. It is the natural progression from
      * {@link #compileShaderpack}: same GLSL&#8594;MSL pipeline, but decoupled
      * from {@code MetalDevice} so it can be invoked from Iris
      * {@code ShaderCreator.link} interception before a Metal pipeline state
@@ -392,11 +381,7 @@ public final class MetalCrossShaderCompiler {
      *       dry-compile (the actual topology is not known here).</li>
      * </ul>
      *
-     * <p>On success the result is cached in {@link #SHADERPACK_MSL_CACHE} under
-     * {@code name} (overwriting any prior entry) so the pipeline-binding step
-     * can retrieve it without recompiling.
-     *
-     * @param name             logical program name (also the cache key).
+     * @param name             logical program name.
      * @param vertexGlsl       vertex GLSL source (must be non-null and declare
      *                         its own {@code #version}).
      * @param geometryGlsl     geometry GLSL source (nullable; ignored with a
@@ -409,7 +394,7 @@ public final class MetalCrossShaderCompiler {
      *                         its own {@code #version}).
      * @param defines          optional preprocessor defines forwarded to
      *                         glslang (may be {@code null}).
-     * @return the dry-compiled MSL result (also cached).
+     * @return the dry-compiled MSL result.
      * @throws ShaderCompileException if GLSL&#8594;SPIR-V or SPIR-V&#8594;MSL
      *                               fails; the exception message includes the
      *                               glslang info log.
@@ -425,7 +410,7 @@ public final class MetalCrossShaderCompiler {
     ) throws ShaderCompileException {
         return tryCompileShaderpackMsl(
                 name, vertexGlsl, geometryGlsl, tessControlGlsl, tessEvalGlsl,
-                fragmentGlsl, defines, null, true
+                fragmentGlsl, defines, null
         );
     }
 
@@ -435,9 +420,7 @@ public final class MetalCrossShaderCompiler {
      * path's {@code physicalInputNames} wiring ({@link #compileShaderpack}).
      *
      * <p>Used by tests to verify the entity attribute mapping without a Metal
-     * device. The result is <b>not</b> cached: the production dry-compile cache
-     * is keyed by name only, and mixing attribute-mapped and generic results
-     * under one key would make the cached entry depend on call order.</p>
+     * device.</p>
      *
      * @param name               program name (diagnostics only).
      * @param vertexGlsl         vertex GLSL source (non-null, declares {@code #version}).
@@ -456,7 +439,7 @@ public final class MetalCrossShaderCompiler {
             final @Nullable List<String> physicalInputNames
     ) throws ShaderCompileException {
         return tryCompileShaderpackMsl(
-                name, vertexGlsl, null, null, null, fragmentGlsl, defines, physicalInputNames, false
+                name, vertexGlsl, null, null, null, fragmentGlsl, defines, physicalInputNames
         );
     }
 
@@ -468,8 +451,7 @@ public final class MetalCrossShaderCompiler {
             final @Nullable String tessEvalGlsl,
             final @Nullable String fragmentGlsl,
             final @Nullable String defines,
-            final @Nullable List<String> physicalInputNames,
-            final boolean cacheResult
+            final @Nullable List<String> physicalInputNames
     ) throws ShaderCompileException {
         if (vertexGlsl == null || fragmentGlsl == null) {
             throw new ShaderCompileException(
@@ -527,30 +509,15 @@ public final class MetalCrossShaderCompiler {
                 name, vertexMsl.source(), fragmentMsl.source(), vertexEntryPoint, fragmentEntryPoint,
                 vertexMsl.sampledImageIndices(), fragmentMsl.sampledImageIndices()
         );
-        if (cacheResult) {
-            SHADERPACK_MSL_CACHE.put(name, result);
-        }
         return result;
-    }
-
-    /**
-     * Retrieves a previously dry-compiled shaderpack MSL result by program name,
-     * or {@code null} if {@code name} has not been dry-compiled (or was evicted).
-     * Intended for the forthcoming Iris&rarr;Metal pipeline-binding step.
-     *
-     * @param name the program name used as the cache key.
-     * @return the cached MSL result, or {@code null}.
-     */
-    public static @Nullable ShaderpackMslResult getCachedShaderpackMsl(final String name) {
-        return SHADERPACK_MSL_CACHE.get(name);
     }
 
     /**
      * Cache of shaderpack programs whose Metal render pipeline state object
      * ({@link MetalCompiledRenderPipeline}) has been successfully constructed,
      * keyed by program name. Populated by
-     * {@link #compileShaderpackPipeline} and intended for retrieval by the
-     * (forthcoming) Iris&rarr;Metal render dispatch step.
+     * {@link #compileShaderpackPipeline} and read back by
+     * {@link #getCachedShaderpackPipeline}.
      */
     private static final Map<String, MetalCompiledRenderPipeline> SHADERPACK_PIPELINE_CACHE = new ConcurrentHashMap<>();
 
@@ -643,17 +610,6 @@ public final class MetalCrossShaderCompiler {
     }
 
     /**
-     * Returns whether a Metal render pipeline has been constructed and cached
-     * for the given shaderpack program name.
-     *
-     * @param name the program name.
-     * @return {@code true} if a cached pipeline exists.
-     */
-    public static boolean hasCachedShaderpackPipeline(final String name) {
-        return SHADERPACK_PIPELINE_CACHE.containsKey(name);
-    }
-
-    /**
      * Retrieves a cached shaderpack Metal render pipeline by program name.
      * Intended for internal use by the Metal render dispatch path (within the
      * {@code com.metallum.client.metal.render} package).
@@ -670,8 +626,7 @@ public final class MetalCrossShaderCompiler {
      * compiled vertex/fragment MSL sources, their entry-point function names,
      * and the per-stage compact sampled-image index plans the runtime binding
      * path uses to match {@code [[texture(N)]]}/{@code [[sampler(N)]]}
-     * attributes. Cached in {@link #SHADERPACK_MSL_CACHE} for retrieval by the
-     * pipeline-binding step.
+     * attributes.
      */
     public record ShaderpackMslResult(
             String name,
