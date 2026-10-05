@@ -1366,6 +1366,18 @@ final class IrisMetalUniformValues implements AutoCloseable {
             // nothing supplies it Iris GL leaves the GLSL default. Write the
             // faithful 0, following the biome-flags precedent above.
             case "maxBlindnessDarkness" -> out.putFloat(at, 0.0f);
+            // MakeUp-UltraFast 9.5f defines ditherShift/taaOffset only inside its
+            // `#if AA_TYPE > 0` block in shaders.properties, but lib/dither.glsl
+            // declares `uniform float ditherShift;` under MC_VERSION >= 11300
+            // unconditionally whenever it is included, so AA-off links it with
+            // no supplier. (All taa_offset.glsl include sites happen to be
+            // AA-gated today, so AA-off does not declare taaOffset; its default
+            // keeps the option-gated pair symmetric.) Upstream Iris semantics
+            // for a declared uniform with no supplier is the GLSL default:
+            // write 0. The pack custom-uniform graph is consulted first, so an
+            // AA-enabled config still uses the pack's own expression.
+            case "ditherShift" -> out.putFloat(at, 0.0f);
+            case "taaOffset" -> putVec2(out, at, 0.0f, 0.0f);
 
             default -> reportUnsupported(out, member);
         }
@@ -1377,12 +1389,14 @@ final class IrisMetalUniformValues implements AutoCloseable {
      * relaxed constructor so unsupported names are recorded by
      * {@link #reportUnsupported} instead of thrown; {@link #unsupportedNames()}
      * then tells the gate which members a live writer would have rejected.
+     * The scratch buffer is returned so gates can assert the written bytes.
      */
-    void writeUniformForGate(final IrisMetalGlslLinker.UniformMember member) {
+    ByteBuffer writeUniformForGate(final IrisMetalGlslLinker.UniformMember member) {
         ByteBuffer scratch = ByteBuffer.allocate(
                 member.offset() + Math.max(1, member.byteSize())
         ).order(ByteOrder.nativeOrder());
         write(scratch, member, neutralFrame(), OptionalDouble.empty());
+        return scratch;
     }
 
     /** Names recorded as having no value source (relaxed writers only). */
