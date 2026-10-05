@@ -7,12 +7,17 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-/** Runtime diagnostic switches (all default off; no behavior change when unset). */
+/**
+ * Runtime diagnostic switches (all default off; no behavior change when
+ * unset). Enable-style flags accept a bare {@code -Dname} argument or
+ * {@code -Dname=true}; the {@code =off}/{@code =false} kill switches keep
+ * their own parsing.
+ */
 public final class MetalDebugSwitches {
     /** Identifies this probe build in device logs. */
     public static final String BUILD_TAG = "probe5";
-    public static final boolean SKIP_DEFERRED = Boolean.getBoolean("metallum.iris.debug.skipDeferred");
-    public static final boolean SKIP_POST = Boolean.getBoolean("metallum.iris.debug.skipPost");
+    public static final boolean SKIP_DEFERRED = enabledFlag("metallum.iris.debug.skipDeferred");
+    public static final boolean SKIP_POST = enabledFlag("metallum.iris.debug.skipPost");
     public static final String VIEW = System.getProperty("metallum.iris.debug.view", "").trim();
     /**
      * Debug-view brightness multiplier ({@code -Dmetallum.iris.debug.viewGain=<float>}),
@@ -24,13 +29,13 @@ public final class MetalDebugSwitches {
             System.getProperty("metallum.iris.debug.viewGain", "1").trim()
     );
     public static final String SKIP_PASS = System.getProperty("metallum.iris.debug.skipPass", "").trim();
-    public static final boolean NO_SHADOW_MATRICES = Boolean.getBoolean("metallum.iris.debug.noShadowMatrices");
-    public static final boolean ZERO_VL = Boolean.getBoolean("metallum.iris.debug.zeroVl");
-    public static final boolean ZERO_BLOOM = Boolean.getBoolean("metallum.iris.debug.zeroBloom");
-    public static final boolean NO_VANILLA_SKY = Boolean.getBoolean("metallum.iris.debug.noVanillaSky");
-    public static final boolean NO_VANILLA_CLOUDS = Boolean.getBoolean("metallum.iris.debug.noVanillaClouds");
-    public static final boolean NO_CLOUDS_HARD = Boolean.getBoolean("metallum.iris.debug.noCloudsHard");
-    public static final boolean MAGENTA_CLEAR = Boolean.getBoolean("metallum.iris.debug.magentaClear");
+    public static final boolean NO_SHADOW_MATRICES = enabledFlag("metallum.iris.debug.noShadowMatrices");
+    public static final boolean ZERO_VL = enabledFlag("metallum.iris.debug.zeroVl");
+    public static final boolean ZERO_BLOOM = enabledFlag("metallum.iris.debug.zeroBloom");
+    public static final boolean NO_VANILLA_SKY = enabledFlag("metallum.iris.debug.noVanillaSky");
+    public static final boolean NO_VANILLA_CLOUDS = enabledFlag("metallum.iris.debug.noVanillaClouds");
+    public static final boolean NO_CLOUDS_HARD = enabledFlag("metallum.iris.debug.noCloudsHard");
+    public static final boolean MAGENTA_CLEAR = enabledFlag("metallum.iris.debug.magentaClear");
     /**
      * Probe-only: logs every per-drawbuffer {@code blend.*} override that
      * {@code IrisMetalCompiledPrograms.colorTargets} folds into the Metal PSO
@@ -38,7 +43,7 @@ public final class MetalDebugSwitches {
      * mapping can be verified on device.
      * {@code -Dmetallum.iris.debug.blendOverrides}.
      */
-    public static final boolean BLEND_OVERRIDES = Boolean.getBoolean("metallum.iris.debug.blendOverrides");
+    public static final boolean BLEND_OVERRIDES = enabledFlag("metallum.iris.debug.blendOverrides");
     /**
      * Real terrain shadow-caster pass; on by default.
      * {@code -Dmetallum.iris.shadowPass=off} restores the old placeholder
@@ -53,7 +58,7 @@ public final class MetalDebugSwitches {
      * shadowcomp stage, leaving the cleared shadow maps for the main pass to
      * sample (i.e. no shadows at all). {@code -Dmetallum.iris.debug.noShadows}.
      */
-    public static final boolean NO_SHADOWS = Boolean.getBoolean("metallum.iris.debug.noShadows");
+    public static final boolean NO_SHADOWS = enabledFlag("metallum.iris.debug.noShadows");
     /**
      * Shadow culling override: {@code advanced}, {@code box} or {@code none}.
      * Empty (default) follows the pack's {@code shadow.culling} directive.
@@ -117,7 +122,7 @@ public final class MetalDebugSwitches {
             System.getProperty("metallum.iris.frameHistory", "on").trim()
     );
     /** Logs the sampler keys of the first non-terrain world pass once per process. */
-    public static final boolean LOG_SAMPLERS = Boolean.getBoolean("metallum.iris.worldPass.logSamplers");
+    public static final boolean LOG_SAMPLERS = enabledFlag("metallum.iris.worldPass.logSamplers");
     /**
      * H1 diagnosis: per compiled shaderpack program, dumps every SAMPLED_IMAGE
      * resource's per-stage compact indices together with the
@@ -126,13 +131,13 @@ public final class MetalDebugSwitches {
      * absent from that stage's MSL index set.
      * {@code -Dmetallum.iris.debug.dumpBindings}.
      */
-    public static final boolean DUMP_BINDINGS = Boolean.getBoolean("metallum.iris.debug.dumpBindings");
+    public static final boolean DUMP_BINDINGS = enabledFlag("metallum.iris.debug.dumpBindings");
     /**
      * H3 settling aid: once per second, logs the frame time inputs the Iris
      * uniform buffer is filled from (frameTime/frameTimeCounter/frameCounter/
      * viewWidth/viewHeight). {@code -Dmetallum.iris.debug.logUniforms}.
      */
-    public static final boolean LOG_UNIFORMS = Boolean.getBoolean("metallum.iris.debug.logUniforms");
+    public static final boolean LOG_UNIFORMS = enabledFlag("metallum.iris.debug.logUniforms");
     /**
      * Flip/side receipts into {@link MetalProbeReport}: composite's colortex6
      * read/write side, final's colortex6/colortex1 read side, and the
@@ -143,7 +148,7 @@ public final class MetalDebugSwitches {
      * session flag (view/dumpBindings/logUniforms) so the evidence rides along
      * with the existing diagnostics.
      */
-    public static final boolean FLIP_TRACE = Boolean.getBoolean("metallum.iris.debug.flipTrace")
+    public static final boolean FLIP_TRACE = enabledFlag("metallum.iris.debug.flipTrace")
             || DUMP_BINDINGS || LOG_UNIFORMS || !VIEW.isEmpty();
     public static final List<StripEntry> STAGE_STRIP = parseStageStrip(
             System.getProperty("metallum.iris.debug.stageStrip", "").trim()
@@ -182,6 +187,18 @@ public final class MetalDebugSwitches {
             }
         }
         return Set.copyOf(names);
+    }
+
+    /**
+     * Enabled-style switch: a bare {@code -Dname} (present with an empty value)
+     * and an explicit {@code -Dname=true} are both on; unset, {@code =false}
+     * and any other value are off. Use only for flags whose absence is the off
+     * state; the {@code =off}/{@code =false} kill switches keep their own
+     * parsers.
+     */
+    static boolean enabledFlag(final String name) {
+        String value = System.getProperty(name);
+        return value != null && (value.isEmpty() || Boolean.parseBoolean(value));
     }
 
     /** Finite positive gain only; anything else (unset, NaN, 0, negative) stays 1. */

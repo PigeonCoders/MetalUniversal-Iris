@@ -8,6 +8,7 @@ import kroppeb.stareval.function.FunctionReturn;
 import net.caffeinemc.mods.sodium.client.util.FogStorage;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
+import net.irisshaders.iris.Iris;
 import net.irisshaders.iris.api.v0.item.IrisItemLightProvider;
 import net.irisshaders.iris.uniforms.CapturedRenderingState;
 import net.irisshaders.iris.uniforms.CelestialUniforms;
@@ -15,6 +16,7 @@ import net.irisshaders.iris.uniforms.FrameUpdateNotifier;
 import net.irisshaders.iris.uniforms.SystemTimeUniforms;
 import net.irisshaders.iris.uniforms.custom.CustomUniforms;
 import net.irisshaders.iris.pipeline.programs.ShaderKey;
+import net.irisshaders.iris.shaderpack.DimensionId;
 import net.irisshaders.iris.shaderpack.materialmap.NamespacedId;
 import net.irisshaders.iris.shaderpack.materialmap.WorldRenderingSettings;
 import net.irisshaders.iris.shaderpack.properties.PackShadowDirectives;
@@ -723,7 +725,8 @@ final class IrisMetalUniformValues implements AutoCloseable {
             int isEyeInWater,
             Vector2i eyeBrightness,
             Vector3d eyePosition,
-            Vector3d relativeEyePosition
+            Vector3d relativeEyePosition,
+            boolean isNether
     ) {
     }
 
@@ -768,7 +771,7 @@ final class IrisMetalUniformValues implements AutoCloseable {
                 systemTime.frameTimeCounter(), 0, 0, systemTime.frameCounter(),
                 0, 192.0f, 0.0f, 0.0f, 0.0f, 0,
                 -1, new Vector2i(), -1, -1, 0, 0, false, false, 0.0f, 0.0f, 0.0f, new Vector4f(),
-                0, new Vector2i(), new Vector3d(), new Vector3d()
+                0, new Vector2i(), new Vector3d(), new Vector3d(), false
         );
     }
 
@@ -907,6 +910,12 @@ final class IrisMetalUniformValues implements AutoCloseable {
         // port's non-dynamic graph): camera travel since the previous sampled
         // frame, i.e. the same delta the CameraPositionTracker smooths on.
         float velocity = (float) cameraPosition.distance(this.previousCameraPosition);
+        // Sildur's Vibrant declares `uniform bool isNether;` with neither an
+        // Iris nor an OptiFine supplier (deferred.fsh:80 and its per-dimension
+        // variants). The faithful value is the current dimension; upstream's
+        // own dimension check is WorldTimeUniforms.java:33
+        // (`Iris.getCurrentDimension() == DimensionId.NETHER`).
+        boolean isNether = Iris.getCurrentDimension() == DimensionId.NETHER;
 
         return new Frame(
                 modelView,
@@ -961,7 +970,8 @@ final class IrisMetalUniformValues implements AutoCloseable {
                 eyeInWater,
                 eyeBrightness,
                 eyePosition,
-                relativeEyePosition
+                relativeEyePosition,
+                isNether
         );
     }
 
@@ -1389,6 +1399,14 @@ final class IrisMetalUniformValues implements AutoCloseable {
             // IrisExclusiveUniforms.java:58/65 PER_TICK booleans.
             case "isElytraFlying" -> out.putInt(at, frame.isElytraFlying() ? 1 : 0);
             case "heavyFog" -> out.putInt(at, frame.heavyFog() ? 1 : 0);
+            // Sildur's Vibrant 2.02 declares `uniform bool isNether;` in
+            // deferred.fsh:80 (and the per-dimension copies) but neither the
+            // pack nor upstream Iris/OptiFine registers a supplier; upstream
+            // GL leaves the GLSL default (false) in every dimension. The port
+            // supplies the faithful dimension answer instead: true in the
+            // Nether, matching upstream WorldTimeUniforms.java:33
+            // (`Iris.getCurrentDimension() == DimensionId.NETHER`).
+            case "isNether" -> out.putInt(at, frame.isNether() ? 1 : 0);
             // CommonUniforms.getPlayerMood (CommonUniforms.java:173) and
             // CapturedRenderingState.getDarknessLightFactor (line 149).
             case "playerMood" -> out.putFloat(at, frame.playerMood());
