@@ -334,6 +334,7 @@ final class IrisMetalUniformValues implements AutoCloseable {
             return;
         }
         Frame frame = sampleFrame();
+        logFrameUniforms(frame);
         for (Block block : this.blocks) {
             if (block.buffer != null) {
                 upload(block, frame);
@@ -342,6 +343,32 @@ final class IrisMetalUniformValues implements AutoCloseable {
         this.previousModelView.set(frame.modelView());
         this.previousProjection.set(frame.projection());
         this.previousCameraPosition.set(frame.cameraPosition());
+    }
+
+    /** Last wall-clock nanosecond at which {@link #logFrameUniforms} printed. */
+    private static long lastUniformLogNanos;
+
+    /**
+     * {@code -Dmetallum.iris.debug.logUniforms}: once per second, logs the
+     * frame inputs the uniform block is filled from, so the H3 frame-time
+     * values can be settled from a release log without a debugger. Inert when
+     * the switch is unset.
+     */
+    private static void logFrameUniforms(final Frame frame) {
+        if (!MetalDebugSwitches.LOG_UNIFORMS) {
+            return;
+        }
+        long now = System.nanoTime();
+        if (now - lastUniformLogNanos < 1_000_000_000L) {
+            return;
+        }
+        lastUniformLogNanos = now;
+        Metallum.LOGGER.info(
+                "[metallum-iris][debug] uniforms frameTime={} frameTimeCounter={}"
+                        + " frameCounter={} viewWidth={} viewHeight={}",
+                frame.frameTime(), frame.frameTimeCounter(), frame.frameCounter(),
+                frame.viewWidth(), frame.viewHeight()
+        );
     }
 
     /** Current Iris-compatible frame counter for diagnostics and pass tracing. */

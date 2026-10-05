@@ -65,6 +65,20 @@ public final class MetalCrossShaderCompiler {
                     + "(?:(?:flat|smooth|noperspective|centroid|sample|invariant|precise)\\s+)*"
                     + "out\\s+(?:lowp\\s+|mediump\\s+|highp\\s+)?\\w+\\s+(\\w+)\\b"
     );
+    /**
+     * MSL sampled-texture argument attributes. With
+     * {@code MSL_ENABLE_DECORATION_BINDING}, SPIRV-Cross splits a combined
+     * image sampler into a {@code texture2d} argument ({@code [[texture(N)]]})
+     * and a separate {@code sampler} argument ({@code [[sampler(N)]]}), so the
+     * emitted indices are the ground truth for the H1 binding-mismatch
+     * instrumentation. Captures {@code (argumentName, index)}.
+     */
+    private static final Pattern MSL_TEXTURE_ATTRIBUTE = Pattern.compile(
+            "([A-Za-z_]\\w*)\\s*(?:\\[\\d+\\])?\\s*\\[\\[texture\\((\\d+)\\)\\]\\]"
+    );
+    private static final Pattern MSL_SAMPLER_ATTRIBUTE = Pattern.compile(
+            "([A-Za-z_]\\w*)\\s*(?:\\[\\d+\\])?\\s*\\[\\[sampler\\((\\d+)\\)\\]\\]"
+    );
 
     /**
      * 在 iOS 上，Amethyst 启动器捆绑的 libMoltenVK.dylib 内部静态链接了 SPIRV-Cross，
@@ -183,6 +197,9 @@ public final class MetalCrossShaderCompiler {
             String fragmentEntryPoint = extractEntryPoint(fragmentMsl.source(), FRAGMENT_ENTRY_PATTERN, "main0");
             List<MetalCompiledRenderPipeline.ResourceBinding> resources = buildResourceBindings(
                     layoutEntries, storageResources, vertexMsl, fragmentMsl, false
+            );
+            dumpSampledImageBindings(
+                    pipeline.getLocation().toString(), resources, vertexMsl, fragmentMsl
             );
             return new MetalCompiledRenderPipeline(
                     device,
@@ -311,6 +328,7 @@ public final class MetalCrossShaderCompiler {
         final List<MetalCompiledRenderPipeline.ResourceBinding> resources = buildResourceBindings(
                 reflectedEntries, storageResources, vertexMsl, fragmentMsl, true
         );
+        dumpSampledImageBindings(name, resources, vertexMsl, fragmentMsl);
 
         return new MetalCompiledRenderPipeline(
                 device,
@@ -1054,6 +1072,72 @@ public final class MetalCrossShaderCompiler {
             ));
         }
         return resources;
+    }
+
+    /**
+     * H1 diagnosis ({@code -Dmetallum.iris.debug.dumpBindings}): dumps every
+     * {@code SAMPLED_IMAGE} binding's per-stage compact indices and the
+     * {@code [[texture(N)]]}/{@code [[sampler(N)]]} indices actually present in
+     * the emitted MSL, then warns (never throws) when a stage whose mask has
+     * the resource active has an expected texture index absent from that
+     * stage's MSL index set. The check runs on the same MSL text the pipeline
+     * is built from, so a persistent mismatch here would mean the runtime
+     * binding table disagrees with SPIRV-Cross's decoration.
+     */
+    private static void dumpSampledImageBindings(
+            final String program,
+            final List<MetalCompiledRenderPipeline.ResourceBinding> resources,
+            final MslShader vertexMsl,
+            final MslShader fragmentMsl
+    ) {
+        if (!MetalDebugSwitches.DUMP_BINDINGS) {
+            return;
+        }
+        Map<String, Integer> vertexTextures = parseMslIndices(vertexMsl.source(), MSL_TEXTURE_ATTRIBUTE);
+        Map<String, Integer> fragmentTextures = parseMslIndices(fragmentMsl.source(), MSL_TEXTURE_ATTRIBUTE);
+        Metallum.LOGGER.info(
+                "[metallum-iris][bindings] {} vertexTextures={} vertexSamplers={}"
+                        + " fragmentTextures={} fragmentSamplers={}",
+                program,
+                vertexTextures, parseMslIndices(vertexMsl.source(), MSL_SAMPLER_ATTRIBUTE),
+                fragmentTextures, parseMslIndices(fragmentMsl.source(), MSL_SAMPLER_ATTRIBUTE)
+        );
+        for (MetalCompiledRenderPipeline.ResourceBinding resource : resources) {
+            if (resource.kind() != MetalCompiledRenderPipeline.ResourceKind.SAMPLED_IMAGE) {
+                continue;
+            }
+            int vertexIndex = resource.bindingIndexForStage(MetalCompiledRenderPipeline.STAGE_VERTEX);
+            int fragmentIndex = resource.bindingIndexForStage(MetalCompiledRenderPipeline.STAGE_FRAGMENT);
+            Metallum.LOGGER.info(
+                    "[metallum-iris][bindings] {} name={} stageMask={} vertexIndex={} fragmentIndex={}",
+                    program, resource.name(), resource.stageMask(), vertexIndex, fragmentIndex
+            );
+            if ((resource.stageMask() & MetalCompiledRenderPipeline.STAGE_VERTEX) != 0
+                    && !vertexTextures.containsValue(vertexIndex)) {
+                Metallum.LOGGER.warn(
+                        "[metallum-iris][bindings] {} '{}' vertex index {} absent from vertex"
+                                + " MSL [[texture(N)]] set {}",
+                        program, resource.name(), vertexIndex, vertexTextures.values()
+                );
+            }
+            if ((resource.stageMask() & MetalCompiledRenderPipeline.STAGE_FRAGMENT) != 0
+                    && !fragmentTextures.containsValue(fragmentIndex)) {
+                Metallum.LOGGER.warn(
+                        "[metallum-iris][bindings] {} '{}' fragment index {} absent from fragment"
+                                + " MSL [[texture(N)]] set {}",
+                        program, resource.name(), fragmentIndex, fragmentTextures.values()
+                );
+            }
+        }
+    }
+
+    private static Map<String, Integer> parseMslIndices(final String msl, final Pattern pattern) {
+        Map<String, Integer> indices = new LinkedHashMap<>();
+        Matcher matcher = pattern.matcher(msl);
+        while (matcher.find()) {
+            indices.put(matcher.group(1), Integer.parseInt(matcher.group(2)));
+        }
+        return indices;
     }
 
     private static int stageMask(

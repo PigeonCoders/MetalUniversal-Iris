@@ -205,6 +205,11 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
     private boolean warnedZeroVl;
     private boolean warnedZeroBloom;
     private boolean warnedScaledFinalCopy;
+    private boolean warnedDebugViewBlitter;
+    private @Nullable MetalDevice preparedDevice;
+    private @Nullable IrisMetalDebugViewBlitter debugViewBlitter;
+    private @Nullable GpuFormat debugViewBlitterFormat;
+    private @Nullable MetalDevice debugViewBlitterDevice;
     private boolean prepared;
     private boolean closed;
 
@@ -438,6 +443,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         Objects.requireNonNull(device, "device");
         Objects.requireNonNull(resources, "resources");
         Objects.requireNonNull(uniformValues, "uniformValues");
+        this.preparedDevice = device;
         IrisMetalRenderTargets targets = resources.renderTargets();
         if (targets.colorTargets().targetCount() != targetCount) {
             throw new IllegalStateException("Execution graph target count changed within generation");
@@ -861,10 +867,16 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
     }
 
     /**
-     * Copies one of the pack color targets over the normal final output,
-     * selected via {@code metallum.iris.debug.view=colortexN} or
-     * {@code shadowcolorN} (shadow targets, copied at their resolution). Used
-     * only for on-device artifact bisection; a no-op when the switch is unset.
+     * Samples one of the pack color targets (or shadow targets) over the
+     * normal final output, selected via
+     * {@code metallum.iris.debug.view=colortexN} or {@code shadowcolorN}.
+     *
+     * <p>Always goes through {@link IrisMetalDebugViewBlitter}: a raw Metal
+     * texture blit cannot convert pixel formats, and copying MakeUp's R16F
+     * {@code gaux3} (2 bytes/pixel) into the wider main target triggered a GPU
+     * fault and froze the device. There is deliberately no raw-copy fallback;
+     * when the blitter cannot be built the frame is left untouched. Used only
+     * for on-device artifact bisection; a no-op when the switch is unset.
      */
     private void copyDebugView(
             final IrisMetalWorldResources resources,
@@ -883,9 +895,13 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             int size = Math.min(
                     shadows.resolution(), Math.min(targets.width(), targets.height())
             );
-            activeEncoder().copyTextureToTexture(
-                    shadows.colorTexture(shadowIndex, shadowReadSnapshot()), mainColor.texture(),
-                    0, 0, 0, 0, 0, size, size
+            // Shadow targets are RGBA16F (8 B/px) against the 4-byte main
+            // target: the same illegal-blit class as gaux3.
+            blitDebugView(
+                    mainColor,
+                    shadows.colorView(shadowIndex, shadowReadSnapshot()),
+                    size,
+                    size
             );
             return;
         }
@@ -900,10 +916,75 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             warnInvalidDebugView("colortexN (out of range)");
             return;
         }
-        activeEncoder().copyTextureToTexture(
-                colors.readTexture(index), mainColor.texture(), 0, 0, 0, 0, 0,
+        blitDebugView(
+                mainColor,
+                colors.readView(index, state),
                 Math.min(targets.width(), colors.width(index)),
                 Math.min(targets.height(), colors.height(index))
+        );
+    }
+
+    /**
+     * Sampled debug-view blit. The caller runs after the final pass has been
+     * submitted, so the blitter's own encoder is ordered after it on the
+     * device queue.
+     */
+    private void blitDebugView(
+            final GpuTextureView mainColor,
+            final GpuTextureView source,
+            final int width,
+            final int height
+    ) {
+        IrisMetalDebugViewBlitter blitter = debugViewBlitter(mainColor.texture().getFormat());
+        if (blitter == null) {
+            return;
+        }
+        blitter.blit(source, mainColor, width, height);
+    }
+
+    /**
+     * Lazily compiled sampled blit cached per device+destination format;
+     * {@code null} when no device was prepared or the blitter failed to build.
+     * A failed build is warned once and never falls back to a raw texture copy.
+     */
+    private @Nullable IrisMetalDebugViewBlitter debugViewBlitter(final GpuFormat destinationFormat) {
+        MetalDevice device = this.preparedDevice;
+        if (device == null) {
+            warnDebugViewBlitter("no prepared Metal device");
+            return null;
+        }
+        if (this.debugViewBlitter != null
+                && this.debugViewBlitterFormat == destinationFormat
+                && this.debugViewBlitterDevice == device) {
+            return this.debugViewBlitter;
+        }
+        if (this.debugViewBlitter != null) {
+            this.debugViewBlitter.close();
+            this.debugViewBlitter = null;
+        }
+        try {
+            this.debugViewBlitter = new IrisMetalDebugViewBlitter(device, generation, destinationFormat);
+            this.debugViewBlitterFormat = destinationFormat;
+            this.debugViewBlitterDevice = device;
+            return this.debugViewBlitter;
+        } catch (RuntimeException failure) {
+            this.debugViewBlitter = null;
+            this.debugViewBlitterFormat = null;
+            this.debugViewBlitterDevice = null;
+            warnDebugViewBlitter(failure.toString());
+            return null;
+        }
+    }
+
+    private void warnDebugViewBlitter(final String reason) {
+        if (this.warnedDebugViewBlitter) {
+            return;
+        }
+        this.warnedDebugViewBlitter = true;
+        Metallum.LOGGER.warn(
+                "[metallum-iris][debug] debug-view sampled blit unavailable ({});"
+                        + " leaving the frame untouched (no raw-copy fallback)",
+                reason
         );
     }
 
@@ -1976,5 +2057,12 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         shadowRasterPipelines.clear();
         finalPipeline = null;
         centerDepthSampler = null;
+        if (debugViewBlitter != null) {
+            debugViewBlitter.close();
+            debugViewBlitter = null;
+        }
+        debugViewBlitterFormat = null;
+        debugViewBlitterDevice = null;
+        preparedDevice = null;
     }
 }

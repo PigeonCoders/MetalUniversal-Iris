@@ -6,9 +6,12 @@ import net.irisshaders.iris.gl.uniform.UniformHolder;
 import net.irisshaders.iris.gl.uniform.UniformUpdateFrequency;
 import net.irisshaders.iris.pipeline.programs.ShaderKey;
 import net.irisshaders.iris.shaderpack.ShaderPack;
+import net.irisshaders.iris.shaderpack.loading.ProgramArrayId;
 import net.irisshaders.iris.shaderpack.materialmap.NamespacedId;
 import net.irisshaders.iris.shaderpack.programs.ProgramSet;
+import net.irisshaders.iris.shaderpack.programs.ProgramSource;
 import net.irisshaders.iris.shaderpack.properties.PackDirectives;
+import net.irisshaders.iris.shaderpack.texture.TextureStage;
 import net.irisshaders.iris.uniforms.BiomeUniforms;
 import net.irisshaders.iris.uniforms.CameraUniforms;
 import net.irisshaders.iris.uniforms.CelestialUniforms;
@@ -233,6 +236,21 @@ final class MakeUpUniformCoverageTest {
                             ),
                             IrisMetalUniformValues.usesMojangCoreTransforms(key)
                     );
+                }
+                // Step 4: the graph programs (composite + final) go through the
+                // same strict value-source dispatch at draw time; gate their
+                // uniform layouts too so an unhandled member cannot reach the
+                // per-frame upload instead of prewarm.
+                for (ProgramSource source : programs.getComposite(ProgramArrayId.Composite)) {
+                    if (source != null && source.isValid()) {
+                        audit.inspect(Optional.of(worldPrograms.composite(
+                                source, TextureStage.COMPOSITE_AND_FINAL
+                        )), false);
+                    }
+                }
+                IrisMetalGlslLinker.LinkedRasterProgram finalProgram = worldPrograms.finalProgram();
+                if (finalProgram != null) {
+                    audit.inspect(Optional.of(finalProgram), false);
                 }
             }
             return audit;

@@ -18,6 +18,7 @@ import java.nio.file.FileSystem;
 import java.nio.file.FileSystems;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -40,8 +41,36 @@ import java.util.regex.Pattern;
  * cannot resolve aborts the pass.
  */
 final class ShaderpackSamplerCoverage {
-    /** One linked program and its active/unresolved sampler names. */
-    record ProgramCoverage(String kind, String name, Set<String> active, Set<String> unresolved) {
+    /**
+     * A GLSL sampler declaration in the linked stage source. Mirrors
+     * {@code IrisMetalGlslLinker}'s uniform-statement + opaque-type split
+     * (which removes loose non-opaque uniforms), allowing an optional
+     * {@code layout(...)} qualifier and precision qualifiers:
+     * {@code [layout(...)] uniform [precision] samplerType name}.
+     */
+    private static final Pattern UNIFORM_SAMPLER = Pattern.compile(
+            "(?m)^[ \\t]*(?:layout\\s*\\([^)]*\\)\\s*)?uniform\\s+"
+                    + "(?:lowp\\s+|mediump\\s+|highp\\s+)?"
+                    + "(?:[iu]?sampler\\w*|texture\\w*)\\s+([A-Za-z_]\\w*)"
+    );
+
+    /**
+     * One linked program and its active/unresolved sampler names.
+     *
+     * <p>{@code vertexGlsl}/{@code fragmentGlsl} are the linked stage sources
+     * (sampler declarations + body), exposed so tests can feed
+     * {@link #declaredSamplers} / {@link #sampledNames} through
+     * {@link ShaderpackSamplerIndexPlan} exactly as the compiler's per-stage
+     * compact index assignment does.
+     */
+    record ProgramCoverage(
+            String kind,
+            String name,
+            Set<String> active,
+            Set<String> unresolved,
+            String vertexGlsl,
+            String fragmentGlsl
+    ) {
         ProgramCoverage {
             active = Set.copyOf(active);
             unresolved = Set.copyOf(unresolved);
@@ -173,7 +202,10 @@ final class ShaderpackSamplerCoverage {
                 unresolved.add(sampler.name());
             }
         }
-        coverage.add(new ProgramCoverage(kind, source.getName(), active, unresolved));
+        coverage.add(new ProgramCoverage(
+                kind, source.getName(), active, unresolved,
+                linked.vertexGlsl(), linked.fragmentGlsl()
+        ));
     }
 
     /**
@@ -259,12 +291,43 @@ final class ShaderpackSamplerCoverage {
     }
 
     /**
-     * Samplers actually sampled by the linked source. A declared sampler is
-     * active when the linked GLSL passes it as the first argument of a call
-     * ({@code texture2D(name, ...)}), which matches SPIRV-Cross reflection
-     * without the native library. Counting bare identifier occurrences instead
-     * would false-positive on function-locals that share a sampler name
-     * (Unbound's {@code ggx.glsl} has {@code float specular}).
+     * Sampler names declared by one shader stage's linked GLSL, in declaration
+     * order (de-duplicated). Feeds {@link ShaderpackSamplerIndexPlan}, which
+     * assigns the compact {@code [[sampler(N)]]} indices from declaration order.
+     */
+    static List<String> declaredSamplers(final String stageGlsl) {
+        Matcher matcher = UNIFORM_SAMPLER.matcher(stageGlsl);
+        List<String> names = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        while (matcher.find()) {
+            if (seen.add(matcher.group(1))) {
+                names.add(matcher.group(1));
+            }
+        }
+        return names;
+    }
+
+    /**
+     * Names actually sampled by one stage's linked GLSL (same call-based
+     * detection as {@link #usedSamplerNames}).
+     */
+    static Set<String> sampledNames(final String stageGlsl, final Collection<String> declared) {
+        Set<String> sampled = new LinkedHashSet<>();
+        for (String name : declared) {
+            Pattern use = Pattern.compile(
+                    "\\b[A-Za-z_]\\w*\\s*\\(\\s*" + Pattern.quote(name) + "\\b"
+            );
+            if (countMatches(stageGlsl, use) > 0) {
+                sampled.add(name);
+            }
+        }
+        return sampled;
+    }
+
+    /**
+     * Samplers sampled by the linked source, excluding their declarations. This
+     * mirrors the per-stage active set the shaderpack compiler derives from
+     * SPIRV-Cross reflection (which needs the native library).
      */
     private static Set<String> usedSamplerNames(final IrisMetalGlslLinker.LinkedRasterProgram linked) {
         List<String> declared = new ArrayList<>();
@@ -273,15 +336,8 @@ final class ShaderpackSamplerCoverage {
                 declared.add(sampler.name());
             }
         }
-        Set<String> used = new LinkedHashSet<>();
-        for (String name : declared) {
-            Pattern use = Pattern.compile(
-                    "\\b[A-Za-z_]\\w*\\s*\\(\\s*" + Pattern.quote(name) + "\\b"
-            );
-            if (countMatches(linked.vertexGlsl(), use) + countMatches(linked.fragmentGlsl(), use) > 0) {
-                used.add(name);
-            }
-        }
+        Set<String> used = new LinkedHashSet<>(sampledNames(linked.vertexGlsl(), declared));
+        used.addAll(sampledNames(linked.fragmentGlsl(), declared));
         return used;
     }
 
