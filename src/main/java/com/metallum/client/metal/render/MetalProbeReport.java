@@ -68,7 +68,12 @@ public final class MetalProbeReport {
         }
     }
 
-    private static void writeReport(final List<String> active) {
+    /**
+     * Rewrites the file as header + switches + every line recorded so far.
+     * Synchronized with {@link #record(String)} so a concurrent compile-time
+     * record cannot be truncated away between content building and the write.
+     */
+    private static synchronized void writeReport(final List<String> active) {
         StringBuilder content = new StringBuilder();
         content.append("build=").append(MetalDebugSwitches.BUILD_TAG).append(System.lineSeparator());
         content.append("timestamp=").append(Instant.now()).append(System.lineSeparator());
@@ -90,6 +95,9 @@ public final class MetalProbeReport {
         content.append("  noCloudsHard=").append(MetalDebugSwitches.NO_CLOUDS_HARD).append(System.lineSeparator());
         content.append("  magentaClear=").append(MetalDebugSwitches.MAGENTA_CLEAR).append(System.lineSeparator());
         content.append("  blendOverrides=").append(MetalDebugSwitches.BLEND_OVERRIDES).append(System.lineSeparator());
+        content.append("  dumpBindings=").append(MetalDebugSwitches.DUMP_BINDINGS).append(System.lineSeparator());
+        content.append("  logUniforms=").append(MetalDebugSwitches.LOG_UNIFORMS).append(System.lineSeparator());
+        content.append("  frameHistory=").append(MetalDebugSwitches.FRAME_HISTORY).append(System.lineSeparator());
         content.append("  stageStrip=").append(System.getProperty("metallum.iris.debug.stageStrip", ""))
                 .append(System.lineSeparator());
         if (!RECORDED_LINES.isEmpty()) {
@@ -137,6 +145,9 @@ public final class MetalProbeReport {
         addIf(active, "noCloudsHard", MetalDebugSwitches.NO_CLOUDS_HARD);
         addIf(active, "magentaClear", MetalDebugSwitches.MAGENTA_CLEAR);
         addIf(active, "blendOverrides", MetalDebugSwitches.BLEND_OVERRIDES);
+        addIf(active, "dumpBindings", MetalDebugSwitches.DUMP_BINDINGS);
+        addIf(active, "logUniforms", MetalDebugSwitches.LOG_UNIFORMS);
+        addIf(active, "frameHistory=off", !MetalDebugSwitches.FRAME_HISTORY);
         if (!MetalDebugSwitches.VIEW.isEmpty()) {
             active.add("view=" + MetalDebugSwitches.VIEW);
         }

@@ -351,8 +351,11 @@ final class IrisMetalUniformValues implements AutoCloseable {
     /**
      * {@code -Dmetallum.iris.debug.logUniforms}: once per second, logs the
      * frame inputs the uniform block is filled from, so the H3 frame-time
-     * values can be settled from a release log without a debugger. Inert when
-     * the switch is unset.
+     * values can be settled from a release log without a debugger. The same
+     * values are recorded into {@link MetalProbeReport} (the game's log file is
+     * not retrievable on the target device): first 3 lines, then one per
+     * minute, capped at {@link #UNIFORM_PROBE_LINE_LIMIT}. Inert when the
+     * switch is unset.
      */
     private static void logFrameUniforms(final Frame frame) {
         if (!MetalDebugSwitches.LOG_UNIFORMS) {
@@ -369,6 +372,29 @@ final class IrisMetalUniformValues implements AutoCloseable {
                 frame.frameTime(), frame.frameTimeCounter(), frame.frameCounter(),
                 frame.viewWidth(), frame.viewHeight()
         );
+        recordUniformsToProbe(frame, now);
+    }
+
+    /** Probe-file cap for the per-frame uniform log. */
+    private static final int UNIFORM_PROBE_LINE_LIMIT = 20;
+    private static int uniformProbeLines;
+    private static long lastUniformProbeNanos;
+
+    /** First 3 samples, then one per minute, total capped; never throws. */
+    private static synchronized void recordUniformsToProbe(final Frame frame, final long now) {
+        if (uniformProbeLines >= UNIFORM_PROBE_LINE_LIMIT) {
+            return;
+        }
+        if (uniformProbeLines >= 3 && now - lastUniformProbeNanos < 60_000_000_000L) {
+            return;
+        }
+        uniformProbeLines++;
+        lastUniformProbeNanos = now;
+        MetalProbeReport.record("uniforms frameTime=" + frame.frameTime()
+                + " frameTimeCounter=" + frame.frameTimeCounter()
+                + " frameCounter=" + frame.frameCounter()
+                + " viewWidth=" + frame.viewWidth()
+                + " viewHeight=" + frame.viewHeight());
     }
 
     /** Current Iris-compatible frame counter for diagnostics and pass tracing. */

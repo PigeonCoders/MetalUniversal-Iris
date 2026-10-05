@@ -1083,6 +1083,11 @@ public final class MetalCrossShaderCompiler {
      * stage's MSL index set. The check runs on the same MSL text the pipeline
      * is built from, so a persistent mismatch here would mean the runtime
      * binding table disagrees with SPIRV-Cross's decoration.
+     *
+     * <p>Every logged line is also recorded into {@link MetalProbeReport}
+     * (the game's log file is not retrievable on the target device), bounded by
+     * {@link #BINDINGS_PROBE_LINE_LIMIT} with one
+     * {@code bindings ... truncated (N more)} marker past the cap.
      */
     private static void dumpSampledImageBindings(
             final String program,
@@ -1095,40 +1100,82 @@ public final class MetalCrossShaderCompiler {
         }
         Map<String, Integer> vertexTextures = parseMslIndices(vertexMsl.source(), MSL_TEXTURE_ATTRIBUTE);
         Map<String, Integer> fragmentTextures = parseMslIndices(fragmentMsl.source(), MSL_TEXTURE_ATTRIBUTE);
-        Metallum.LOGGER.info(
-                "[metallum-iris][bindings] {} vertexTextures={} vertexSamplers={}"
-                        + " fragmentTextures={} fragmentSamplers={}",
-                program,
-                vertexTextures, parseMslIndices(vertexMsl.source(), MSL_SAMPLER_ATTRIBUTE),
-                fragmentTextures, parseMslIndices(fragmentMsl.source(), MSL_SAMPLER_ATTRIBUTE)
-        );
+        Map<String, Integer> vertexSamplers = parseMslIndices(vertexMsl.source(), MSL_SAMPLER_ATTRIBUTE);
+        Map<String, Integer> fragmentSamplers = parseMslIndices(fragmentMsl.source(), MSL_SAMPLER_ATTRIBUTE);
+        List<String> probeLines = new ArrayList<>();
+        String header = "bindings " + program + " vertexTextures=" + vertexTextures
+                + " vertexSamplers=" + vertexSamplers
+                + " fragmentTextures=" + fragmentTextures
+                + " fragmentSamplers=" + fragmentSamplers;
+        probeLines.add(header);
+        Metallum.LOGGER.info("[metallum-iris][bindings] {}", header);
         for (MetalCompiledRenderPipeline.ResourceBinding resource : resources) {
             if (resource.kind() != MetalCompiledRenderPipeline.ResourceKind.SAMPLED_IMAGE) {
                 continue;
             }
             int vertexIndex = resource.bindingIndexForStage(MetalCompiledRenderPipeline.STAGE_VERTEX);
             int fragmentIndex = resource.bindingIndexForStage(MetalCompiledRenderPipeline.STAGE_FRAGMENT);
-            Metallum.LOGGER.info(
-                    "[metallum-iris][bindings] {} name={} stageMask={} vertexIndex={} fragmentIndex={}",
-                    program, resource.name(), resource.stageMask(), vertexIndex, fragmentIndex
-            );
+            String binding = "bindings " + program + " name=" + resource.name()
+                    + " stageMask=" + resource.stageMask()
+                    + " vertexIndex=" + vertexIndex
+                    + " fragmentIndex=" + fragmentIndex;
+            probeLines.add(binding);
+            Metallum.LOGGER.info("[metallum-iris][bindings] {}", binding);
             if ((resource.stageMask() & MetalCompiledRenderPipeline.STAGE_VERTEX) != 0
                     && !vertexTextures.containsValue(vertexIndex)) {
-                Metallum.LOGGER.warn(
-                        "[metallum-iris][bindings] {} '{}' vertex index {} absent from vertex"
-                                + " MSL [[texture(N)]] set {}",
-                        program, resource.name(), vertexIndex, vertexTextures.values()
-                );
+                String mismatch = "bindings " + program + " MISMATCH stage=vertex name="
+                        + resource.name() + " expected=" + vertexIndex
+                        + " mslSet=" + vertexTextures.values();
+                probeLines.add(mismatch);
+                Metallum.LOGGER.warn("[metallum-iris][bindings] {}", mismatch);
             }
             if ((resource.stageMask() & MetalCompiledRenderPipeline.STAGE_FRAGMENT) != 0
                     && !fragmentTextures.containsValue(fragmentIndex)) {
-                Metallum.LOGGER.warn(
-                        "[metallum-iris][bindings] {} '{}' fragment index {} absent from fragment"
-                                + " MSL [[texture(N)]] set {}",
-                        program, resource.name(), fragmentIndex, fragmentTextures.values()
-                );
+                String mismatch = "bindings " + program + " MISMATCH stage=fragment name="
+                        + resource.name() + " expected=" + fragmentIndex
+                        + " mslSet=" + fragmentTextures.values();
+                probeLines.add(mismatch);
+                Metallum.LOGGER.warn("[metallum-iris][bindings] {}", mismatch);
             }
         }
+        recordBindingsToProbe(program, probeLines);
+    }
+
+    /** Probe-file cap for binding dump lines; the logger still gets every line. */
+    private static final int BINDINGS_PROBE_LINE_LIMIT = 800;
+    private static int bindingsProbeLines;
+    private static boolean bindingsProbeTruncated;
+
+    /**
+     * Appends this program's binding lines to {@link MetalProbeReport} while
+     * the 800-line budget lasts, then records exactly one truncation marker
+     * carrying the number of lines dropped by the program that crossed the cap.
+     * Later programs are suppressed silently (the marker already tells the
+     * reader the dump is incomplete).
+     */
+    private static synchronized void recordBindingsToProbe(
+            final String program,
+            final List<String> lines
+    ) {
+        if (bindingsProbeTruncated) {
+            return;
+        }
+        int budget = BINDINGS_PROBE_LINE_LIMIT - bindingsProbeLines;
+        if (lines.size() <= budget) {
+            for (String line : lines) {
+                MetalProbeReport.record(line);
+            }
+            bindingsProbeLines += lines.size();
+            return;
+        }
+        for (int index = 0; index < budget; index++) {
+            MetalProbeReport.record(lines.get(index));
+        }
+        bindingsProbeLines = BINDINGS_PROBE_LINE_LIMIT;
+        bindingsProbeTruncated = true;
+        MetalProbeReport.record(
+                "bindings " + program + " truncated (" + (lines.size() - budget) + " more)"
+        );
     }
 
     private static Map<String, Integer> parseMslIndices(final String msl, final Pattern pattern) {

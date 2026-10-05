@@ -206,6 +206,8 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
     private boolean warnedZeroBloom;
     private boolean warnedScaledFinalCopy;
     private boolean warnedDebugViewBlitter;
+    /** View strings already receipted into the probe file, one line each. */
+    private final Set<String> recordedDebugViewTargets = new HashSet<>();
     private @Nullable MetalDevice preparedDevice;
     private @Nullable IrisMetalDebugViewBlitter debugViewBlitter;
     private @Nullable GpuFormat debugViewBlitterFormat;
@@ -939,7 +941,16 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         if (blitter == null) {
             return;
         }
+        if (width <= 0 || height <= 0) {
+            return;
+        }
         blitter.blit(source, mainColor, width, height);
+        // Receipt for the probe file: distinguishes "the overlay really drew"
+        // from a black debug view that carries no information.
+        String view = MetalDebugSwitches.VIEW;
+        if (this.recordedDebugViewTargets.add(view)) {
+            MetalProbeReport.record("debug view target=" + view + " blitter=ok");
+        }
     }
 
     /**
@@ -986,6 +997,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                         + " leaving the frame untouched (no raw-copy fallback)",
                 reason
         );
+        MetalProbeReport.record("debug view blitter unavailable: " + reason);
     }
 
     private void warnInvalidDebugView(final String expected) {
