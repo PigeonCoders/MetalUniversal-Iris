@@ -2,6 +2,10 @@ package com.metallum.client.metal.render.bridge;
 
 import com.metallum.client.metal.render.MetalDebugSwitches;
 
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -40,7 +44,7 @@ public final class GlslangSourcePrep {
      * unqualified float parameter no precision; declaring the defaults keeps
      * user code aligned with desktop-GL behavior. Kept as defense-in-depth:
      * the builtin-redeclaration failure that originally motivated it (Mellow's
-     * {@code fma}) is actually handled by {@link #USER_FMA_DECLARATION},
+     * {@code fma}) is actually handled by {@link #USER_BUILTIN_FUNCTIONS},
      * because no parameter precision can satisfy glslang's overload check.
      * Inert when {@link MetalDebugSwitches#GLSLANG_PRECISION_PREAMBLE} is
      * disabled.
@@ -52,25 +56,29 @@ public final class GlslangSourcePrep {
     );
 
     /**
-     * Packs written for {@code #version 120} legitimately define builtins that
-     * only exist in later GLSL versions (Mellow's SMAA block defines its own
-     * {@code fma} overloads for float/vec2/vec4). Once the source is forced to
-     * a modern Vulkan-compatible version, glslang rejects the redeclaration
-     * with "overloaded functions must have the same parameter precision
-     * qualifiers" — builtin parameters carry no precision, so no source
-     * qualifier can satisfy the check. Renaming the pack's definition and
-     * every reference to it keeps the pack's intended math: at its original
-     * version, all of its calls already targeted its own function. Gated by
-     * {@link MetalDebugSwitches#GLSLANG_BUILTIN_RENAME}.
+     * Builtins that {@code #version 120}-era packs legitimately define
+     * themselves because they only exist in later GLSL versions (Mellow's SMAA
+     * block defines {@code fma}; Bliss's deferred vertex defines {@code tanh}).
+     * Once the source is forced to a modern Vulkan-compatible version, glslang
+     * rejects the redeclaration with "overloaded functions must have the same
+     * parameter precision qualifiers" — builtin parameters carry no precision,
+     * so no source qualifier can satisfy the check. Renaming the pack's
+     * definition and every reference to it keeps the pack's intended math: at
+     * its original version, all of its calls already targeted its own
+     * function. Gated by {@link MetalDebugSwitches#GLSLANG_BUILTIN_RENAME}.
      */
-    private static final Pattern USER_FMA_DECLARATION = Pattern.compile(
+    private static final List<String> USER_BUILTIN_FUNCTIONS = List.of(
+            "fma", "tanh", "sinh", "cosh", "round", "trunc", "roundEven",
+            "isnan", "isinf", "frexp", "ldexp", "findLSB", "findMSB"
+    );
+    private static final Pattern USER_BUILTIN_DECLARATION = Pattern.compile(
             "(?m)^[ \\t]*(?:const[ \\t]+)?"
                     + "(?:void|float|double|int|uint|bool|"
                     + "vec[234]|dvec[234]|ivec[234]|uvec[234]|bvec[234]|"
-                    + "mat[234](?:x[234])?|dmat[234](?:x[234])?)[ \\t]+fma[ \\t]*\\("
+                    + "mat[234](?:x[234])?|dmat[234](?:x[234])?)[ \\t]+"
+                    + "(" + String.join("|", USER_BUILTIN_FUNCTIONS) + ")[ \\t]*\\("
     );
-    private static final Pattern FMA_REFERENCE = Pattern.compile("\\bfma\\b");
-    private static final String RENAMED_FMA = "metallum_user_fma";
+    private static final String RENAMED_USER_FUNCTION_PREFIX = "metallum_user_";
 
     private GlslangSourcePrep() {
     }
@@ -97,20 +105,30 @@ public final class GlslangSourcePrep {
 
     /**
      * Renames user-defined functions that collide with a GLSL builtin once the
-     * source is forced to a modern version (see {@link #USER_FMA_DECLARATION}).
-     * Only applies when the source actually declares such a function; then
-     * every reference in the translation unit is renamed so declarations,
-     * prototypes and calls stay consistent. Inert when
-     * {@link MetalDebugSwitches#GLSLANG_BUILTIN_RENAME} is disabled.
+     * source is forced to a modern version (see
+     * {@link #USER_BUILTIN_FUNCTIONS}). Only applies when the source actually
+     * declares such a function; then every reference in the translation unit
+     * is renamed so declarations, prototypes and calls stay consistent. Inert
+     * when {@link MetalDebugSwitches#GLSLANG_BUILTIN_RENAME} is disabled.
      */
     static String renameBuiltinCollisions(final String source) {
         if (!MetalDebugSwitches.GLSLANG_BUILTIN_RENAME) {
             return source;
         }
-        if (!USER_FMA_DECLARATION.matcher(source).find()) {
+        Matcher matcher = USER_BUILTIN_DECLARATION.matcher(source);
+        Set<String> declared = new LinkedHashSet<>();
+        while (matcher.find()) {
+            declared.add(matcher.group(1));
+        }
+        if (declared.isEmpty()) {
             return source;
         }
-        return FMA_REFERENCE.matcher(source).replaceAll(RENAMED_FMA);
+        String result = source;
+        for (String name : declared) {
+            result = Pattern.compile("\\b" + name + "\\b").matcher(result)
+                    .replaceAll(Matcher.quoteReplacement(RENAMED_USER_FUNCTION_PREFIX + name));
+        }
+        return result;
     }
 
     static String stripVersionDirective(final String source) {

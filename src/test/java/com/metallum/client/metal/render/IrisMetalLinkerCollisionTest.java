@@ -51,6 +51,15 @@ final class IrisMetalLinkerCollisionTest {
         assertFalse(prepared.matches("(?s).*\\bfma\\b.*"),
                 "no bare fma reference may survive in the glslang source");
 
+        String tanhSource = "#version 120\n"
+                + "float tanh(float x) { return (exp(x) - exp(-x)) / (exp(x) + exp(-x)); }\n"
+                + "void main() { gl_Position = vec4(tanh(0.5)); }\n";
+        String tanhPrepared = GlslangSourcePrep.buildFullSource(tanhSource, null);
+        assertTrue(tanhPrepared.contains("float metallum_user_tanh(float x)"),
+                "Bliss's user-defined tanh must be renamed away from the builtin");
+        assertFalse(tanhPrepared.matches("(?s).*\\btanh\\b.*"),
+                "no bare tanh reference may survive in the glslang source");
+
         String without = "#version 120\n"
                 + "float clamp01(float a) { return a; }\n"
                 + "void main() { gl_Position = vec4(0.0); }\n";
@@ -87,6 +96,8 @@ final class IrisMetalLinkerCollisionTest {
                             "the pack's vertex-local sunVec declaration must not collide with the block");
                     assertTrue(vertex.contains("    vec3 sunVec;"),
                             "the hoisted block member must keep its name");
+                    assertFalse(GlslangSourcePrep.buildFullSource(vertex, null).matches("(?s).*\\btanh\\b.*"),
+                            "the prepared Bliss vertex source must not redeclare the tanh builtin");
                     assertTrue(linked.fragmentGlsl().contains("sunVec"),
                             "the fragment stage really uses the uniform and keeps its name");
                     return;
