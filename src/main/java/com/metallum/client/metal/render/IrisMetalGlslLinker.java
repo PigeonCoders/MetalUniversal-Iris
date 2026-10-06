@@ -141,6 +141,15 @@ public final class IrisMetalGlslLinker {
             String vertexSource = vertex.body();
             String fragmentSource = fragment.body();
             if (!shared.isEmpty()) {
+                // A block member may be declared as a uniform by only one
+                // stage; in the other stage the same identifier can be a
+                // legitimate stage-local symbol (Bliss's deferred vertex
+                // computes its own `sunVec` while the fragment declares
+                // `uniform vec3 sunVec`). Emitting the shared block into both
+                // stages would collide with that symbol, so rename the
+                // stage-local references before the block is inserted.
+                vertexSource = renameStageLocalCollisions(vertexSource, shared, vertex.uniforms());
+                fragmentSource = renameStageLocalCollisions(fragmentSource, shared, fragment.uniforms());
                 String block = renderUniformBlock(shared);
                 vertexSource = insertBlock(vertexSource, block);
                 fragmentSource = insertBlock(fragmentSource, block);
@@ -487,6 +496,44 @@ public final class IrisMetalGlslLinker {
             block.append("    ").append(uniform.declaration()).append(";\n");
         }
         return block.append("};\n").toString();
+    }
+
+    /** Prefix for stage-local identifiers renamed to avoid block-member collisions. */
+    private static final String STAGE_LOCAL_PREFIX = "metallum_local_";
+
+    /**
+     * Renames stage-local identifiers that would collide with a hoisted
+     * {@link #UNIFORM_BLOCK_NAME} member once the shared block is emitted into
+     * this stage. Only names the stage did not declare as its own uniform are
+     * touched: there, every reference belongs to the stage's own symbol while
+     * the other stage's declaration owns the block member name. GLSL (and
+     * glslang) reject a block member and a variable of the same name in one
+     * translation unit.
+     */
+    private static String renameStageLocalCollisions(
+            final String body,
+            final List<LooseUniform> shared,
+            final List<LooseUniform> stageUniforms
+    ) {
+        Set<String> declared = new LinkedHashSet<>();
+        for (LooseUniform uniform : stageUniforms) {
+            declared.add(uniform.name());
+        }
+        String result = body;
+        for (LooseUniform member : shared) {
+            String name = member.name();
+            if (declared.contains(name)) {
+                continue;
+            }
+            Pattern reference = Pattern.compile("\\b" + Pattern.quote(name) + "\\b");
+            if (!reference.matcher(result).find()) {
+                continue;
+            }
+            result = reference.matcher(result).replaceAll(
+                    Matcher.quoteReplacement(STAGE_LOCAL_PREFIX + name)
+            );
+        }
+        return result;
     }
 
     private static String insertBlock(final String source, final String block) {

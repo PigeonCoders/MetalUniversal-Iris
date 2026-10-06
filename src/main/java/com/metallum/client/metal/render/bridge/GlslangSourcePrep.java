@@ -2,6 +2,8 @@ package com.metallum.client.metal.render.bridge;
 
 import com.metallum.client.metal.render.MetalDebugSwitches;
 
+import java.util.regex.Pattern;
+
 /**
  * Pure-Java GLSL source preparation shared by {@link GlslangBridge}.
  *
@@ -34,19 +36,41 @@ public final class GlslangSourcePrep {
     );
 
     /**
-     * Vulkan-mode glslang gives an unqualified float parameter no precision
-     * ({@code EpqNone}), so a pack that overloads a built-in such as
-     * {@code fma} fails with "overloaded functions must have the same
-     * parameter precision qualifiers"; Mellow's FABULOUS composite10 hits
-     * this. Declaring the default precision makes user parameters
-     * {@code highp}, matching the built-ins. Inert when
-     * {@link MetalDebugSwitches#GLSLANG_PRECISION_PREAMBLE} is disabled.
+     * Default precision for float/int. Vulkan-mode glslang gives an
+     * unqualified float parameter no precision; declaring the defaults keeps
+     * user code aligned with desktop-GL behavior. Kept as defense-in-depth:
+     * the builtin-redeclaration failure that originally motivated it (Mellow's
+     * {@code fma}) is actually handled by {@link #USER_FMA_DECLARATION},
+     * because no parameter precision can satisfy glslang's overload check.
+     * Inert when {@link MetalDebugSwitches#GLSLANG_PRECISION_PREAMBLE} is
+     * disabled.
      */
     private static final String PRECISION_PREAMBLE = String.join("\n",
             "precision highp float;",
             "precision highp int;",
             ""
     );
+
+    /**
+     * Packs written for {@code #version 120} legitimately define builtins that
+     * only exist in later GLSL versions (Mellow's SMAA block defines its own
+     * {@code fma} overloads for float/vec2/vec4). Once the source is forced to
+     * a modern Vulkan-compatible version, glslang rejects the redeclaration
+     * with "overloaded functions must have the same parameter precision
+     * qualifiers" — builtin parameters carry no precision, so no source
+     * qualifier can satisfy the check. Renaming the pack's definition and
+     * every reference to it keeps the pack's intended math: at its original
+     * version, all of its calls already targeted its own function. Gated by
+     * {@link MetalDebugSwitches#GLSLANG_BUILTIN_RENAME}.
+     */
+    private static final Pattern USER_FMA_DECLARATION = Pattern.compile(
+            "(?m)^[ \\t]*(?:const[ \\t]+)?"
+                    + "(?:void|float|double|int|uint|bool|"
+                    + "vec[234]|dvec[234]|ivec[234]|uvec[234]|bvec[234]|"
+                    + "mat[234](?:x[234])?|dmat[234](?:x[234])?)[ \\t]+fma[ \\t]*\\("
+    );
+    private static final Pattern FMA_REFERENCE = Pattern.compile("\\bfma\\b");
+    private static final String RENAMED_FMA = "metallum_user_fma";
 
     private GlslangSourcePrep() {
     }
@@ -60,11 +84,33 @@ public final class GlslangSourcePrep {
 
     /**
      * The exact source glslang receives for a raw shaderpack source: version
-     * stripped, compatibility preamble (plus the precision defaults) injected
-     * and user defines appended.
+     * stripped, builtin-colliding user functions renamed, compatibility
+     * preamble (plus the precision defaults) injected and user defines
+     * appended.
      */
     public static String buildFullSource(final String source, final String defines) {
-        return buildSourceWithDefines(compatPreamble() + stripVersionDirective(source), defines);
+        return buildSourceWithDefines(
+                compatPreamble() + renameBuiltinCollisions(stripVersionDirective(source)),
+                defines
+        );
+    }
+
+    /**
+     * Renames user-defined functions that collide with a GLSL builtin once the
+     * source is forced to a modern version (see {@link #USER_FMA_DECLARATION}).
+     * Only applies when the source actually declares such a function; then
+     * every reference in the translation unit is renamed so declarations,
+     * prototypes and calls stay consistent. Inert when
+     * {@link MetalDebugSwitches#GLSLANG_BUILTIN_RENAME} is disabled.
+     */
+    static String renameBuiltinCollisions(final String source) {
+        if (!MetalDebugSwitches.GLSLANG_BUILTIN_RENAME) {
+            return source;
+        }
+        if (!USER_FMA_DECLARATION.matcher(source).find()) {
+            return source;
+        }
+        return FMA_REFERENCE.matcher(source).replaceAll(RENAMED_FMA);
     }
 
     static String stripVersionDirective(final String source) {

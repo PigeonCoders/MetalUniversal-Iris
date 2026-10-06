@@ -19,6 +19,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -29,13 +30,14 @@ import static org.junit.jupiter.api.Assertions.fail;
  * qualifiers for argument 1/2/3}.
  *
  * <p>Mellow's SMAA block declares its own {@code fma} overloads for
- * {@code float}/{@code vec2}/{@code vec4}. In Vulkan-mode glslang an
- * unqualified parameter carries no precision, so redeclaring the built-in
- * {@code fma} fails. {@link GlslangSourcePrep#buildFullSource} now prepends
- * {@code precision highp float/int;} (gated by
- * {@link MetalDebugSwitches#GLSLANG_PRECISION_PREAMBLE}); the structural test
- * pins that the preamble precedes the first overload. The actual native
- * compile follows {@link BslShaderCompileTest}'s host gate.
+ * {@code float}/{@code vec2}/{@code vec4}. Once the source is forced to a
+ * modern Vulkan-compatible version, glslang rejects the redeclaration of the
+ * builtin {@code fma}, and no parameter precision can satisfy its check
+ * (probed with highp/mediump/none). {@link GlslangSourcePrep#buildFullSource}
+ * now renames the pack's definition and every reference to it (gated by
+ * {@link MetalDebugSwitches#GLSLANG_BUILTIN_RENAME}); the structural test pins
+ * that rename. The actual native compile follows
+ * {@link BslShaderCompileTest}'s host gate.
  */
 final class MellowFabulousPrecisionTest {
     private static final Path PACK =
@@ -55,7 +57,7 @@ final class MellowFabulousPrecisionTest {
     );
 
     @Test
-    void fabulousComposite10PrecisionPreambleCoversFmaOverloads() throws Exception {
+    void fabulousComposite10UserFmaIsRenamedBeforeGlslang() throws Exception {
         Assumptions.assumeTrue(Files.exists(PACK), "Mellow fixture missing: " + PACK);
         Iris.testing = true;
         try (FileSystem fileSystem = FileSystems.newFileSystem(PACK, Map.of())) {
@@ -78,19 +80,18 @@ final class MellowFabulousPrecisionTest {
                 IrisMetalGlslLinker.LinkedRasterProgram linked =
                         worldPrograms.composite(source, TextureStage.COMPOSITE_AND_FINAL);
 
-                assertTrue(MetalDebugSwitches.GLSLANG_PRECISION_PREAMBLE,
-                        "precision preamble must default on");
                 assertTrue(linked.fragmentGlsl().contains("float fma(float a, float b, float c)"),
                         "composite10 must still declare its fma overloads (the crash trigger)");
 
                 String glslangSource = GlslangSourcePrep.buildFullSource(linked.fragmentGlsl(), null);
-                int precision = glslangSource.indexOf("precision highp float;");
-                int firstOverload = glslangSource.indexOf("float fma(float a, float b, float c)");
-                assertTrue(precision >= 0,
-                        "glslang source must declare the default float precision");
-                assertTrue(firstOverload > precision,
-                        "the precision declaration must precede the fma overload "
-                                + "(precision@" + precision + ", overload@" + firstOverload + ")");
+                assertTrue(MetalDebugSwitches.GLSLANG_BUILTIN_RENAME,
+                        "builtin-collision rename must default on");
+                assertTrue(glslangSource.contains("float metallum_user_fma(float a, float b, float c)"),
+                        "the pack's fma definition must be renamed away from the builtin");
+                assertFalse(glslangSource.matches("(?s).*\\bfma\\b.*"),
+                        "no bare fma reference may survive in the glslang source");
+                assertTrue(glslangSource.contains("precision highp float;"),
+                        "the precision preamble must still be emitted");
             }
         }
     }

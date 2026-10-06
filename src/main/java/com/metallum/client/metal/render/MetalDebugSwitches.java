@@ -107,6 +107,20 @@ public final class MetalDebugSwitches {
     public static final boolean GLSLANG_PRECISION_PREAMBLE = !"off".equalsIgnoreCase(
             System.getProperty("metallum.iris.glslangPrecision", "on").trim()
     );
+    /**
+     * Renames a user-defined function that collides with a GLSL builtin before
+     * glslang sees it. Packs written for {@code #version 120} legitimately
+     * define builtins that only exist in later versions (Mellow's SMAA block
+     * defines its own {@code fma} overloads); once the source is forced to a
+     * modern Vulkan-compatible version, glslang rejects the redeclaration with
+     * "overloaded functions must have the same parameter precision qualifiers",
+     * which no source precision can satisfy. Renaming the pack's definition and
+     * all of its references keeps the pack's intended math. On by default;
+     * {@code -Dmetallum.iris.glslangBuiltinRename=off} restores the old behavior.
+     */
+    public static final boolean GLSLANG_BUILTIN_RENAME = !"off".equalsIgnoreCase(
+            System.getProperty("metallum.iris.glslangBuiltinRename", "on").trim()
+    );
     /** Non-terrain world-program override; on by default, {@code -Dmetallum.iris.worldPass=off} disables it. */
     public static final boolean WORLD_PASS = !"off".equalsIgnoreCase(
             System.getProperty("metallum.iris.worldPass", "on").trim()
@@ -195,7 +209,8 @@ public final class MetalDebugSwitches {
             || NO_CLOUDS_HARD || MAGENTA_CLEAR || !SHADOW_PASS || NO_SHADOWS
             || !SHADOW_CULLING.isEmpty() || !SHADOW_DEPTH_FIX || BLEND_OVERRIDES
             || !SIZE_BUFFER || DUMP_BINDINGS || LOG_UNIFORMS || FLIP_TRACE
-            || !VERTEX_ENGINE_PROJECTION || !GLSLANG_PRECISION_PREAMBLE;
+            || !VERTEX_ENGINE_PROJECTION || !GLSLANG_PRECISION_PREAMBLE
+            || !GLSLANG_BUILTIN_RENAME;
 
     /** One {@code stageStrip} entry: a pass name plus the target index to tile. */
     public record StripEntry(String passName, int targetIndex) {
@@ -269,12 +284,13 @@ public final class MetalDebugSwitches {
 
     static {
         if (PROBES_ACTIVE) {
-            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: build={} skipDeferred={} skipPost={} view={} viewGain={} skipPass={} noShadowMatrices={} zeroVl={} zeroBloom={} stageStrip={} noVanillaSky={} noVanillaClouds={} noCloudsHard={} magentaClear={} shadowPass={} noShadows={} shadowCulling={} shadowDepthFix={} blendOverrides={} sizeBuffer={} dumpBindings={} logUniforms={} flipTrace={} vertexEngineProjection={} glslangPrecision={}",
+            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: build={} skipDeferred={} skipPost={} view={} viewGain={} skipPass={} noShadowMatrices={} zeroVl={} zeroBloom={} stageStrip={} noVanillaSky={} noVanillaClouds={} noCloudsHard={} magentaClear={} shadowPass={} noShadows={} shadowCulling={} shadowDepthFix={} blendOverrides={} sizeBuffer={} dumpBindings={} logUniforms={} flipTrace={} vertexEngineProjection={} glslangPrecision={} glslangBuiltinRename={}",
                     BUILD_TAG, SKIP_DEFERRED, SKIP_POST, VIEW, VIEW_GAIN, SKIP_PASS, NO_SHADOW_MATRICES, ZERO_VL, ZERO_BLOOM,
                     System.getProperty("metallum.iris.debug.stageStrip", ""),
                     NO_VANILLA_SKY, NO_VANILLA_CLOUDS, NO_CLOUDS_HARD, MAGENTA_CLEAR,
                     SHADOW_PASS, NO_SHADOWS, SHADOW_CULLING, SHADOW_DEPTH_FIX, BLEND_OVERRIDES, SIZE_BUFFER,
-                    DUMP_BINDINGS, LOG_UNIFORMS, FLIP_TRACE, VERTEX_ENGINE_PROJECTION, GLSLANG_PRECISION_PREAMBLE);
+                    DUMP_BINDINGS, LOG_UNIFORMS, FLIP_TRACE, VERTEX_ENGINE_PROJECTION, GLSLANG_PRECISION_PREAMBLE,
+                    GLSLANG_BUILTIN_RENAME);
         }
     }
 }
