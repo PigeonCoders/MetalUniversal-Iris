@@ -792,11 +792,10 @@ public final class IrisMetalWorldBridge {
         if (shadowTargets == null) {
             return null;
         }
-        int shadowDepthIndex = switch (name) {
-            case "shadowtex0", "shadowtex0HW", "watershadow" -> 0;
-            case "shadowtex1", "shadowtex1HW" -> 1;
-            default -> -1;
-        };
+        // Shared legacy depth aliases: shadowtex0/1 (+HW/DH variants),
+        // watershadow -> shadowtex0, and bare `shadow` -> shadowtex0 here
+        // (the bridge has no per-program declaration view; see the helper).
+        int shadowDepthIndex = IrisMetalExecutionGraph.legacyShadowDepth(name, false);
         if (shadowDepthIndex >= 0) {
             boolean comparison = !name.endsWith("HW");
             return new MetalRenderPass.TextureViewAndSampler(

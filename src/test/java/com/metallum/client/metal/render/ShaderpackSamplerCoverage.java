@@ -271,7 +271,10 @@ final class ShaderpackSamplerCoverage {
             }
             if (name.equals("shadowtex0") || name.equals("shadowtex1")
                     || name.equals("shadowtex0HW") || name.equals("shadowtex1HW")
-                    || name.equals("watershadow")) {
+                    || name.equals("watershadow") || name.equals("shadow")) {
+                // `shadow`/`watershadow` are the legacy OptiFine aliases upstream
+                // IrisSamplers maps onto shadowtex0/1; the graph and both
+                // bridges resolve them through legacyShadowDepth.
                 return true;
             }
             if (name.startsWith("shadowcolor")) {

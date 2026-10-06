@@ -1536,6 +1536,29 @@ final class IrisMetalUniformValues implements AutoCloseable {
             // zero; the graph is consulted first, so a future upstream fix
             // makes these cases inert automatically.
             case "nightStrength", "dayStrength", "fogAmount" -> out.putFloat(at, 0.0f);
+            // Bliss v2.1.2 (Chocapic13 lineage) declares these legacy values in
+            // its gbuffers/dimension includes. Pinned Iris 20e226b supplies none
+            // of them (no CommonUniforms/IrisExclusiveUniforms entry) and the
+            // pack defines no custom uniform for them either, so the graph has
+            // no variable and desktop GL leaves the declared uniform at the
+            // GLSL default. Declaration sites: sunIntensity/skyIntensity/
+            // moonIntensity/nsunColor in dimensions/all_translucent.fsh:85-101,
+            // skyIntensityNight in world1/gbuffers_weather.fsh:13, farPlane in
+            // composite1.fsh:108, lightCol in gbuffers_weather.fsh:9,
+            // Moon_Weather_properties in composite11.fsh:43. Write the faithful
+            // zero; the graph is consulted first, so if upstream ever adds a
+            // supplier these cases become inert.
+            //
+            // Deliberately NOT defaulted here: dhFarPlane/dhNearPlane
+            // (CommonUniforms.java:183-184), currentPlayerHealth/
+            // maxPlayerHealth (IrisExclusiveUniforms.java:64/66) and the
+            // gameplay flags they feed (CriticalDamageTaken/oneHeart/
+            // threeHeart/MinorDamageTaken, shaders.properties:469-482) all
+            // resolve through the production custom-uniform graph.
+            case "skyIntensityNight", "skyIntensity", "moonIntensity", "sunIntensity",
+                 "farPlane" -> out.putFloat(at, 0.0f);
+            case "sunColor", "nsunColor" -> putVec3(out, at, 0.0f, 0.0f, 0.0f);
+            case "Moon_Weather_properties", "lightCol" -> putVec4(out, at, 0.0f, 0.0f, 0.0f, 0.0f);
 
             default -> reportUnsupported(out, member);
         }

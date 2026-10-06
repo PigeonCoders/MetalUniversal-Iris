@@ -1363,6 +1363,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
     ) {
         IrisMetalRenderTargets targets = resources.renderTargets();
         IrisMetalComputeResources computeResources = resources.computeResources();
+        boolean waterShadow = plan.linked().resourceNames().contains("watershadow");
         for (ComputeBinding binding : plan.bindings()) {
             if (binding.buffer()) {
                 if (computeResources == null) {
@@ -1388,7 +1389,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                         : computeResources.storageImage(binding.name());
                 if (image == null) {
                     MetalRenderPass.TextureViewAndSampler target = textureBinding(
-                            binding.name(), plan.textureStage(), targets, resources, readsFromAlt
+                            binding.name(), plan.textureStage(), targets, resources, readsFromAlt, waterShadow
                     );
                     image = target == null ? null : (MetalGpuTextureView) target.textureView();
                 }
@@ -1405,7 +1406,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                         : computeResources.sampledImage(binding.name());
                 if (texture == null) {
                     texture = textureBinding(
-                            binding.name(), plan.textureStage(), targets, resources, readsFromAlt
+                            binding.name(), plan.textureStage(), targets, resources, readsFromAlt, waterShadow
                     );
                 }
                 if (texture == null) {
@@ -1568,12 +1569,19 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         // error. Bind only active declarations and keep the strict failure for
         // an active sampler the binding table cannot resolve.
         Set<String> activeSampledImages = activeSampledImages(pipeline);
+        boolean waterShadow = false;
+        for (IrisMetalGlslLinker.SamplerDecl sampler : plan.program().samplers()) {
+            if ("watershadow".equals(sampler.name())) {
+                waterShadow = true;
+                break;
+            }
+        }
         List<IrisMetalGlslLinker.SamplerDecl> declaredInactive = new ArrayList<>();
         for (IrisMetalGlslLinker.SamplerDecl sampler : activeSampledDeclarations(
                 plan.program().samplers(), activeSampledImages
         )) {
             MetalRenderPass.TextureViewAndSampler binding = textureBinding(
-                    sampler.name(), plan.stage().textureStage, targets, resources, plan.readsFromAlt()
+                    sampler.name(), plan.stage().textureStage, targets, resources, plan.readsFromAlt(), waterShadow
             );
             if (binding == null) {
                 throw new IllegalStateException(
@@ -1806,6 +1814,38 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             final IrisMetalWorldResources resources,
             final BitSet readsFromAlt
     ) {
+        return textureBinding(name, stage, targets, resources, readsFromAlt, false);
+    }
+
+    /**
+     * Legacy depth alias resolution, shared with the world/terrain bridges.
+     *
+     * <p>Upstream {@code IrisSamplers.addShadowSamplers} (pin 20e226b:143-152)
+     * maps {@code watershadow} to shadowtex0 (depth with translucents) and
+     * {@code shadow} to shadowtex1 (no translucents) when the program declares
+     * {@code watershadow}; without it, {@code shadow} maps to shadowtex0. The
+     * bridge paths have no per-program declaration view and pass
+     * {@code waterShadow=false}, which matches the common legacy packs that
+     * use {@code shadow} without {@code watershadow} (Bliss/Chocapic13).
+     *
+     * @return shadow depth index 0/1, or -1 when {@code name} is not a depth alias
+     */
+    static int legacyShadowDepth(final String name, final boolean waterShadow) {
+        return switch (name) {
+            case "watershadow" -> 0;
+            case "shadow" -> waterShadow ? 1 : 0;
+            default -> name.startsWith("shadowtex1") ? 1 : name.startsWith("shadowtex") ? 0 : -1;
+        };
+    }
+
+    private MetalRenderPass.TextureViewAndSampler textureBinding(
+            final String name,
+            final TextureStage stage,
+            final IrisMetalRenderTargets targets,
+            final IrisMetalWorldResources resources,
+            final BitSet readsFromAlt,
+            final boolean waterShadow
+    ) {
         MetalRenderPass.TextureViewAndSampler standard = null;
         IrisMetalShadowTargets shadows = resources.shadowTargets();
         if (name.equals(IrisMetalCenterDepthSampler.SAMPLER_NAME)
@@ -1819,8 +1859,9 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             standard = new MetalRenderPass.TextureViewAndSampler(targets.noTranslucentsDepthView(), targets.depthSampler());
         } else if (name.equals("depthtex2")) {
             standard = new MetalRenderPass.TextureViewAndSampler(targets.noHandDepthView(), targets.depthSampler());
-        } else if (shadows != null && (name.startsWith("shadowtex") || name.startsWith("shadowcolor"))) {
-            int shadowDepth = name.startsWith("shadowtex1") ? 1 : name.startsWith("shadowtex") ? 0 : -1;
+        } else if (shadows != null && (name.startsWith("shadowtex") || name.startsWith("shadowcolor")
+                || name.equals("shadow") || name.equals("watershadow"))) {
+            int shadowDepth = legacyShadowDepth(name, waterShadow);
             if (shadowDepth >= 0) {
                 boolean comparison = !name.endsWith("HW");
                 standard = new MetalRenderPass.TextureViewAndSampler(
