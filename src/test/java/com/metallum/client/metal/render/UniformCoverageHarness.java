@@ -165,6 +165,50 @@ final class UniformCoverageHarness {
     }
 
     /**
+     * Audits the graph prelude (Begin/Prepare programs) for one
+     * pack/dimension/config. The main {@link #audit} covers the world and
+     * deferred/composite/final chains; packs that bind custom textures or
+     * uniforms in their prepare passes (Nostalgia's
+     * {@code texture.prepare.colortex7}) need this second sweep.
+     */
+    static Audit auditPrelude(
+            final Path pack,
+            final NamespacedId dimension,
+            final Map<String, String> changedConfigs,
+            final Consumer<UniformHolder> additionalInputs
+    ) throws Exception {
+        try (FileSystem fileSystem = FileSystems.newFileSystem(pack, Map.of())) {
+            ShaderPack shaderPack = new ShaderPack(
+                    fileSystem.getPath("/shaders"),
+                    changedConfigs,
+                    StandardMacros.createStandardEnvironmentDefines(),
+                    false
+            );
+            ProgramSet programs = shaderPack.getProgramSet(dimension);
+            FrameUpdateNotifier notifier = new FrameUpdateNotifier();
+            CustomUniforms graph = shaderPack.customUniforms.build(
+                    holder -> registerTestInputUniforms(holder, shaderPack, programs, notifier, additionalInputs)
+            );
+            Audit audit = new Audit(
+                    graph,
+                    new IrisMetalUniformValues(0.0f, () -> 0)
+            );
+
+            try (IrisMetalWorldPrograms worldPrograms = new IrisMetalWorldPrograms(1, programs)) {
+                for (ProgramArrayId id : new ProgramArrayId[]{ProgramArrayId.Begin, ProgramArrayId.Prepare}) {
+                    TextureStage stage = id == ProgramArrayId.Begin ? TextureStage.BEGIN : TextureStage.PREPARE;
+                    for (ProgramSource source : programs.getComposite(id)) {
+                        if (source != null && source.isValid()) {
+                            audit.inspect(Optional.of(worldPrograms.composite(source, stage)), false);
+                        }
+                    }
+                }
+            }
+            return audit;
+        }
+    }
+
+    /**
      * Registers the official Iris inputs the pack's custom uniforms can
      * reference, mirroring {@code CommonUniforms.addNonDynamicUniforms} minus
      * its {@code IrisExclusiveUniforms} block: that one dereferences

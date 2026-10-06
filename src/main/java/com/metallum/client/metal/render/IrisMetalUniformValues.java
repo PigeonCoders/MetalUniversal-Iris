@@ -15,6 +15,7 @@ import net.irisshaders.iris.uniforms.CelestialUniforms;
 import net.irisshaders.iris.uniforms.FrameUpdateNotifier;
 import net.irisshaders.iris.uniforms.SystemTimeUniforms;
 import net.irisshaders.iris.uniforms.custom.CustomUniforms;
+import net.irisshaders.iris.uniforms.custom.cached.BooleanCachedUniform;
 import net.irisshaders.iris.pipeline.programs.ShaderKey;
 import net.irisshaders.iris.shaderpack.DimensionId;
 import net.irisshaders.iris.shaderpack.materialmap.NamespacedId;
@@ -1472,6 +1473,22 @@ final class IrisMetalUniformValues implements AutoCloseable {
             case "inNetherWastes", "inCrimsonForest", "inWarpedForest",
                  "inBasaltDeltas", "inSoulValley", "inPaleGarden", "inSulfurCaves" ->
                     out.putFloat(at, 0.0f);
+            // Solas Shader V3.7b (shaders.properties:169-183) uses the same
+            // OptiFine biome flags with modern BIOME_* constants that pinned
+            // Iris does not define (`BIOME_JAGGED_PEAKS`, `BIOME_CHERRY_GROVE`,
+            // `BIOME_LUSH_CAVES`, `BIOME_DEEP_DARK`, `BIOME_PALE_GARDEN`), so
+            // stareval drops the expressions and desktop GL leaves the GLSL
+            // default 0. Write that faithful zero; expressions that reference
+            // at least one known constant (isDesert/isSwamp/...) resolve in the
+            // graph as before and are unaffected.
+            case "isSnowy", "isCherryGrove", "isLushCaves", "isDeepDark", "isPaleGarden" ->
+                    out.putFloat(at, 0.0f);
+            // Nostalgia v5.1 declares `uniform vec2 skyCaptureResolution` in
+            // world0/world1/deferred.fsh and sspt.fsh, but neither the pack nor
+            // pinned Iris registers a supplier (no `uniform.vec2.` entry, no
+            // upstream uniform). Desktop GL leaves it (0,0); Nostalgia guards
+            // its use, so the GLSL default is the faithful value.
+            case "skyCaptureResolution" -> putVec2(out, at, 0.0f, 0.0f);
             // Mellow v3.4.1a integrates Voxy (an absent mod): under
             // `#ifndef VOXY_TERRAIN` its normal gbuffers/deferred/composite
             // programs declare the vx* family, and the following
@@ -1588,11 +1605,21 @@ final class IrisMetalUniformValues implements AutoCloseable {
         }
 
         FunctionReturn value = new FunctionReturn();
-        this.customUniforms.getVariable(member.name()).evaluateTo(this.customUniforms, value);
+        var variable = this.customUniforms.getVariable(member.name());
+        variable.evaluateTo(this.customUniforms, value);
         int at = member.offset();
         switch (member.type()) {
             case "bool" -> out.putInt(at, value.booleanReturn ? 1 : 0);
-            case "int" -> out.putInt(at, value.intReturn);
+            // Upstream may supply a bool for a uniform a pack declares as int
+            // (Nostalgia's `uniform int hideGUI` vs CommonUniforms.java:144
+            // `.uniform1b(... "hideGUI" ...)`). GL uploads bools as 0/1 ints;
+            // FunctionReturn.booleanReturn is the only field a
+            // BooleanCachedUniform fills, so an int member fed by a Boolean
+            // graph variable must read it instead of the untouched intReturn.
+            case "int" -> out.putInt(at,
+                    variable instanceof BooleanCachedUniform
+                            ? (value.booleanReturn ? 1 : 0)
+                            : value.intReturn);
             case "float" -> out.putFloat(at, value.floatReturn);
             case "vec2" -> {
                 Vector2f vector = customObject(member, value, Vector2f.class);
