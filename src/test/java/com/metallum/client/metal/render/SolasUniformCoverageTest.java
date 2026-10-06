@@ -29,9 +29,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * constants do exist (isDesert/isSwamp/...) keep resolving through the graph.
  *
  * <p>Voxel (VX) custom images and the shadowcomp compute live behind the
- * pack's own {@code VX_SUPPORT} gate, which is disabled on macOS
- * ({@code lib/common.glsl:842}); the audit confirms no shadowcomp sources are
- * enabled, so the pack is playable without the image/compute path.
+ * pack's own {@code VX_SUPPORT} gate ({@code lib/common.glsl:842}). The
+ * per-slot {@code world0/shadowcomp.csh} compute <b>is</b> enabled by default
+ * (it appears in {@code ProgramSet#getCompute(ShadowComposite)}, not in
+ * {@code getShadowCompute()} — the earlier scan checked the wrong array) and
+ * is covered by {@link SolasShadowCompComputeTest}; this gate only audits the
+ * raster world/graph uniform block.
  */
 final class SolasUniformCoverageTest {
     private static final Path PACK =

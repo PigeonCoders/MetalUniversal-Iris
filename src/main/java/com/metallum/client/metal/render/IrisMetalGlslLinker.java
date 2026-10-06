@@ -43,6 +43,25 @@ public final class IrisMetalGlslLinker {
                     + "|unsigned|class|constexpr|nullptr|throw|try|catch|kernel|device|constant|thread"
                     + "|threadgroup|half|sampler)\\b"
     );
+    /**
+     * Compute opaque declarations. Unlike {@link #UNIFORM_STATEMENT} this also
+     * matches qualifiers before {@code uniform} ({@code writeonly uniform
+     * image3D ...}) because storage images require them.
+     */
+    private static final Pattern COMPUTE_OPAQUE_DECLARATION = Pattern.compile(
+            "(?m)^([ \\t]*)(layout\\s*\\([^)]*\\)\\s*)?"
+                    + "((?:(?:readonly|writeonly|coherent|volatile|restrict|highp|mediump|lowp)\\s+)*)"
+                    + "uniform\\s+([A-Za-z_]\\w*)\\s+([^;{}]+);"
+    );
+    /** Compute SSBO block headers ({@code [layout(...)] buffer Name {}). */
+    private static final Pattern COMPUTE_BUFFER_BLOCK = Pattern.compile(
+            "(?m)^([ \\t]*)(layout\\s*\\([^)]*\\)\\s*)?"
+                    + "((?:(?:readonly|writeonly|coherent|volatile|restrict)\\s+)*)"
+                    + "buffer\\s+([A-Za-z_]\\w*)\\s*\\{"
+    );
+    private static final Pattern BINDING_ARGUMENT = Pattern.compile("\\bbinding\\s*=\\s*(\\d+)");
+    private static final Pattern VERSION_DIRECTIVE =
+            Pattern.compile("(?m)^[ \\t]*#version\\b[^\\r\\n]*");
     private static final Set<String> UNIFORM_QUALIFIERS = Set.of(
             "lowp", "mediump", "highp", "coherent", "volatile", "restrict", "readonly", "writeonly"
     );
@@ -307,9 +326,163 @@ public final class IrisMetalGlslLinker {
         return Integer.parseInt(matcher.group(1));
     }
 
+    /**
+     * Lowers a shaderpack compute ({@code .csh}) program for the Vulkan/SPIR-V
+     * path used by {@link MetalComputePipeline}.
+     *
+     * <p>Upstream {@code TransformPatcher.patchCompute} emits GL-style GLSL:
+     * loose uniforms outside any block and opaque declarations without explicit
+     * bindings. Vulkan (shaderc/glslang) rejects both, which is why Solas
+     * V3.7b's {@code shadowcomp} failed to compile on device. This mirrors the
+     * raster pipeline: the version is normalized to {@code 460 core}, loose
+     * non-opaque uniforms are hoisted into a std140
+     * {@value #UNIFORM_BLOCK_NAME} block with an explicit binding, and sampled
+     * images / storage images / SSBOs receive explicit {@code layout(binding=N)}
+     * declarations. Existing bindings are preserved (an SSBO's number is the
+     * key into the pack's {@code bufferObject} definitions); missing ones are
+     * assigned free indices. The returned layout is registered with
+     * {@link IrisMetalUniformValues}, and the block binding is bound at
+     * dispatch by {@code IrisMetalExecutionGraph#bindCompute}.
+     */
+    public static LinkedComputeProgram linkCompute(final String name, final String source) {
+        Objects.requireNonNull(name, "name");
+        Objects.requireNonNull(source, "source");
+        try {
+            String lowered = normalizeComputeVersion(normalize(source));
+            ComputeResources resources = injectComputeBindings(lowered);
+            LooseExtraction extraction = extractLooseUniforms(resources.source());
+            List<UniformMember> layout = computeStd140Layout(name, extraction.uniforms());
+            String glsl = extraction.body();
+            if (!layout.isEmpty()) {
+                glsl = insertBlock(glsl, renderUniformBlock(extraction.uniforms(), resources.uniformBinding()));
+            }
+            int blockSize = layout.isEmpty()
+                    ? 0
+                    : alignUp(layout.getLast().offset() + layout.getLast().byteSize(), 16);
+            return new LinkedComputeProgram(
+                    name,
+                    glsl,
+                    layout,
+                    blockSize,
+                    layout.isEmpty() ? -1 : resources.uniformBinding(),
+                    resources.resourceNames()
+            );
+        } catch (LinkException exception) {
+            throw exception;
+        } catch (RuntimeException exception) {
+            throw new LinkException(name, String.valueOf(exception.getMessage()), exception);
+        }
+    }
+
+    private static String normalizeComputeVersion(final String source) {
+        Matcher matcher = VERSION_DIRECTIVE.matcher(source);
+        if (matcher.find()) {
+            return matcher.replaceFirst("#version 460 core");
+        }
+        return "#version 460 core\n" + source;
+    }
+
+    /**
+     * Assigns explicit bindings to compute resources. Declarations that already
+     * carry {@code layout(binding=N)} keep N; everything else takes the next
+     * free index in the shared resource set. The std140 uniform block takes the
+     * first buffer-class index that stays unused by SSBOs.
+     */
+    private static ComputeResources injectComputeBindings(final String source) {
+        Set<Integer> used = new LinkedHashSet<>();
+        List<String> resourceNames = new ArrayList<>();
+
+        Matcher bufferMatcher = COMPUTE_BUFFER_BLOCK.matcher(source);
+        StringBuilder withBuffers = new StringBuilder(source.length());
+        int last = 0;
+        while (bufferMatcher.find()) {
+            int binding = existingBinding(bufferMatcher.group(2));
+            if (binding < 0) {
+                binding = nextFree(used);
+            }
+            used.add(binding);
+            resourceNames.add(bufferMatcher.group(4));
+            withBuffers.append(source, last, bufferMatcher.start());
+            withBuffers.append(bufferMatcher.group(1))
+                    .append("layout(binding=").append(binding).append(") ")
+                    .append(bufferMatcher.group(3))
+                    .append("buffer ").append(bufferMatcher.group(4)).append(" {");
+            last = bufferMatcher.end();
+        }
+        withBuffers.append(source, last, source.length());
+
+        String text = withBuffers.toString();
+        Matcher opaqueMatcher = COMPUTE_OPAQUE_DECLARATION.matcher(text);
+        StringBuilder lowered = new StringBuilder(text.length());
+        last = 0;
+        while (opaqueMatcher.find()) {
+            String type = opaqueMatcher.group(4);
+            if (!OPAQUE_TYPE.matcher(type).matches()) {
+                continue;
+            }
+            int binding = existingBinding(opaqueMatcher.group(2));
+            if (binding < 0) {
+                binding = nextFree(used);
+            }
+            used.add(binding);
+            lowered.append(text, last, opaqueMatcher.start());
+            List<String> declarators = splitTopLevel(opaqueMatcher.group(5));
+            for (int index = 0; index < declarators.size(); index++) {
+                String declarator = declarators.get(index).trim();
+                if (index > 0) {
+                    binding = nextFree(used);
+                    used.add(binding);
+                    lowered.append("\n").append(opaqueMatcher.group(1));
+                } else {
+                    lowered.append(opaqueMatcher.group(1));
+                }
+                lowered.append("layout(binding=").append(binding).append(") ")
+                        .append(opaqueMatcher.group(3))
+                        .append("uniform ").append(type).append(' ')
+                        .append(declarator).append(';');
+                resourceNames.add(declaratorName(declarator));
+            }
+            last = opaqueMatcher.end();
+        }
+        lowered.append(text, last, text.length());
+
+        return new ComputeResources(lowered.toString(), nextFree(used), List.copyOf(resourceNames));
+    }
+
+    private static String declaratorName(final String declarator) {
+        Matcher matcher = Pattern.compile("^([A-Za-z_]\\w*)").matcher(declarator);
+        if (!matcher.find()) {
+            throw new IllegalStateException("cannot parse compute resource declarator '" + declarator + "'");
+        }
+        return matcher.group(1);
+    }
+
+    private static int existingBinding(final String layout) {
+        if (layout == null) {
+            return -1;
+        }
+        Matcher matcher = BINDING_ARGUMENT.matcher(layout);
+        return matcher.find() ? Integer.parseInt(matcher.group(1)) : -1;
+    }
+
+    private static int nextFree(final Set<Integer> used) {
+        int candidate = 0;
+        while (used.contains(candidate)) {
+            candidate++;
+        }
+        return candidate;
+    }
+
     private static String renderUniformBlock(final List<LooseUniform> uniforms) {
-        StringBuilder block = new StringBuilder("layout(std140) uniform ")
-                .append(UNIFORM_BLOCK_NAME).append(" {\n");
+        return renderUniformBlock(uniforms, -1);
+    }
+
+    private static String renderUniformBlock(final List<LooseUniform> uniforms, final int binding) {
+        StringBuilder block = new StringBuilder("layout(std140");
+        if (binding >= 0) {
+            block.append(", binding=").append(binding);
+        }
+        block.append(") uniform ").append(UNIFORM_BLOCK_NAME).append(" {\n");
         for (LooseUniform uniform : uniforms) {
             block.append("    ").append(uniform.declaration()).append(";\n");
         }
@@ -458,6 +631,28 @@ public final class IrisMetalGlslLinker {
     }
 
     private record Std140Type(int alignment, int byteSize) {
+    }
+
+    /** Lowered compute source plus its hoisted-uniform block metadata. */
+    private record ComputeResources(String source, int uniformBinding, List<String> resourceNames) {
+    }
+
+    /**
+     * A compute program lowered for the Vulkan/SPIR-V path:
+     * {@code uniformBinding} is the {@code layout(binding=N)} of the hoisted
+     * std140 {@value IrisMetalGlslLinker#UNIFORM_BLOCK_NAME} block
+     * ({@code -1} when the program declares no loose uniforms), and
+     * {@code resourceNames} lists the sampled images / storage images / SSBOs
+     * in binding assignment order (diagnostics and gates).
+     */
+    public record LinkedComputeProgram(
+            String name,
+            String glsl,
+            List<UniformMember> uniformLayout,
+            int uniformBlockSize,
+            int uniformBinding,
+            List<String> resourceNames
+    ) {
     }
 
     public record UniformMember(

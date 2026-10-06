@@ -95,6 +95,18 @@ public final class MetalDebugSwitches {
     public static final boolean VERTEX_ENGINE_PROJECTION = !"off".equalsIgnoreCase(
             System.getProperty("metallum.iris.debug.vertexEngineProjection", "on").trim()
     );
+    /**
+     * GLSL precision preamble: injects {@code precision highp float/int;}
+     * before every raster shader compiled through glslang. Vulkan-mode glslang
+     * treats an unqualified float parameter as having no precision and rejects
+     * user overloads of built-ins such as {@code fma} ("overloaded functions
+     * must have the same parameter precision qualifiers"), which Mellow's
+     * FABULOUS composite10 triggers. On by default; {@code
+     * -Dmetallum.iris.glslangPrecision=off} restores the old preamble.
+     */
+    public static final boolean GLSLANG_PRECISION_PREAMBLE = !"off".equalsIgnoreCase(
+            System.getProperty("metallum.iris.glslangPrecision", "on").trim()
+    );
     /** Non-terrain world-program override; on by default, {@code -Dmetallum.iris.worldPass=off} disables it. */
     public static final boolean WORLD_PASS = !"off".equalsIgnoreCase(
             System.getProperty("metallum.iris.worldPass", "on").trim()
@@ -183,7 +195,7 @@ public final class MetalDebugSwitches {
             || NO_CLOUDS_HARD || MAGENTA_CLEAR || !SHADOW_PASS || NO_SHADOWS
             || !SHADOW_CULLING.isEmpty() || !SHADOW_DEPTH_FIX || BLEND_OVERRIDES
             || !SIZE_BUFFER || DUMP_BINDINGS || LOG_UNIFORMS || FLIP_TRACE
-            || !VERTEX_ENGINE_PROJECTION;
+            || !VERTEX_ENGINE_PROJECTION || !GLSLANG_PRECISION_PREAMBLE;
 
     /** One {@code stageStrip} entry: a pass name plus the target index to tile. */
     public record StripEntry(String passName, int targetIndex) {
@@ -257,12 +269,12 @@ public final class MetalDebugSwitches {
 
     static {
         if (PROBES_ACTIVE) {
-            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: build={} skipDeferred={} skipPost={} view={} viewGain={} skipPass={} noShadowMatrices={} zeroVl={} zeroBloom={} stageStrip={} noVanillaSky={} noVanillaClouds={} noCloudsHard={} magentaClear={} shadowPass={} noShadows={} shadowCulling={} shadowDepthFix={} blendOverrides={} sizeBuffer={} dumpBindings={} logUniforms={} flipTrace={}",
+            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: build={} skipDeferred={} skipPost={} view={} viewGain={} skipPass={} noShadowMatrices={} zeroVl={} zeroBloom={} stageStrip={} noVanillaSky={} noVanillaClouds={} noCloudsHard={} magentaClear={} shadowPass={} noShadows={} shadowCulling={} shadowDepthFix={} blendOverrides={} sizeBuffer={} dumpBindings={} logUniforms={} flipTrace={} vertexEngineProjection={} glslangPrecision={}",
                     BUILD_TAG, SKIP_DEFERRED, SKIP_POST, VIEW, VIEW_GAIN, SKIP_PASS, NO_SHADOW_MATRICES, ZERO_VL, ZERO_BLOOM,
                     System.getProperty("metallum.iris.debug.stageStrip", ""),
                     NO_VANILLA_SKY, NO_VANILLA_CLOUDS, NO_CLOUDS_HARD, MAGENTA_CLEAR,
                     SHADOW_PASS, NO_SHADOWS, SHADOW_CULLING, SHADOW_DEPTH_FIX, BLEND_OVERRIDES, SIZE_BUFFER,
-                    DUMP_BINDINGS, LOG_UNIFORMS, FLIP_TRACE);
+                    DUMP_BINDINGS, LOG_UNIFORMS, FLIP_TRACE, VERTEX_ENGINE_PROJECTION, GLSLANG_PRECISION_PREAMBLE);
         }
     }
 }

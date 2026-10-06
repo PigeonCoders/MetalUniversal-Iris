@@ -169,12 +169,14 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             int index,
             ComputeSource source,
             IrisMetalProgramFrontend.ComputeProgram program,
+            IrisMetalGlslLinker.LinkedComputeProgram linked,
             List<ComputeBinding> bindings,
             @Nullable BitSet readsFromAlt,
             String token
     ) {
         ComputePlan {
             Objects.requireNonNull(textureStage, "textureStage");
+            Objects.requireNonNull(linked, "linked");
             bindings = List.copyOf(bindings);
             readsFromAlt = readsFromAlt == null ? null : (BitSet) readsFromAlt.clone();
         }
@@ -451,9 +453,12 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             final @Nullable BitSet readsFromAlt
     ) {
         IrisMetalProgramFrontend.ComputeProgram patched = programs.compute(source, textureStage);
+        IrisMetalGlslLinker.LinkedComputeProgram linked = IrisMetalGlslLinker.linkCompute(
+                source.getName(), patched.patchedSource()
+        );
         return new ComputePlan(
-                stage, textureStage, index, source, patched,
-                reflectComputeBindings(patched.patchedSource(), source.getName()),
+                stage, textureStage, index, source, patched, linked,
+                reflectComputeBindings(linked.glsl(), source.getName()),
                 readsFromAlt,
                 token(stage, index, source.getName())
         );
@@ -484,6 +489,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             for (Stage stage : Stage.values()) {
                 for (OrderedOperation operation : orderedOperations.get(stage)) {
                     if (operation.compute() != null) {
+                        registerComputeUniforms(uniformValues, operation.compute());
                         computePipelines.put(
                                 operation.compute(), compileCompute(device, operation.compute())
                         );
@@ -504,6 +510,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                 }
             }
             for (ComputePlan plan : shadowComputes) {
+                registerComputeUniforms(uniformValues, plan);
                 computePipelines.put(plan, compileCompute(device, plan));
             }
             if (finalPlan != null) {
@@ -1411,6 +1418,20 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                 pass.bindSampler(binding.binding(), ((MetalGpuSampler) texture.sampler()).nativeHandle());
             }
         }
+        if (plan.linked().uniformBinding() >= 0) {
+            com.mojang.blaze3d.buffers.GpuBufferSlice slice = uniformSlice(plan.token());
+            if (slice == null) {
+                throw new IllegalStateException(
+                        "Iris compute " + plan.source().getName()
+                                + " is missing its hoisted uniform block"
+                );
+            }
+            pass.bindBuffer(
+                    plan.linked().uniformBinding(),
+                    (MetalGpuBuffer) slice.buffer(),
+                    slice.offset()
+            );
+        }
     }
 
     private void dispatchCompute(
@@ -1964,12 +1985,27 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         }
     }
 
+    private static void registerComputeUniforms(
+            final IrisMetalUniformValues uniformValues,
+            final ComputePlan plan
+    ) {
+        if (plan.linked().uniformLayout().isEmpty()) {
+            return;
+        }
+        uniformValues.registerCompute(
+                plan.token(),
+                plan.source().getName(),
+                plan.linked().uniformLayout(),
+                plan.linked().uniformBlockSize()
+        );
+    }
+
     private MetalComputePipeline compileCompute(final MetalDevice device, final ComputePlan plan) {
         try {
             return MetalComputePipeline.compileGlsl(
                     device,
                     "iris/gen" + generation + "/compute/" + plan.source().getName(),
-                    plan.program().patchedSource()
+                    plan.linked().glsl()
             );
         } catch (RuntimeException failure) {
             throw new IllegalStateException(
@@ -1987,6 +2023,11 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             String declarationKind = matcher.group(3);
             String type = matcher.group(4);
             String variable = matcher.group(5);
+            if (IrisMetalGlslLinker.UNIFORM_BLOCK_NAME.equals(type)) {
+                // The hoisted std140 block is bound separately at dispatch,
+                // not through the pack SSBO/image lookup.
+                continue;
+            }
             if (variable == null || variable.isBlank()) {
                 variable = type;
             }

@@ -245,11 +245,38 @@ final class IrisMetalUniformValues implements AutoCloseable {
         if (program.uniformLayout().isEmpty()) {
             return;
         }
+        register(token, label, program.uniformLayout(), program.uniformBlockSize(),
+                alphaTestReference(program));
+    }
+
+    /**
+     * Registers the hoisted std140 block of a compute program. Compute has no
+     * alpha test, so its block carries no reference value.
+     */
+    void registerCompute(
+            final Object token,
+            final String label,
+            final List<IrisMetalGlslLinker.UniformMember> layout,
+            final int size
+    ) {
+        if (layout.isEmpty()) {
+            return;
+        }
+        register(token, label, layout, size, OptionalDouble.empty());
+    }
+
+    private void register(
+            final Object token,
+            final String label,
+            final List<IrisMetalGlslLinker.UniformMember> layout,
+            final int size,
+            final OptionalDouble alphaTestReference
+    ) {
         for (Block block : this.blocks) {
             if (block.token.equals(token)) {
-                if (block.size != program.uniformBlockSize()
-                        || !block.layout.equals(program.uniformLayout())
-                        || !block.alphaTestReference.equals(alphaTestReference(program))) {
+                if (block.size != size
+                        || !block.layout.equals(layout)
+                        || !block.alphaTestReference.equals(alphaTestReference)) {
                     throw new IllegalStateException(
                             "Iris uniform token was registered with two different layouts or alpha-test references: "
                                     + token
@@ -258,13 +285,7 @@ final class IrisMetalUniformValues implements AutoCloseable {
                 return;
             }
         }
-        this.blocks.add(new Block(
-                token,
-                label,
-                program.uniformLayout(),
-                program.uniformBlockSize(),
-                alphaTestReference(program)
-        ));
+        this.blocks.add(new Block(token, label, layout, size, alphaTestReference));
     }
 
     /**
