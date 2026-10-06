@@ -56,6 +56,7 @@ final class MellowFabulousPrecisionTest {
 
     @Test
     void fabulousComposite10PrecisionPreambleCoversFmaOverloads() throws Exception {
+        Assumptions.assumeTrue(Files.exists(PACK), "Mellow fixture missing: " + PACK);
         Iris.testing = true;
         try (FileSystem fileSystem = FileSystems.newFileSystem(PACK, Map.of())) {
             ShaderPack pack = new ShaderPack(
@@ -96,6 +97,7 @@ final class MellowFabulousPrecisionTest {
 
     @Test
     void fabulousComposite10CompilesWhenGlslangIsAvailable() throws Exception {
+        Assumptions.assumeTrue(Files.exists(PACK), "Mellow fixture missing: " + PACK);
         boolean canCompile;
         try {
             GlslangBridge.compileGlslToSpv(
