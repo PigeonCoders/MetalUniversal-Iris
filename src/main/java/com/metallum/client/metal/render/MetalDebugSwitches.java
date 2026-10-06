@@ -77,6 +77,24 @@ public final class MetalDebugSwitches {
     public static final boolean SHADOW_DEPTH_FIX = !"off".equalsIgnoreCase(
             System.getProperty("metallum.iris.debug.shadowDepthFix", "on").trim()
     );
+    /**
+     * Mellow waving-foliage depth fix. The main pass rasterizes in the engine's
+     * zero-to-one projection space (Sodium's {@code u_ProjectionMatrix}), but
+     * {@code gbufferProjection} is handed to packs in Iris's OpenGL [-1,1]
+     * space. A pack vertex shader that rewrites {@code gl_Position} from
+     * {@code gbufferProjection} (Mellow's WAVE_LEAVES branch) therefore stores
+     * depth {@code 2d-1} instead of {@code d}, so waving leaves occlude blocks
+     * out to about twice their own distance. The fix renames only the
+     * vertex-stage identifier to a second block member fed by the engine-space
+     * projection (the same engine-forward / pack-inverse split the port already
+     * applies to {@code iris_ProjMat}/{@code iris_ProjMatInverse}), leaving
+     * fragment-stage pack math in OpenGL space. On by default;
+     * {@code -Dmetallum.iris.debug.vertexEngineProjection=off} restores the
+     * previous shared-space behavior for A/B.
+     */
+    public static final boolean VERTEX_ENGINE_PROJECTION = !"off".equalsIgnoreCase(
+            System.getProperty("metallum.iris.debug.vertexEngineProjection", "on").trim()
+    );
     /** Non-terrain world-program override; on by default, {@code -Dmetallum.iris.worldPass=off} disables it. */
     public static final boolean WORLD_PASS = !"off".equalsIgnoreCase(
             System.getProperty("metallum.iris.worldPass", "on").trim()
@@ -164,7 +182,8 @@ public final class MetalDebugSwitches {
             || !STAGE_STRIP.isEmpty() || NO_VANILLA_SKY || NO_VANILLA_CLOUDS
             || NO_CLOUDS_HARD || MAGENTA_CLEAR || !SHADOW_PASS || NO_SHADOWS
             || !SHADOW_CULLING.isEmpty() || !SHADOW_DEPTH_FIX || BLEND_OVERRIDES
-            || !SIZE_BUFFER || DUMP_BINDINGS || LOG_UNIFORMS || FLIP_TRACE;
+            || !SIZE_BUFFER || DUMP_BINDINGS || LOG_UNIFORMS || FLIP_TRACE
+            || !VERTEX_ENGINE_PROJECTION;
 
     /** One {@code stageStrip} entry: a pass name plus the target index to tile. */
     public record StripEntry(String passName, int targetIndex) {

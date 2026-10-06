@@ -677,6 +677,7 @@ final class IrisMetalUniformValues implements AutoCloseable {
             Matrix4f modelViewInverse,
             Matrix4f projection,
             Matrix4f projectionInverse,
+            Matrix4f engineProjection,
             Matrix4f shadowModelView,
             Matrix4f shadowModelViewInverse,
             Matrix4f shadowProjection,
@@ -758,7 +759,7 @@ final class IrisMetalUniformValues implements AutoCloseable {
     private Frame neutralFrame() {
         SystemFrameTime systemTime = systemFrameTime();
         return new Frame(
-                new Matrix4f(), new Matrix4f(), new Matrix4f(), new Matrix4f(),
+                new Matrix4f(), new Matrix4f(), new Matrix4f(), new Matrix4f(), new Matrix4f(),
                 new Matrix4f(), new Matrix4f(), new Matrix4f(), new Matrix4f(),
                 new Matrix3f(),
                 new Vector3d(),
@@ -781,7 +782,12 @@ final class IrisMetalUniformValues implements AutoCloseable {
         ClientLevel level = minecraft.level;
 
         Matrix4f modelView = new Matrix4f(state.getGbufferModelView());
-        Matrix4f projection = MetalIrisDepthConvention.packProjection(state.getGbufferProjection());
+        // Engine-space (zero-to-one) projection, as Sodium draws it. Pack-space
+        // matrices convert this for fragment reconstruction; the vertex-stage
+        // member keeps the engine values so gl_Position stays in the pass's
+        // depth convention (see MetalDebugSwitches.VERTEX_ENGINE_PROJECTION).
+        Matrix4f engineProjection = new Matrix4f(state.getGbufferProjection());
+        Matrix4f projection = MetalIrisDepthConvention.packProjection(engineProjection);
         warnIfUnfilled(modelView, projection);
 
         Matrix4f modelViewInverse = new Matrix4f(modelView).invert();
@@ -802,7 +808,7 @@ final class IrisMetalUniformValues implements AutoCloseable {
         float shadowAngle = CelestialUniforms.getSunAngle(day) / 360.0f;
         ShadowMatrixSet shadowMatrices = computeShadowMatrices(
                 modelView, modelViewInverse, projection, projectionInverse,
-                new Matrix4f(state.getGbufferProjection()), cameraPosition, shadowAngle
+                engineProjection, cameraPosition, shadowAngle
         );
         this.currentShadowMatrices = shadowMatrices;
         Vector4f sun = day
@@ -922,6 +928,7 @@ final class IrisMetalUniformValues implements AutoCloseable {
                 modelViewInverse,
                 projection,
                 projectionInverse,
+                engineProjection,
                 shadowMatrices.modelView(),
                 shadowMatrices.modelViewInverse(),
                 shadowMatrices.packProjection(),
@@ -1282,6 +1289,12 @@ final class IrisMetalUniformValues implements AutoCloseable {
             case "gbufferModelViewInverse", "iris_ModelViewMatrixInverse" -> putMat4(out, at, frame.modelViewInverse());
             case "shadowModelViewInverse" -> putMat4(out, at, frame.shadowModelViewInverse());
             case "gbufferProjection", "iris_ProjectionMatrix" -> putMat4(out, at, frame.projection());
+            // Vertex-stage twin of the pack projection (see
+            // MetalDebugSwitches.VERTEX_ENGINE_PROJECTION): gl_Position computed
+            // in vertex code must stay in the engine's zero-to-one drawing
+            // space, while the fragment stage keeps the OpenGL-space member.
+            case IrisMetalGlslLinker.VERTEX_ENGINE_PROJECTION_UNIFORM ->
+                    putMat4(out, at, frame.engineProjection());
             case "shadowProjection" -> putMat4(out, at, frame.shadowProjection());
             case "gbufferProjectionInverse", "iris_ProjectionMatrixInverse" -> putMat4(out, at, frame.projectionInverse());
             case "shadowProjectionInverse" -> putMat4(out, at, frame.shadowProjectionInverse());

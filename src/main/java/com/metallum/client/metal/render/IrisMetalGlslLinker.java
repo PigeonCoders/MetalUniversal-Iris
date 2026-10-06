@@ -18,6 +18,17 @@ import java.util.regex.Pattern;
 public final class IrisMetalGlslLinker {
     public static final String UNIFORM_BLOCK_NAME = "MetallumIrisUniforms";
     public static final String SODIUM_PUSH_CONSTANT_BLOCK_NAME = "MetallumSodiumPushConstants";
+    /**
+     * Vertex-stage member that carries the engine's zero-to-one projection when
+     * {@link MetalDebugSwitches#VERTEX_ENGINE_PROJECTION} is on. The same
+     * program keeps {@code gbufferProjection} (OpenGL [-1,1] pack space) for
+     * its fragment stage.
+     */
+    static final String VERTEX_ENGINE_PROJECTION_UNIFORM = "metallum_irisVertexEngineProjection";
+
+    private static final Pattern VERTEX_PACK_PROJECTION = Pattern.compile(
+            "\\b(?:gbufferProjection|iris_ProjectionMatrix)\\b"
+    );
 
     private static final Pattern UNIFORM_STATEMENT =
             Pattern.compile("(?m)^[ \\t]*uniform\\b([^;{}]*);");
@@ -96,7 +107,7 @@ public final class IrisMetalGlslLinker {
         }
 
         try {
-            LooseExtraction vertex = extractLooseUniforms(normalize(program.vertexSource()));
+            LooseExtraction vertex = extractLooseUniforms(normalize(vertexProjectionSource(program.vertexSource())));
             LooseExtraction fragment = extractLooseUniforms(normalize(program.fragmentSource()));
 
             List<LooseUniform> vertexPack = sodium
@@ -152,6 +163,26 @@ public final class IrisMetalGlslLinker {
 
     private static String normalize(final String source) {
         return HOSTILE_IDENTIFIER.matcher(stripComments(source)).replaceAll("metallum_id_$1");
+    }
+
+    /**
+     * Renames the vertex stage's {@code gbufferProjection} to the dedicated
+     * engine-space member. The main pass rasterizes with the engine's
+     * zero-to-one projection (Sodium {@code u_ProjectionMatrix}), while packs
+     * receive {@code gbufferProjection} in Iris's OpenGL [-1,1] space for
+     * fragment reconstruction. A vertex shader that rewrites {@code gl_Position}
+     * from {@code gbufferProjection} (Mellow's WAVE_LEAVES branch) would
+     * otherwise store depth {@code 2d-1} instead of {@code d}, letting waving
+     * foliage occlude blocks out to about twice its own distance. Fragment-stage
+     * pack math keeps OpenGL space, mirroring the existing
+     * {@code iris_ProjMat} (engine) / {@code iris_ProjMatInverse} (pack) split.
+     * Gated by {@link MetalDebugSwitches#VERTEX_ENGINE_PROJECTION}.
+     */
+    private static String vertexProjectionSource(final String source) {
+        if (!MetalDebugSwitches.VERTEX_ENGINE_PROJECTION) {
+            return source;
+        }
+        return VERTEX_PACK_PROJECTION.matcher(source).replaceAll(VERTEX_ENGINE_PROJECTION_UNIFORM);
     }
 
     private static LooseExtraction extractLooseUniforms(final String source) {

@@ -88,6 +88,7 @@ public final class MetalProbeReport {
         content.append("  noShadows=").append(MetalDebugSwitches.NO_SHADOWS).append(System.lineSeparator());
         content.append("  shadowCulling=").append(MetalDebugSwitches.SHADOW_CULLING).append(System.lineSeparator());
         content.append("  shadowDepthFix=").append(MetalDebugSwitches.SHADOW_DEPTH_FIX).append(System.lineSeparator());
+        content.append("  vertexEngineProjection=").append(MetalDebugSwitches.VERTEX_ENGINE_PROJECTION).append(System.lineSeparator());
         content.append("  zeroVl=").append(MetalDebugSwitches.ZERO_VL).append(System.lineSeparator());
         content.append("  zeroBloom=").append(MetalDebugSwitches.ZERO_BLOOM).append(System.lineSeparator());
         content.append("  noVanillaSky=").append(MetalDebugSwitches.NO_VANILLA_SKY).append(System.lineSeparator());
@@ -141,6 +142,7 @@ public final class MetalProbeReport {
             active.add("shadowCulling=" + MetalDebugSwitches.SHADOW_CULLING);
         }
         addIf(active, "shadowDepthFix=off", !MetalDebugSwitches.SHADOW_DEPTH_FIX);
+        addIf(active, "vertexEngineProjection=off", !MetalDebugSwitches.VERTEX_ENGINE_PROJECTION);
         addIf(active, "zeroVl", MetalDebugSwitches.ZERO_VL);
         addIf(active, "zeroBloom", MetalDebugSwitches.ZERO_BLOOM);
         addIf(active, "noVanillaSky", MetalDebugSwitches.NO_VANILLA_SKY);
