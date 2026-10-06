@@ -525,7 +525,9 @@ public final class IrisMetalGlslLinker {
             if (declared.contains(name)) {
                 continue;
             }
-            Pattern reference = Pattern.compile("\\b" + Pattern.quote(name) + "\\b");
+            // Skip qualified member accesses (`instance.name`): those belong to
+            // another block and never collide with a global block member.
+            Pattern reference = Pattern.compile("(?<![\\w.])" + Pattern.quote(name) + "\\b");
             if (!reference.matcher(result).find()) {
                 continue;
             }
