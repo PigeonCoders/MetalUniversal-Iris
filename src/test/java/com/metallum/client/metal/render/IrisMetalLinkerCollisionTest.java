@@ -5,6 +5,7 @@ import net.irisshaders.iris.Iris;
 import net.irisshaders.iris.gl.shader.StandardMacros;
 import net.irisshaders.iris.shaderpack.ShaderPack;
 import net.irisshaders.iris.shaderpack.loading.ProgramArrayId;
+import net.irisshaders.iris.shaderpack.loading.ProgramId;
 import net.irisshaders.iris.shaderpack.materialmap.NamespacedId;
 import net.irisshaders.iris.shaderpack.programs.ProgramSet;
 import net.irisshaders.iris.shaderpack.programs.ProgramSource;
@@ -60,6 +61,15 @@ final class IrisMetalLinkerCollisionTest {
         assertFalse(tanhPrepared.matches("(?s).*\\btanh\\b.*"),
                 "no bare tanh reference may survive in the glslang source");
 
+        String biasSource = "#version 120\n"
+                + "float bias() { return 0.00005; }\n"
+                + "void main() { gl_Position = vec4(bias()); }\n";
+        String biasPrepared = GlslangSourcePrep.buildFullSource(biasSource, null);
+        assertTrue(biasPrepared.contains("float metallum_user_bias()"),
+                "Bliss's bias() must be renamed away from metal::bias");
+        assertFalse(biasPrepared.matches("(?s).*\\bbias\\b.*"),
+                "no bare bias reference may survive in the glslang source");
+
         String without = "#version 120\n"
                 + "float clamp01(float a) { return a; }\n"
                 + "void main() { gl_Position = vec4(0.0); }\n";
@@ -104,6 +114,33 @@ final class IrisMetalLinkerCollisionTest {
                 }
                 Assumptions.abort("Bliss deferred program not found");
             }
+        }
+    }
+
+    @Test
+    void blissHandProgramRenamesMetalReservedBias() throws Exception {
+        Assumptions.assumeTrue(Files.exists(BLISS), "Bliss fixture missing: " + BLISS);
+        Iris.testing = true;
+        try (FileSystem fileSystem = FileSystems.newFileSystem(BLISS, Map.of())) {
+            ShaderPack pack = new ShaderPack(
+                    fileSystem.getPath("/shaders"),
+                    Map.of(),
+                    StandardMacros.createStandardEnvironmentDefines(),
+                    false
+            );
+            ProgramSet programs = pack.getProgramSet(new NamespacedId("minecraft", "overworld"));
+            IrisMetalProgramFrontend frontend = new IrisMetalProgramFrontend(programs);
+            IrisMetalProgramFrontend.ResolvedProgram hand =
+                    frontend.resolve(ProgramId.Hand).orElseThrow();
+            IrisMetalGlslLinker.LinkedRasterProgram linked = IrisMetalGlslLinker.linkDefault(
+                    frontend.patchComposite(hand.source(), TextureStage.GBUFFERS_AND_SHADOW));
+            assertTrue(linked.fragmentGlsl().contains("float bias("),
+                    "Bliss gbuffers must define its own bias() helper (the MSL collision trigger)");
+            String prepared = GlslangSourcePrep.buildFullSource(linked.fragmentGlsl(), null);
+            assertTrue(prepared.contains("metallum_user_bias("),
+                    "the pack's bias() must be renamed away from metal::bias");
+            assertFalse(prepared.matches("(?s).*\\bbias\\b.*"),
+                    "no bare bias reference may survive in the glslang source");
         }
     }
 }

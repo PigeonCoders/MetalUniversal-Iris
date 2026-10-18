@@ -44,7 +44,7 @@ public final class GlslangSourcePrep {
      * unqualified float parameter no precision; declaring the defaults keeps
      * user code aligned with desktop-GL behavior. Kept as defense-in-depth:
      * the builtin-redeclaration failure that originally motivated it (Mellow's
-     * {@code fma}) is actually handled by {@link #USER_BUILTIN_FUNCTIONS},
+     * {@code fma}) is actually handled by {@link #RESERVED_USER_FUNCTIONS},
      * because no parameter precision can satisfy glslang's overload check.
      * Inert when {@link MetalDebugSwitches#GLSLANG_PRECISION_PREAMBLE} is
      * disabled.
@@ -56,27 +56,40 @@ public final class GlslangSourcePrep {
     );
 
     /**
-     * Builtins that {@code #version 120}-era packs legitimately define
-     * themselves because they only exist in later GLSL versions (Mellow's SMAA
-     * block defines {@code fma}; Bliss's deferred vertex defines {@code tanh}).
-     * Once the source is forced to a modern Vulkan-compatible version, glslang
-     * rejects the redeclaration with "overloaded functions must have the same
-     * parameter precision qualifiers" — builtin parameters carry no precision,
-     * so no source qualifier can satisfy the check. Renaming the pack's
-     * definition and every reference to it keeps the pack's intended math: at
-     * its original version, all of its calls already targeted its own
-     * function. Gated by {@link MetalDebugSwitches#GLSLANG_BUILTIN_RENAME}.
+     * User-defined function names that must be renamed before compiling a
+     * pack source, in two classes:
+     *
+     * <ul>
+     *   <li>GLSL builtins that {@code #version 120}-era packs legitimately
+     *       define themselves because they only exist in later versions
+     *       (Mellow's SMAA block defines {@code fma}; Bliss defines
+     *       {@code tanh}). Forcing a modern Vulkan-compatible version makes
+     *       glslang reject the redeclaration ("overloaded functions must have
+     *       the same parameter precision qualifiers") and no source precision
+     *       can satisfy that check.</li>
+     *   <li>Metal namespace names that SPIRV-Cross emits unqualified in
+     *       generated sampling code (Bliss's gbuffers define {@code bias()},
+     *       which collides with {@code metal::bias} used for sampling with
+     *       bias). The MSL compiler reports "reference to 'bias' is
+     *       ambiguous".</li>
+     * </ul>
+     *
+     * Renaming the pack's definition and every reference to it keeps the
+     * pack's intended math: at its original version, all of its calls already
+     * targeted its own function. Gated by
+     * {@link MetalDebugSwitches#GLSLANG_BUILTIN_RENAME}.
      */
-    private static final List<String> USER_BUILTIN_FUNCTIONS = List.of(
+    private static final List<String> RESERVED_USER_FUNCTIONS = List.of(
             "fma", "tanh", "sinh", "cosh", "round", "trunc", "roundEven",
-            "isnan", "isinf", "frexp", "ldexp", "findLSB", "findMSB"
+            "isnan", "isinf", "frexp", "ldexp", "findLSB", "findMSB",
+            "bias", "level", "gradient2d", "gradient3d", "gradientcube"
     );
-    private static final Pattern USER_BUILTIN_DECLARATION = Pattern.compile(
+    private static final Pattern RESERVED_USER_DECLARATION = Pattern.compile(
             "(?m)^[ \\t]*(?:const[ \\t]+)?"
                     + "(?:void|float|double|int|uint|bool|"
                     + "vec[234]|dvec[234]|ivec[234]|uvec[234]|bvec[234]|"
                     + "mat[234](?:x[234])?|dmat[234](?:x[234])?)[ \\t]+"
-                    + "(" + String.join("|", USER_BUILTIN_FUNCTIONS) + ")[ \\t]*\\("
+                    + "(" + String.join("|", RESERVED_USER_FUNCTIONS) + ")[ \\t]*\\("
     );
     private static final String RENAMED_USER_FUNCTION_PREFIX = "metallum_user_";
 
@@ -106,7 +119,7 @@ public final class GlslangSourcePrep {
     /**
      * Renames user-defined functions that collide with a GLSL builtin once the
      * source is forced to a modern version (see
-     * {@link #USER_BUILTIN_FUNCTIONS}). Only applies when the source actually
+     * {@link #RESERVED_USER_FUNCTIONS}). Only applies when the source actually
      * declares such a function; then every reference in the translation unit
      * is renamed so declarations, prototypes and calls stay consistent. Inert
      * when {@link MetalDebugSwitches#GLSLANG_BUILTIN_RENAME} is disabled.
@@ -115,7 +128,7 @@ public final class GlslangSourcePrep {
         if (!MetalDebugSwitches.GLSLANG_BUILTIN_RENAME) {
             return source;
         }
-        Matcher matcher = USER_BUILTIN_DECLARATION.matcher(source);
+        Matcher matcher = RESERVED_USER_DECLARATION.matcher(source);
         Set<String> declared = new LinkedHashSet<>();
         while (matcher.find()) {
             declared.add(matcher.group(1));
