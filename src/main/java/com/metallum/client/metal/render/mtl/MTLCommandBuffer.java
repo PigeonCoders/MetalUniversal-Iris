@@ -129,6 +129,16 @@ public final class MTLCommandBuffer {
         MetalNativeBridge.MTLCommandBuffer_commitWithSignal(handle(), semaphore);
     }
 
+    /** Metal {@code GPUStartTime} in seconds; NaN when unavailable. */
+    public double gpuStartTime() {
+        return MetalNativeBridge.MTLCommandBuffer_gpuStartTime(handle());
+    }
+
+    /** Metal {@code GPUEndTime} in seconds; NaN when unavailable. */
+    public double gpuEndTime() {
+        return MetalNativeBridge.MTLCommandBuffer_gpuEndTime(handle());
+    }
+
     public void pushDebugGroup(final String label) {
         MetalNativeBridge.MTLCommandBuffer_pushDebugGroup(handle(), label);
     }

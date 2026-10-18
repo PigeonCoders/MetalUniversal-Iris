@@ -183,6 +183,15 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         }
 
         if (toClose != null) {
+            if (MetalPerformanceProbe.ENABLED) {
+                // The semaphore waited above proves this buffer completed, so
+                // Metal's GPU timestamps are final; read them before close().
+                double gpuStart = toClose.buffer.gpuStartTime();
+                double gpuEnd = toClose.buffer.gpuEndTime();
+                if (gpuStart > 0.0 && gpuEnd > gpuStart) {
+                    MetalPerformanceProbe.recordGpuFrame((gpuEnd - gpuStart) * 1000.0);
+                }
+            }
             toClose.buffer.close();
         }
 
@@ -223,6 +232,11 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
                 && MetalPipelineSupport.sameHandle(renderDepthAttachment, depthAttachment);
         if (sameAttachments && !clearDepthEnabled && !hasClearColor(clearColorEnabled)) {
             return (MTLRenderCommandEncoder) currentEncoder;
+        }
+        if (!sameAttachments && currentEncoder instanceof MTLRenderCommandEncoder) {
+            // An attachment change tears down the open render encoder and
+            // starts a new one; count the transition, not the first encoder.
+            MetalPerformanceProbe.recordEncoderSwitch();
         }
 
         endEncoder();
@@ -414,6 +428,7 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         );
         currentRenderPass = renderPass;
         renderPass.pushDebugGroup(descriptor.label());
+        MetalPerformanceProbe.recordRenderPassCreated();
         return renderPass;
     }
 
@@ -423,6 +438,7 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
             currentRenderPass.materializePendingClear();
             currentRenderPass.popDebugGroup();
             currentRenderPass = null;
+            MetalPerformanceProbe.recordRenderPassSubmitted();
         }
     }
 
@@ -781,6 +797,9 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         }
         flushPendingClear(srcTexture);
         flushPendingClearForWrite(dstTexture);
+        MetalPerformanceProbe.recordTextureCopy(
+                (long) width * (long) height * srcTexture.getFormat().blockSize()
+        );
         MTLBlitCommandEncoder blit = blitCommandEncoder();
         blit.copyFromTextureToTexture(
                 srcTexture.nativeHandle(),

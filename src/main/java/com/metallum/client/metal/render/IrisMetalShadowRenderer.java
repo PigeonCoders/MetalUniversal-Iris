@@ -247,6 +247,11 @@ final class IrisMetalShadowRenderer {
     }
 
     private void recordTerrainStats(final boolean translucent) {
+        IrisMetalRuntimeReceipts receipts = this.pipeline.receipts();
+        if (!receipts.enabled()) {
+            // No receipt sink: skip sectionStatistics() and the string build.
+            return;
+        }
         String stats;
         try {
             var extractor = Minecraft.getInstance().levelExtractor;
@@ -254,7 +259,7 @@ final class IrisMetalShadowRenderer {
         } catch (Throwable ignored) {
             stats = "<unavailable>";
         }
-        this.pipeline.receipts().recordEvent(
+        receipts.recordEvent(
                 "shadow.terrain stats=" + stats + " translucent=" + translucent
         );
     }

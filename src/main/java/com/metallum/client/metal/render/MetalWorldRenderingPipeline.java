@@ -76,6 +76,12 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
     private int receiptWidth = -1;
     private int receiptHeight = -1;
     private boolean blockIdsInitialized;
+    /**
+     * World uniform blocks are generation-owned: register and prewarm them on
+     * the first frame only. A pack/dimension switch builds a new pipeline (and
+     * a new uniform registry), so the next generation registers again.
+     */
+    private boolean worldUniformsRegistered;
     /** Last M6.4 shadow-status line; a new line is emitted only when it changes. */
     private @Nullable String reportedShadowStatus;
 
@@ -211,11 +217,20 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
 
     @Override
     public void beginLevelRendering() {
+        MetalPerformanceProbe.beginFrame();
         this.receipts.recordEvent("frame.begin");
         IrisMetalWorldBridge.beginFrame();
         initializeBlockIds();
+        long prepareResourcesStart = MetalPerformanceProbe.beginStage();
         prepareResources();
+        MetalPerformanceProbe.endStage(
+                MetalPerformanceProbe.Stage.PREPARE_RESOURCES, prepareResourcesStart
+        );
+        long prepareUniformsStart = MetalPerformanceProbe.beginStage();
         prepareWorldUniforms();
+        MetalPerformanceProbe.endStage(
+                MetalPerformanceProbe.Stage.PREPARE_UNIFORMS, prepareUniformsStart
+        );
         Vector3d fog = CapturedRenderingState.INSTANCE.getFogColor();
         this.executionGraph.beginFrame(
                 this.resources(), new Vector4f((float) fog.x, (float) fog.y, (float) fog.z, 1.0F)
@@ -258,33 +273,38 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
     }
 
     private void prepareWorldUniforms() {
-        for (ShaderKey key : new ShaderKey[]{
-                ShaderKey.SODIUM_TERRAIN_SOLID,
-                ShaderKey.SODIUM_TERRAIN_CUTOUT,
-                ShaderKey.SODIUM_TERRAIN_TRANSLUCENT,
-                ShaderKey.SHADOW_SODIUM_TERRAIN_SOLID,
-                ShaderKey.SHADOW_SODIUM_TERRAIN_CUTOUT,
-                ShaderKey.SHADOW_SODIUM_TERRAIN_TRANSLUCENT
-        }) {
-            this.programs.sodium(key.getProgram(), key.getAlphaTest()).ifPresent(
-                    linked -> this.uniformValues.register(key, "sodium_" + key.getName(), linked)
-            );
-        }
-        // Pack uniform blocks for every world key the world bridge can
-        // install (M1 + M2 + M3), so uniformSlice(key) succeeds at draw time.
-        for (ShaderKey key : IrisMetalWorldBridge.WORLD_OVERRIDE_KEYS) {
-            IrisMetalWorldBridge.ProgramRequest request = IrisMetalWorldBridge.shaderKeyToProgramRequest(key);
-            this.programs.vanilla(
-                    request.program(), request.alphaTest(), request.lines(), request.clouds(), request.inputs()
-            ).ifPresent(linked -> this.uniformValues.register(
-                    key, "vanilla_" + key.getName(), linked
-            ));
-        }
         MetalDevice device = MetalDeviceRegistry.getActiveDevice();
         if (device == null) {
             throw new IllegalStateException("Iris Metal terrain uniforms have no active Metal device");
         }
-        this.uniformValues.prewarm(device);
+        if (!this.worldUniformsRegistered) {
+            for (ShaderKey key : new ShaderKey[]{
+                    ShaderKey.SODIUM_TERRAIN_SOLID,
+                    ShaderKey.SODIUM_TERRAIN_CUTOUT,
+                    ShaderKey.SODIUM_TERRAIN_TRANSLUCENT,
+                    ShaderKey.SHADOW_SODIUM_TERRAIN_SOLID,
+                    ShaderKey.SHADOW_SODIUM_TERRAIN_CUTOUT,
+                    ShaderKey.SHADOW_SODIUM_TERRAIN_TRANSLUCENT
+            }) {
+                this.programs.sodium(key.getProgram(), key.getAlphaTest()).ifPresent(
+                        linked -> this.uniformValues.register(key, "sodium_" + key.getName(), linked)
+                );
+            }
+            // Pack uniform blocks for every world key the world bridge can
+            // install (M1 + M2 + M3), so uniformSlice(key) succeeds at draw time.
+            // Runs once per generation: pack/dimension switches instantiate a
+            // new pipeline and therefore a fresh uniform registry.
+            for (ShaderKey key : IrisMetalWorldBridge.WORLD_OVERRIDE_KEYS) {
+                IrisMetalWorldBridge.ProgramRequest request = IrisMetalWorldBridge.shaderKeyToProgramRequest(key);
+                this.programs.vanilla(
+                        request.program(), request.alphaTest(), request.lines(), request.clouds(), request.inputs()
+                ).ifPresent(linked -> this.uniformValues.register(
+                        key, "vanilla_" + key.getName(), linked
+                ));
+            }
+            this.uniformValues.prewarm(device);
+            this.worldUniformsRegistered = true;
+        }
         this.uniformValues.updateFrame();
     }
 
@@ -364,6 +384,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
 
     @Override
     public void beginTranslucents() {
+        long perfStart = MetalPerformanceProbe.beginStage();
         this.receipts.recordEvent("depthtex1.capture");
         if (usesVanillaSceneDepth()) {
             // Vanilla depth is the authoritative scene depth: taken-over draws
@@ -385,10 +406,12 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
         if (!MetalDebugSwitches.SKIP_DEFERRED) {
             this.executionGraph.executeDeferred(this.resources());
         }
+        MetalPerformanceProbe.endStage(MetalPerformanceProbe.Stage.TRANSLUCENTS, perfStart);
     }
 
     @Override
     public void beginHand() {
+        long perfStart = MetalPerformanceProbe.beginStage();
         RenderTarget target = Minecraft.getInstance().gameRenderer.mainRenderTarget();
         GpuTextureView depthView = target.getDepthTextureView();
         if (depthView == null) {
@@ -406,6 +429,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
             // Legacy Iris-depth path: depthtex2 comes from the Iris mainDepth.
             this.executionGraph.captureNoHandDepthOnly(this.resources());
         }
+        MetalPerformanceProbe.endStage(MetalPerformanceProbe.Stage.HAND, perfStart);
     }
 
     /**
@@ -424,6 +448,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
             final Camera camera,
             final CameraRenderState cameraRenderState
     ) {
+        long perfStart = MetalPerformanceProbe.beginStage();
         if (this.directives.isPrepareBeforeShadow()) {
             this.receipts.recordEvent("prepare");
             this.executionGraph.executePrepare(this.resources());
@@ -446,6 +471,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
         this.receipts.recordEvent("shadow.composite");
         this.executionGraph.executeShadowComposite(this.resources(), castersRendered);
         reportShadowStatus(castersRendered);
+        MetalPerformanceProbe.endStage(MetalPerformanceProbe.Stage.SHADOWS, perfStart);
     }
 
     /**
@@ -487,6 +513,7 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
 
     @Override
     public void finalizeLevelRendering() {
+        long perfStart = MetalPerformanceProbe.beginStage();
         RenderTarget target = Minecraft.getInstance().gameRenderer.mainRenderTarget();
         GpuTexture depth = target.getDepthTexture();
         GpuTextureView colorView = target.getColorTextureView();
@@ -514,6 +541,8 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
                 colorView
         );
         this.frameState.endWorldRendering();
+        MetalPerformanceProbe.endStage(MetalPerformanceProbe.Stage.FINALIZE, perfStart);
+        MetalPerformanceProbe.endFrame();
     }
 
     @Override

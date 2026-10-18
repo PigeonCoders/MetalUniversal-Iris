@@ -359,11 +359,16 @@ final class IrisMetalUniformValues implements AutoCloseable {
         }
         Frame frame = sampleFrame();
         logFrameUniforms(frame);
+        long perfUploadBytes = 0L;
         for (Block block : this.blocks) {
             if (block.buffer != null) {
                 upload(block, frame);
+                if (MetalPerformanceProbe.ENABLED) {
+                    perfUploadBytes += block.size;
+                }
             }
         }
+        MetalPerformanceProbe.recordUniformUpload(perfUploadBytes);
         this.previousModelView.set(frame.modelView());
         this.previousProjection.set(frame.projection());
         this.previousCameraPosition.set(frame.cameraPosition());

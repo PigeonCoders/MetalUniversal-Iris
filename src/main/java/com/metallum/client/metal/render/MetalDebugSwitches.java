@@ -37,6 +37,14 @@ public final class MetalDebugSwitches {
     public static final boolean NO_CLOUDS_HARD = enabledFlag("metallum.iris.debug.noCloudsHard");
     public static final boolean MAGENTA_CLEAR = enabledFlag("metallum.iris.debug.magentaClear");
     /**
+     * Opt-in performance measurement ({@code -Dmetallum.perf}): CPU stage
+     * timings, draw/pass/encoder/copy/uniform counters and the Metal command
+     * buffer's GPU time, summarised into {@code metallum-probe.txt} once every
+     * 120 frames. Off by default; the hot path is gated by
+     * {@link MetalPerformanceProbe#ENABLED} and allocates nothing when off.
+     */
+    public static final boolean PERF = enabledFlag("metallum.perf");
+    /**
      * Probe-only: logs every per-drawbuffer {@code blend.*} override that
      * {@code IrisMetalCompiledPrograms.colorTargets} folds into the Metal PSO
      * blend state (once per program+slot+target), so the colortex&rarr;slot
@@ -210,7 +218,7 @@ public final class MetalDebugSwitches {
             || !SHADOW_CULLING.isEmpty() || !SHADOW_DEPTH_FIX || BLEND_OVERRIDES
             || !SIZE_BUFFER || DUMP_BINDINGS || LOG_UNIFORMS || FLIP_TRACE
             || !VERTEX_ENGINE_PROJECTION || !GLSLANG_PRECISION_PREAMBLE
-            || !GLSLANG_BUILTIN_RENAME;
+            || !GLSLANG_BUILTIN_RENAME || PERF;
 
     /** One {@code stageStrip} entry: a pass name plus the target index to tile. */
     public record StripEntry(String passName, int targetIndex) {
@@ -284,13 +292,13 @@ public final class MetalDebugSwitches {
 
     static {
         if (PROBES_ACTIVE) {
-            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: build={} skipDeferred={} skipPost={} view={} viewGain={} skipPass={} noShadowMatrices={} zeroVl={} zeroBloom={} stageStrip={} noVanillaSky={} noVanillaClouds={} noCloudsHard={} magentaClear={} shadowPass={} noShadows={} shadowCulling={} shadowDepthFix={} blendOverrides={} sizeBuffer={} dumpBindings={} logUniforms={} flipTrace={} vertexEngineProjection={} glslangPrecision={} glslangBuiltinRename={}",
+            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: build={} skipDeferred={} skipPost={} view={} viewGain={} skipPass={} noShadowMatrices={} zeroVl={} zeroBloom={} stageStrip={} noVanillaSky={} noVanillaClouds={} noCloudsHard={} magentaClear={} shadowPass={} noShadows={} shadowCulling={} shadowDepthFix={} blendOverrides={} sizeBuffer={} dumpBindings={} logUniforms={} flipTrace={} vertexEngineProjection={} glslangPrecision={} glslangBuiltinRename={} perf={}",
                     BUILD_TAG, SKIP_DEFERRED, SKIP_POST, VIEW, VIEW_GAIN, SKIP_PASS, NO_SHADOW_MATRICES, ZERO_VL, ZERO_BLOOM,
                     System.getProperty("metallum.iris.debug.stageStrip", ""),
                     NO_VANILLA_SKY, NO_VANILLA_CLOUDS, NO_CLOUDS_HARD, MAGENTA_CLEAR,
                     SHADOW_PASS, NO_SHADOWS, SHADOW_CULLING, SHADOW_DEPTH_FIX, BLEND_OVERRIDES, SIZE_BUFFER,
                     DUMP_BINDINGS, LOG_UNIFORMS, FLIP_TRACE, VERTEX_ENGINE_PROJECTION, GLSLANG_PRECISION_PREAMBLE,
-                    GLSLANG_BUILTIN_RENAME);
+                    GLSLANG_BUILTIN_RENAME, PERF);
         }
     }
 }

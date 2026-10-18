@@ -309,6 +309,8 @@ public final class MetalNativeBridge {
             MTLCommandQueueMakeCommandBuffer = downcall(lookup, "metallum_MTLCommandQueue_makeCommandBuffer", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
             createSemaphore = downcall(lookup, "metallum_create_semaphore", FunctionDescriptor.of(ValueLayout.ADDRESS));
             MTLCommandBufferCommitWithSignal = downcall(lookup, "metallum_MTLCommandBuffer_commitWithSignal", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+            MTLCommandBufferGpuStartTime = optionalDowncall(lookup, "metallum_MTLCommandBuffer_gpuStartTime", FunctionDescriptor.of(DOUBLE, ValueLayout.ADDRESS));
+            MTLCommandBufferGpuEndTime = optionalDowncall(lookup, "metallum_MTLCommandBuffer_gpuEndTime", FunctionDescriptor.of(DOUBLE, ValueLayout.ADDRESS));
             semaphoreWait = downcallWithoutCritical(lookup, "metallum_semaphore_wait", FunctionDescriptor.of(INT, ValueLayout.ADDRESS, LONG));
             MTLCommandBufferPushDebugGroup = downcall(lookup, "metallum_MTLCommandBuffer_pushDebugGroup", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
             MTLCommandBufferPopDebugGroup = downcall(lookup, "metallum_MTLCommandBuffer_popDebugGroup", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
@@ -783,6 +785,8 @@ public final class MetalNativeBridge {
     private static final MethodHandle MTLCommandQueueMakeCommandBuffer;
     private static final MethodHandle createSemaphore;
     private static final MethodHandle MTLCommandBufferCommitWithSignal;
+    private static final @Nullable MethodHandle MTLCommandBufferGpuStartTime;
+    private static final @Nullable MethodHandle MTLCommandBufferGpuEndTime;
     private static final MethodHandle semaphoreWait;
     private static final MethodHandle MTLCommandBufferPushDebugGroup;
     private static final MethodHandle MTLCommandBufferPopDebugGroup;
@@ -1021,6 +1025,36 @@ public final class MetalNativeBridge {
             MTLCommandBufferCommitWithSignal.invokeExact(segment(commandBuffer), segment(semaphore));
         } catch (Throwable throwable) {
             throw bridgeFailure("metallum_MTLCommandBuffer_commitWithSignal", throwable);
+        }
+    }
+
+    /**
+     * Metal's {@code GPUStartTime} (seconds) for a completed command buffer,
+     * or NaN when the running native library predates the perf downcall.
+     */
+    public static double MTLCommandBuffer_gpuStartTime(final MemorySegment commandBuffer) {
+        if (MTLCommandBufferGpuStartTime == null) {
+            return Double.NaN;
+        }
+        try {
+            return (double) MTLCommandBufferGpuStartTime.invokeExact(segment(commandBuffer));
+        } catch (Throwable throwable) {
+            throw bridgeFailure("metallum_MTLCommandBuffer_gpuStartTime", throwable);
+        }
+    }
+
+    /**
+     * Metal's {@code GPUEndTime} (seconds) for a completed command buffer, or
+     * NaN when the running native library predates the perf downcall.
+     */
+    public static double MTLCommandBuffer_gpuEndTime(final MemorySegment commandBuffer) {
+        if (MTLCommandBufferGpuEndTime == null) {
+            return Double.NaN;
+        }
+        try {
+            return (double) MTLCommandBufferGpuEndTime.invokeExact(segment(commandBuffer));
+        } catch (Throwable throwable) {
+            throw bridgeFailure("metallum_MTLCommandBuffer_gpuEndTime", throwable);
         }
     }
 

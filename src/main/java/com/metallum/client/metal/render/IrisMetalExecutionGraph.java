@@ -644,9 +644,11 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             shadows.publishFlipState(plan.stateAfter());
             shadowState = plan.stateAfter();
         }
-        recordShadowReceiptOnce("shadow.composite extent=" + targets.width() + "x" + targets.height()
-                + " passes=" + shadowRasterPlans.size()
-                + " computes=" + computePlans.get(Stage.SHADOW_COMPOSITE).size());
+        if (shadowReceiptsEnabled()) {
+            recordShadowReceiptOnce("shadow.composite extent=" + targets.width() + "x" + targets.height()
+                    + " passes=" + shadowRasterPlans.size()
+                    + " computes=" + computePlans.get(Stage.SHADOW_COMPOSITE).size());
+        }
     }
 
     /** The flip snapshot for one shadowcomp slot (compute-first slot ordering). */
@@ -739,8 +741,10 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             clearShadowColorSide(shadows, drawBuffers, clearColors, false);
             clearShadowColorSide(shadows, drawBuffers, clearColors, true);
         }
-        recordShadowReceiptOnce("shadow.init resolution=" + shadows.resolution()
-                + " targets=" + count + " sides=main+alt fullClear=" + fullClear);
+        if (shadowReceiptsEnabled()) {
+            recordShadowReceiptOnce("shadow.init resolution=" + shadows.resolution()
+                    + " targets=" + count + " sides=main+alt fullClear=" + fullClear);
+        }
         shadowFullClearRequired = false;
     }
 
@@ -843,9 +847,11 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         this.stripIndex = 0;
         this.stripPassesHitThisFrame.clear();
         ensurePrepared();
-        if (!MetalDebugSwitches.STAGE_STRIP.isEmpty()) {
+        final boolean stageStripped = !MetalDebugSwitches.STAGE_STRIP.isEmpty();
+        if (stageStripped) {
             // Stage-strip mode: the stage passes tiled their outputs onto the
-            // main target; leave those tiles untouched.
+            // main target; leave those tiles untouched. The history snapshot
+            // stays intact so the next beginFrame still canonicalizes it.
             return;
         }
         IrisMetalRenderTargets targets = resources.renderTargets();
@@ -880,6 +886,23 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             recordFlipReceipt("flip canon frame=" + this.frameNumber
                     + " bits=" + formatBits(canonicalized));
         }
+        if (consumesHistorySnapshot(stageStripped, MetalDebugSwitches.FRAME_HISTORY)) {
+            // The read sides were just copied into main. Consume the snapshot
+            // so the next beginFrame does not repeat the same blit; an early
+            // exit (stage strip) leaves it for that boundary instead.
+            state.clear();
+            shadowState.clear();
+        }
+    }
+
+    /**
+     * Whether a completed {@code executeFinal} consumed the frame-history
+     * snapshot it canonicalized. Only a non-stage-strip final pass may clear
+     * it, and only while frame-boundary canonicalization is enabled; the
+     * native-free frame-flow tests pin this contract.
+     */
+    static boolean consumesHistorySnapshot(final boolean stageStrip, final boolean frameHistory) {
+        return !stageStrip && frameHistory;
     }
 
     /**
@@ -1467,8 +1490,10 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                 && plan.textureStage() != TextureStage.SHADOWCOMP) {
             return;
         }
-        recordShadowReceiptOnce("shadow.compute name=" + plan.source().getName()
-                + " extent=" + extentWidth + "x" + extentHeight + " groups=" + groups);
+        if (shadowReceiptsEnabled()) {
+            recordShadowReceiptOnce("shadow.compute name=" + plan.source().getName()
+                    + " extent=" + extentWidth + "x" + extentHeight + " groups=" + groups);
+        }
     }
 
     void attachReceipts(final IrisMetalRuntimeReceipts receipts) {
@@ -1476,9 +1501,15 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         this.receipts = Objects.requireNonNull(receipts, "receipts");
     }
 
+    /** True when a receipt sink is configured; keeps receipt strings out of the per-frame path. */
+    private boolean shadowReceiptsEnabled() {
+        return receipts != null && receipts.enabled();
+    }
+
     private void recordShadowReceiptOnce(final String event) {
-        if (receipts != null && reportedShadowReceipts.add(event)) {
-            receipts.recordEvent(event);
+        IrisMetalRuntimeReceipts current = this.receipts;
+        if (current != null && current.enabled() && reportedShadowReceipts.add(event)) {
+            current.recordEvent(event);
         }
     }
 
@@ -1774,15 +1805,18 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
     /**
      * Moves the previous frame's read side into each target's main texture
      * before the per-frame flip reset, using the previous frame's end
-     * {@link #state} snapshot. {@link #executeFinal} performs the same
-     * canonicalization at the end of a normal frame; doing it at the frame
-     * boundary as well keeps cross-frame readers correct when the final pass
-     * is skipped (stage-strip/debug or an aborted frame). Without it the next
+     * {@link #state} snapshot. A normal frame canonicalizes in
+     * {@link #executeFinal} and consumes the snapshot there, so this boundary
+     * pass is a no-op; the snapshot survives only when the final pass did not
+     * run (stage strip, debug early exit or an aborted frame), and then this
+     * pass keeps cross-frame readers correct. Without the fallback the next
      * frame's first reader samples the never-written main side: MakeUp's
      * {@code composite} would read a zero {@code gaux3} exposure history every
      * frame, collapse auto-exposure to {@code (1-k)*f}, and render black with
      * only saturated sky/sun pixels surviving.
-     * {@code -Dmetallum.iris.frameHistory=off} restores the old behavior.
+     * {@code -Dmetallum.iris.frameHistory=off} restores the old behavior
+     * (canonicalization only in {@link #executeFinal}); no snapshot is consumed
+     * in that mode.
      */
     private void canonicalizeHistory(final IrisMetalWorldResources resources) {
         if (!MetalDebugSwitches.FRAME_HISTORY) {

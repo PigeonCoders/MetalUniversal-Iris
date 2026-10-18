@@ -96,10 +96,13 @@ final class MakeUpFrameFlowTest {
 
                 // World draws land on the current read side of colortex1 before
                 // the graph pass that follows them.
-                FrameFlowSimulator flow = FrameFlowSimulator.simulate(passes, targetCount, List.of(
+                List<FrameFlowSimulator.WorldWrite> worldWrites = List.of(
                         new FrameFlowSimulator.WorldWrite("deferred", 1, "gbuffers"),
                         new FrameFlowSimulator.WorldWrite("composite", 1, "translucent")
-                ));
+                );
+                FrameFlowSimulator flow = FrameFlowSimulator.simulate(
+                        passes, targetCount, worldWrites, 3, FrameFlowSimulator.EndMode.COMPLETE
+                );
 
                 String frame2CompositeRead = flow.read(2, "composite", 6);
                 String frame2FinalExposure = flow.read(2, "final", 6);
@@ -119,12 +122,49 @@ final class MakeUpFrameFlowTest {
                 assertTrue(flow.endState(2).get(6),
                         label + ": the end-of-frame state must mark gaux3 so the history"
                                 + " canonicalization covers it");
+                assertEquals(0, flow.beginHistoryCopies(2),
+                        label + ": a normal frame must not canonicalize its history twice;"
+                                + " executeFinal already copied the read sides into main");
+                assertEquals(0, flow.beginHistoryCopies(3),
+                        label + ": the second normal frame must not repeat the history copy");
+                assertEquals(1, flow.historyCopies(2, 6),
+                        label + ": gaux3 must be copied from alt to main exactly once per frame");
+                assertEquals(1, flow.historyCopies(3, 6),
+                        label + ": gaux3 must stay at one history copy per normal frame");
+                for (int target = 0; target < targetCount; target++) {
+                    assertTrue(flow.historyCopies(2, target) <= 1,
+                            label + ": target " + target + " was history-copied more than once");
+                }
+                assertEquals("f2:composite", flow.read(3, "composite", 6),
+                        label + ": frame 3 composite must read frame 2's exposure");
+
+                // Early exit (stage strip): executeFinal returns before its
+                // canonicalization, so the next beginFrame must still copy the
+                // surviving snapshot and keep the exposure history alive.
+                FrameFlowSimulator early = FrameFlowSimulator.simulate(
+                        passes, targetCount, worldWrites, 3, FrameFlowSimulator.EndMode.EARLY_EXIT
+                );
+                assertEquals(0, early.finalHistoryCopies(1),
+                        label + ": an early-exit frame must not canonicalize in executeFinal");
+                assertTrue(early.endState(1).get(6),
+                        label + ": an early-exit frame must keep the gaux3 history snapshot");
+                assertTrue(early.beginHistoryCopies(2) > 0,
+                        label + ": the next beginFrame must canonicalize the early-exit snapshot");
+                assertEquals(1, early.historyCopies(2, 6),
+                        label + ": the early-exit gaux3 history must be copied exactly once at the"
+                                + " next frame boundary");
+                assertEquals("f1:composite", early.read(2, "composite", 6),
+                        label + ": frame 2 composite must see frame 1's exposure after an early exit");
+                assertEquals("f2:composite", early.read(3, "composite", 6),
+                        label + ": exposure history must survive consecutive early-exit frames");
                 System.out.println("[makeup-frame-flow] " + label
                         + " prepare=" + Arrays.toString(prepare.drawBuffers())
                         + " composite=" + Arrays.toString(composite.drawBuffers())
                         + " frame2Reads=" + frame2CompositeRead
                         + " finalExposure=" + frame2FinalExposure
-                        + " finalScene=" + frame2FinalScene);
+                        + " finalScene=" + frame2FinalScene
+                        + " frame2HistoryCopies=" + flow.historyCopies(2, 6)
+                        + " earlyExitBeginCopies=" + early.beginHistoryCopies(2));
             }
         }
     }
