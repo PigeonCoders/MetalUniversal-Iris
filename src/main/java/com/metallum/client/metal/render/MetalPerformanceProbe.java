@@ -221,12 +221,11 @@ final class MetalPerformanceProbe {
         }
         long[] samples = STAGE_SAMPLES[index];
         long p95 = percentile(samples, count);
-        out.append(formatNumber((double) STAGE_MIN[index]))
+        out.append(formatMillis((double) STAGE_MIN[index]))
                 .append('/')
-                .append(formatNumber(STAGE_SUM[index] / (double) count))
+                .append(formatMillis(STAGE_SUM[index] / (double) count))
                 .append('/')
-                .append(formatNumber((double) p95))
-                .append("ms");
+                .append(formatMillis((double) p95));
     }
 
     private static void resetWindow() {
@@ -289,13 +288,13 @@ final class MetalPerformanceProbe {
         return sorted[Math.max(0, Math.min(rank, sorted.length - 1))];
     }
 
-    private static String formatMillis(final double millis) {
-        return Double.isFinite(millis)
-                ? String.format(Locale.ROOT, "%.1fms", millis)
+    /**
+     * Frame and stage samples are stored in nanoseconds from
+     * {@link System#nanoTime()}; the probe reports milliseconds.
+     */
+    private static String formatMillis(final double nanos) {
+        return Double.isFinite(nanos)
+                ? String.format(Locale.ROOT, "%.2fms", nanos / 1_000_000.0)
                 : "n/a";
-    }
-
-    private static String formatNumber(final double value) {
-        return String.format(Locale.ROOT, "%.1f", value);
     }
 }
