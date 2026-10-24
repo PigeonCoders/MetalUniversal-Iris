@@ -338,7 +338,7 @@ final class IrisMetalShadowTargets implements AutoCloseable {
     void captureNoTranslucentsDepth(final MetalCommandEncoder encoder) {
         ensureOpen();
         encoder.copyTextureToTexture(
-                shadowDepth, shadowDepthNoTranslucents, 0, 0, 0, 0, 0, resolution, resolution
+                shadowDepth, shadowDepthNoTranslucents, 0, 0, 0, 0, 0, resolution, resolution, "shadow.depth"
         );
     }
 

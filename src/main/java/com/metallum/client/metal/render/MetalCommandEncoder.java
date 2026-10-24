@@ -426,6 +426,7 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
                 depthClear.isPresent(),
                 depthClear.orElse(0.0)
         );
+        recordPassTraffic(descriptor, colorTextureViews, clearColors, depthTexture, depthClear.isPresent(), extentTexture, renderArea);
         currentRenderPass = renderPass;
         renderPass.pushDebugGroup(descriptor.label());
         MetalPerformanceProbe.recordRenderPassCreated();
@@ -440,6 +441,50 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
             currentRenderPass = null;
             MetalPerformanceProbe.recordRenderPassSubmitted();
         }
+    }
+
+    /**
+     * Feeds one render pass's attachment traffic into {@link MetalPerformanceProbe}
+     * ({@code -Dmetallum.perf} only, so a release run allocates none of it).
+     * The byte math lives in the probe and is unit tested without Metal; here
+     * we only read the formats, extents and clear flags the descriptor already
+     * carries.
+     */
+    private static void recordPassTraffic(
+            final RenderPassDescriptor descriptor,
+            final MetalGpuTextureView[] colorViews,
+            final Vector4fc[] clearColors,
+            final GpuTextureView depthTexture,
+            final boolean depthClear,
+            final GpuTextureView extent,
+            final RenderPass.RenderArea renderArea
+    ) {
+        if (!MetalPerformanceProbe.ENABLED) {
+            return;
+        }
+        int[] colorBpp = new int[colorViews.length];
+        boolean[] colorCleared = new boolean[colorViews.length];
+        boolean allViewsFull = true;
+        for (int index = 0; index < colorViews.length; index++) {
+            MetalGpuTextureView view = colorViews[index];
+            if (view == null) {
+                continue;
+            }
+            colorBpp[index] = view.texture().getFormat().blockSize();
+            colorCleared[index] = clearColors[index] != null;
+            allViewsFull &= isFullTextureView(view);
+        }
+        int depthBpp = 0;
+        if (depthTexture != null) {
+            depthBpp = depthTexture.texture().getFormat().blockSize();
+            allViewsFull &= isFullTextureView(depthTexture);
+        }
+        MetalPerformanceProbe.PassTraffic traffic = MetalPerformanceProbe.passTraffic(
+                renderArea.x(), renderArea.y(), renderArea.width(), renderArea.height(),
+                extent.getWidth(0), extent.getHeight(0), allViewsFull,
+                colorBpp, colorCleared, depthBpp, depthClear
+        );
+        MetalPerformanceProbe.recordRenderPassTraffic(descriptor.label().get(), traffic);
     }
 
     /**
@@ -472,6 +517,7 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
     @Override
     public void clearColorTexture(final @NonNull GpuTexture colorTexture, final @NonNull Vector4fc clearColor) {
         pendingColorClears.put((MetalGpuTexture) colorTexture, new Vector4f(clearColor));
+        MetalPerformanceProbe.recordClearQueued();
     }
 
     @Override
@@ -480,6 +526,8 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         MetalGpuTexture depth = (MetalGpuTexture) depthTexture;
         pendingColorClears.put(color, new Vector4f(clearColor));
         pendingDepthClears.put(depth, irisDepthClear(clearDepth));
+        MetalPerformanceProbe.recordClearQueued();
+        MetalPerformanceProbe.recordClearQueued();
     }
 
     @Override
@@ -499,12 +547,15 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         if (isFullTextureRegion(color, depth, regionX, regionY, regionWidth, regionHeight)) {
             pendingColorClears.put(color, clearColorCopy);
             pendingDepthClears.put(depth, irisDepthClear(clearDepth));
+            MetalPerformanceProbe.recordClearQueued();
+            MetalPerformanceProbe.recordClearQueued();
             return;
         }
         color.markContentsDirty();
         depth.markContentsDirty();
         submitRenderPass();
         endEncoder();
+        MetalPerformanceProbe.recordClearMaterialized();
         commandBuffer().clearColorDepthTexturesRegion(
                 color.nativeHandle(),
                 clearColorCopy.x(),
@@ -524,6 +575,7 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
     @Override
     public void clearDepthTexture(final @NonNull GpuTexture depthTexture, final double clearDepth) {
         pendingDepthClears.put((MetalGpuTexture) depthTexture, irisDepthClear(clearDepth));
+        MetalPerformanceProbe.recordClearQueued();
     }
 
     @Override
@@ -788,6 +840,28 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
             final int width,
             final int height
     ) {
+        copyTextureToTexture(
+                source, destination, mipLevel, destX, destY, sourceX, sourceY, width, height, "other"
+        );
+    }
+
+    /**
+     * Copy variant that attributes the transferred bytes to a probe reason
+     * label ({@code -Dmetallum.perf} aggregation only). Without a label the
+     * copy still counts as {@code other}.
+     */
+    void copyTextureToTexture(
+            final GpuTexture source,
+            final GpuTexture destination,
+            final int mipLevel,
+            final int destX,
+            final int destY,
+            final int sourceX,
+            final int sourceY,
+            final int width,
+            final int height,
+            final String reason
+    ) {
         MetalGpuTexture srcTexture = (MetalGpuTexture) source;
         MetalGpuTexture dstTexture = (MetalGpuTexture) destination;
         if (srcTexture.isTexture3D() || dstTexture.isTexture3D()) {
@@ -798,7 +872,8 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         flushPendingClear(srcTexture);
         flushPendingClearForWrite(dstTexture);
         MetalPerformanceProbe.recordTextureCopy(
-                (long) width * (long) height * srcTexture.getFormat().blockSize()
+                (long) width * (long) height * srcTexture.getFormat().blockSize(),
+                reason
         );
         MTLBlitCommandEncoder blit = blitCommandEncoder();
         blit.copyFromTextureToTexture(
@@ -902,6 +977,7 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
             return;
         }
 
+        MetalPerformanceProbe.recordClearMaterialized();
         endEncoder();
         MTLRenderCommandEncoder encoder = commandBuffer().makeRenderCommandEncoder(
                 colorClear != null ? texture.nativeHandle() : null,

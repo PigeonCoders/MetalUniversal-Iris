@@ -330,30 +330,30 @@ final class IrisMetalRenderTargets implements AutoCloseable {
 
     void captureNoTranslucentsDepth(final MetalCommandEncoder encoder) {
         ensureOpen();
-        encoder.copyTextureToTexture(mainDepth, noTranslucentsDepth, 0, 0, 0, 0, 0, width, height);
+        encoder.copyTextureToTexture(mainDepth, noTranslucentsDepth, 0, 0, 0, 0, 0, width, height, "depth.depthtex1");
     }
 
     void captureNoTranslucentsDepth(final MetalCommandEncoder encoder, final GpuTexture sourceDepth) {
         ensureOpen();
         checkDepthExtent(sourceDepth);
-        encoder.copyTextureToTexture(sourceDepth, noTranslucentsDepth, 0, 0, 0, 0, 0, width, height);
+        encoder.copyTextureToTexture(sourceDepth, noTranslucentsDepth, 0, 0, 0, 0, 0, width, height, "depth.depthtex1");
     }
 
     void captureMainDepth(final MetalCommandEncoder encoder, final GpuTexture sourceDepth) {
         ensureOpen();
         checkDepthExtent(sourceDepth);
-        encoder.copyTextureToTexture(sourceDepth, mainDepth, 0, 0, 0, 0, 0, width, height);
+        encoder.copyTextureToTexture(sourceDepth, mainDepth, 0, 0, 0, 0, 0, width, height, "depth.depthtex0");
     }
 
     void captureNoHandDepth(final MetalCommandEncoder encoder) {
         ensureOpen();
-        encoder.copyTextureToTexture(mainDepth, noHandDepth, 0, 0, 0, 0, 0, width, height);
+        encoder.copyTextureToTexture(mainDepth, noHandDepth, 0, 0, 0, 0, 0, width, height, "depth.depthtex2");
     }
 
     void captureNoHandDepth(final MetalCommandEncoder encoder, final GpuTexture sourceDepth) {
         ensureOpen();
         checkDepthExtent(sourceDepth);
-        encoder.copyTextureToTexture(sourceDepth, noHandDepth, 0, 0, 0, 0, 0, width, height);
+        encoder.copyTextureToTexture(sourceDepth, noHandDepth, 0, 0, 0, 0, 0, width, height, "depth.depthtex2");
     }
 
     private void checkDepthExtent(final GpuTexture sourceDepth) {

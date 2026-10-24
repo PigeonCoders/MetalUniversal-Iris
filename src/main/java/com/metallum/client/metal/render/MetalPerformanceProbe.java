@@ -3,8 +3,12 @@ package com.metallum.client.metal.render;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * Opt-in performance measurement for the Metal world pipeline
@@ -70,6 +74,39 @@ final class MetalPerformanceProbe {
     private static long encoderSwitches;
     private static long textureCopyBytes;
     private static long uniformUploadBytes;
+
+    /** Aggregated attachment bytes of one render pass creation (pure math, unit-testable). */
+    record PassTraffic(
+            long loadBytes,
+            long storeBytes,
+            int colorAttachments,
+            boolean depthAttachment,
+            boolean fullCoverage
+    ) {
+    }
+
+    // Per-pass-name aggregate: load, store, colors, depth flag, occurrences,
+    // partial-coverage occurrences (in that order). Only allocated on demand.
+    private static final int TRAFFIC_LOAD = 0;
+    private static final int TRAFFIC_STORE = 1;
+    private static final int TRAFFIC_COLORS = 2;
+    private static final int TRAFFIC_DEPTH = 3;
+    private static final int TRAFFIC_PASSES = 4;
+    private static final int TRAFFIC_PARTIAL = 5;
+    private static final int TRAFFIC_FIELDS = 6;
+    /** Caps distinct pass names so a label that embeds a frame counter cannot grow the map. */
+    private static final int TRAFFIC_NAME_LIMIT = 256;
+    private static final int TOP_PASSES = 8;
+    private static final String TRAFFIC_OTHER = "(other)";
+    private static final String COPY_REASON_OTHER = "other";
+
+    private static final HashMap<String, long[]> PASS_TRAFFIC = ENABLED ? new HashMap<>() : null;
+    private static final HashMap<String, long[]> COPY_TRAFFIC = ENABLED ? new HashMap<>() : null;
+    private static long trafficLoadBytes;
+    private static long trafficStoreBytes;
+    private static long clearsQueued;
+    private static long clearsMaterialized;
+    private static long clearOnlyPasses;
 
     private static long frameStartNanos;
     private static long totalFrames;
@@ -159,9 +196,146 @@ final class MetalPerformanceProbe {
     }
 
     static void recordTextureCopy(final long bytes) {
-        if (ENABLED && bytes > 0L) {
-            textureCopyBytes += bytes;
+        recordTextureCopy(bytes, COPY_REASON_OTHER);
+    }
+
+    /**
+     * Per-reason texture-copy attribution. {@code reason} is a constant label
+     * owned by the caller (history canonicalization, depth captures, fallback
+     * blits, ...), so a window can show which copy it is paying for.
+     */
+    static void recordTextureCopy(final long bytes, final String reason) {
+        if (!ENABLED || bytes <= 0L) {
+            return;
         }
+        textureCopyBytes += bytes;
+        String key = reason == null ? COPY_REASON_OTHER : reason;
+        long[] slot = COPY_TRAFFIC.get(key);
+        if (slot == null) {
+            if (COPY_TRAFFIC.size() >= TRAFFIC_NAME_LIMIT) {
+                key = TRAFFIC_OTHER;
+                slot = COPY_TRAFFIC.get(key);
+            }
+            if (slot == null) {
+                slot = new long[1];
+                COPY_TRAFFIC.put(key, slot);
+            }
+        }
+        slot[0] += bytes;
+    }
+
+    /** One clear request queued on the encoder (folded into a pass clear or materialized). */
+    static void recordClearQueued() {
+        if (ENABLED) {
+            clearsQueued++;
+        }
+    }
+
+    /** One pending clear that had to open its own transient render encoder. */
+    static void recordClearMaterialized() {
+        if (ENABLED) {
+            clearsMaterialized++;
+        }
+    }
+
+    /**
+     * Folds one render pass's attachment traffic into the window. {@code name}
+     * is the pass label the renderer already builds; it is only touched while
+     * the probe is enabled.
+     */
+    static void recordRenderPassTraffic(final String name, final PassTraffic traffic) {
+        if (!ENABLED || traffic == null) {
+            return;
+        }
+        trafficLoadBytes += traffic.loadBytes();
+        trafficStoreBytes += traffic.storeBytes();
+        String key = name == null ? "unnamed" : name;
+        long[] slot = PASS_TRAFFIC.get(key);
+        if (slot == null && PASS_TRAFFIC.size() >= TRAFFIC_NAME_LIMIT) {
+            key = TRAFFIC_OTHER;
+            slot = PASS_TRAFFIC.get(key);
+        }
+        if (slot == null) {
+            slot = new long[TRAFFIC_FIELDS];
+            PASS_TRAFFIC.put(key, slot);
+        }
+        slot[TRAFFIC_LOAD] += traffic.loadBytes();
+        slot[TRAFFIC_STORE] += traffic.storeBytes();
+        slot[TRAFFIC_COLORS] = traffic.colorAttachments();
+        slot[TRAFFIC_DEPTH] = traffic.depthAttachment() ? 1L : 0L;
+        slot[TRAFFIC_PASSES]++;
+        if (!traffic.fullCoverage()) {
+            slot[TRAFFIC_PARTIAL]++;
+        }
+        if (traffic.loadBytes() == 0L && (traffic.colorAttachments() > 0 || traffic.depthAttachment())) {
+            // Fully cleared pass: independent clear work (or a clear-dominated
+            // fullscreen pass) that could be folded into loadAction=.clear.
+            clearOnlyPasses++;
+        }
+    }
+
+    /**
+     * Attachment traffic of one render pass creation.
+     *
+     * <p>Native always stores ({@code storeAction = .store}) and only clears an
+     * attachment when the descriptor supplied a clear value; without one it
+     * loads the previous contents ({@code loadAction = .load}). The load side
+     * is therefore exactly "attachments this pass reads without ever using
+     * them", which is the Apple-tile bandwidth waste this probe hunts for.</p>
+     *
+     * @param areaX           render area origin x
+     * @param areaY           render area origin y
+     * @param areaWidth       render area width
+     * @param areaHeight      render area height
+     * @param extentWidth     attachment (level 0) width all attachments share
+     * @param extentHeight    attachment (level 0) height all attachments share
+     * @param allViewsFull    every attachment view covers its whole texture
+     * @param colorBpp        bytes per pixel per color slot; {@code 0} = unused slot
+     * @param colorCleared    whether that slot supplies a clear value
+     * @param depthBpp        depth bytes per pixel; {@code 0} = no depth attachment
+     * @param depthCleared    whether the depth attachment supplies a clear value
+     */
+    static PassTraffic passTraffic(
+            final int areaX,
+            final int areaY,
+            final int areaWidth,
+            final int areaHeight,
+            final int extentWidth,
+            final int extentHeight,
+            final boolean allViewsFull,
+            final int[] colorBpp,
+            final boolean[] colorCleared,
+            final int depthBpp,
+            final boolean depthCleared
+    ) {
+        long pixels = (long) areaWidth * (long) areaHeight;
+        long load = 0L;
+        long store = 0L;
+        int colors = 0;
+        for (int index = 0; index < colorBpp.length; index++) {
+            int bytesPerPixel = colorBpp[index];
+            if (bytesPerPixel <= 0) {
+                continue;
+            }
+            colors++;
+            store += pixels * bytesPerPixel;
+            if (!colorCleared[index]) {
+                load += pixels * bytesPerPixel;
+            }
+        }
+        boolean depth = depthBpp > 0;
+        if (depth) {
+            store += pixels * depthBpp;
+            if (!depthCleared) {
+                load += pixels * depthBpp;
+            }
+        }
+        boolean fullCoverage = allViewsFull
+                && areaX == 0
+                && areaY == 0
+                && areaWidth == extentWidth
+                && areaHeight == extentHeight;
+        return new PassTraffic(load, store, colors, depth, fullCoverage);
     }
 
     static void recordUniformUpload(final long bytes) {
@@ -210,7 +384,76 @@ final class MetalPerformanceProbe {
         }
         MetalProbeReport.record(stages.toString());
 
+        reportBandwidth();
+        reportCopies();
+
         resetWindow();
+    }
+
+    /**
+     * One totaled attachment-traffic line plus the eight heaviest pass names.
+     * Sorted by load+store so the top of the list is where the bandwidth goes;
+     * {@code full=true} means the render area covered every attachment view, so
+     * a {@code .dontCare}/clear-only load decision would be safe for it.
+     */
+    private static void reportBandwidth() {
+        long passesPerFrame = windowFrames == 0
+                ? 0L
+                : Math.round(renderPassesCreated / (double) windowFrames);
+        MetalProbeReport.record(String.format(Locale.ROOT,
+                "perf bandwidth total w=%d load=%dMB store=%dMB passes=%d clears=%d clearQ=%d kinds=%d",
+                windowFrames, toMib(trafficLoadBytes), toMib(trafficStoreBytes), passesPerFrame,
+                clearsMaterialized + clearOnlyPasses, clearsQueued, PASS_TRAFFIC.size()));
+
+        List<Map.Entry<String, long[]>> ranked = new ArrayList<>(PASS_TRAFFIC.entrySet());
+        ranked.sort((left, right) -> Long.compare(weight(right.getValue()), weight(left.getValue())));
+        int emitted = 0;
+        for (Map.Entry<String, long[]> entry : ranked) {
+            if (emitted >= TOP_PASSES) {
+                break;
+            }
+            long[] slot = entry.getValue();
+            MetalProbeReport.record(String.format(Locale.ROOT,
+                    "perf bandwidth pass=%s load=%dMB store=%dMB colors=%d depth=%d full=%s",
+                    sanitizeName(entry.getKey()),
+                    toMib(slot[TRAFFIC_LOAD]), toMib(slot[TRAFFIC_STORE]),
+                    slot[TRAFFIC_COLORS], slot[TRAFFIC_DEPTH],
+                    slot[TRAFFIC_PARTIAL] == 0L ? "true" : "false"));
+            emitted++;
+        }
+    }
+
+    /** One line with the window's texture-copy bytes per reason (non-zero only). */
+    private static void reportCopies() {
+        if (COPY_TRAFFIC.isEmpty()) {
+            return;
+        }
+        List<Map.Entry<String, long[]>> ranked = new ArrayList<>(COPY_TRAFFIC.entrySet());
+        ranked.sort((left, right) -> Long.compare(right.getValue()[0], left.getValue()[0]));
+        StringBuilder line = new StringBuilder("perf copies total=")
+                .append(toMib(textureCopyBytes)).append("MB");
+        for (Map.Entry<String, long[]> entry : ranked) {
+            long bytes = entry.getValue()[0];
+            if (bytes <= 0L) {
+                continue;
+            }
+            line.append(' ').append(sanitizeName(entry.getKey())).append('=')
+                    .append(toMib(bytes)).append("MB");
+        }
+        MetalProbeReport.record(line.toString());
+    }
+
+    private static long weight(final long[] slot) {
+        return slot[TRAFFIC_LOAD] + slot[TRAFFIC_STORE];
+    }
+
+    private static long toMib(final long bytes) {
+        return Math.round(bytes / BYTES_PER_MIB);
+    }
+
+    /** Pass/copy keys are single space-free tokens so the probe line stays parseable. */
+    private static String sanitizeName(final String name) {
+        return name.indexOf(' ') < 0 ? name : name.replace(' ', '_');
     }
 
     private static void appendStageStats(final StringBuilder out, final int index) {
@@ -247,6 +490,17 @@ final class MetalPerformanceProbe {
         encoderSwitches = 0L;
         textureCopyBytes = 0L;
         uniformUploadBytes = 0L;
+        trafficLoadBytes = 0L;
+        trafficStoreBytes = 0L;
+        clearsQueued = 0L;
+        clearsMaterialized = 0L;
+        clearOnlyPasses = 0L;
+        if (PASS_TRAFFIC != null) {
+            PASS_TRAFFIC.clear();
+        }
+        if (COPY_TRAFFIC != null) {
+            COPY_TRAFFIC.clear();
+        }
         windowFrames = 0;
     }
 

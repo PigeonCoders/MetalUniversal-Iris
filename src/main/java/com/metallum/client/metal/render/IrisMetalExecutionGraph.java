@@ -877,7 +877,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             if (source != destination) {
                 activeEncoder().copyTextureToTexture(
                         source, destination, 0, 0, 0, 0, 0,
-                        colors.width(target), colors.height(target)
+                        colors.width(target), colors.height(target), "history.final"
                 );
                 canonicalized.set(target);
             }
@@ -929,7 +929,8 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             );
         }
         activeEncoder().copyTextureToTexture(
-                colors.readTexture(0), mainColor.texture(), 0, 0, 0, 0, 0, copyWidth, copyHeight
+                colors.readTexture(0), mainColor.texture(), 0, 0, 0, 0, 0, copyWidth, copyHeight,
+                "colortex0.fallback"
         );
     }
 
@@ -1344,7 +1345,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                 colors.readTexture(entry.targetIndex()), main, 0,
                 (tile % 2) * (mainWidth / 2), (tile / 2) * cropHeight,
                 sourceWidth / 4, sourceHeight / 4,
-                cropWidth, cropHeight
+                cropWidth, cropHeight, "stageStrip"
         );
     }
 
@@ -1830,7 +1831,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             if (source != destination) {
                 activeEncoder().copyTextureToTexture(
                         source, destination, 0, 0, 0, 0, 0,
-                        colors.width(target), colors.height(target)
+                        colors.width(target), colors.height(target), "history.canon"
                 );
                 canonicalized.set(target);
             }
