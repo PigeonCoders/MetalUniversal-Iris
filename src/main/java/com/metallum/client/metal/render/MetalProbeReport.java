@@ -56,8 +56,18 @@ public final class MetalProbeReport {
     /**
      * Appends a timestamped line to the status file (creating it if needed) and
      * keeps it in memory for inclusion in the main report. Never throws.
+     *
+     * <p>Inert while no debug switch is active: several call sites (world
+     * override install/skip receipts, per-draw materialisation) record on first
+     * use regardless of flags, which used to create the file on every normal
+     * launch. Without an active switch {@link #writeReport} also never ran, so
+     * those lines were appended across launches and the file grew without
+     * bound. Normal play must not touch the instance directory at all.
      */
     public static synchronized void record(final String line) {
+        if (!MetalDebugSwitches.PROBES_ACTIVE) {
+            return;
+        }
         String timestamped = "[" + Instant.now() + "] " + line;
         RECORDED_LINES.add(timestamped);
         try {
