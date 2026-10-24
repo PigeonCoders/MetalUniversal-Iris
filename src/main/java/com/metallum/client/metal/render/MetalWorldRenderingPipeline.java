@@ -1,6 +1,7 @@
 package com.metallum.client.metal.render;
 
 import it.unimi.dsi.fastutil.objects.Object2ObjectMap;
+import com.metallum.Metallum;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.irisshaders.iris.features.FeatureFlags;
@@ -26,6 +27,7 @@ import net.irisshaders.iris.uniforms.custom.CustomUniforms;
 import net.irisshaders.iris.pipeline.programs.ShaderKey;
 import com.mojang.blaze3d.buffers.GpuBufferSlice;
 import com.mojang.blaze3d.pipeline.RenderTarget;
+import com.mojang.blaze3d.platform.Window;
 import com.mojang.blaze3d.shaders.ShaderSource;
 import com.mojang.blaze3d.textures.GpuTexture;
 import com.mojang.blaze3d.textures.GpuTextureView;
@@ -75,6 +77,18 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
     private MetalDevice centerDepthDevice;
     private int receiptWidth = -1;
     private int receiptHeight = -1;
+    /**
+     * Last main-target extent this pipeline forced via
+     * {@link MetalDebugSwitches#RENDER_SCALE}; {@code -1} means no scaling was
+     * ever applied in this generation, so the default path never touches the
+     * vanilla target.
+     */
+    private int appliedTargetWidth = -1;
+    private int appliedTargetHeight = -1;
+    /** Even the restore-to-window resize failed; stop touching the main target entirely. */
+    private boolean renderScaleSuspended;
+    private boolean renderScaleProbeReported;
+    private boolean shadowResolutionProbeReported;
     private boolean blockIdsInitialized;
     /**
      * World uniform blocks are generation-owned: register and prewarm them on
@@ -324,6 +338,11 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
                             + mainTarget.width + "x" + mainTarget.height
             );
         }
+        // Opt-in only: with the default 1.0 this returns before touching the
+        // target, so the unswitched path stays byte-identical. Scaling must
+        // happen before the receipts/resources below so every derived extent
+        // (colortex, depth, size.buffer base) follows the new main extent.
+        applyRenderScale(minecraft, mainTarget);
         if (this.receiptWidth < 0) {
             this.receipts.recordEvent("generation.allocate");
         } else if (this.receiptWidth != mainTarget.width || this.receiptHeight != mainTarget.height) {
@@ -379,6 +398,160 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
                 this.resources,
                 this.uniformValues,
                 mainTarget.getColorTexture().getFormat()
+        );
+        reportShadowResolutionOverride();
+    }
+
+    /**
+     * Opt-in whole-frame resolution scaling. The vanilla main target is resized
+     * to {@code window * RENDER_SCALE}; Iris targets, depth textures and the
+     * {@code size.buffer} base all derive from it, and the native present path
+     * already upscales a smaller source to the drawable. The size is only
+     * touched when it differs from the requested one, so the steady state costs
+     * two comparisons per frame; if the engine resizes the target back to the
+     * window extent (window resize), the next frame re-applies the scale.
+     *
+     * <p>{@code GameRenderer.render} re-checks the target against the window
+     * extent every frame; {@code MetalRenderScaleMixin} redirects that check to
+     * the scaled extent (and skips the rebuild when it already matches), so
+     * this pipeline's resize is the fallback for the frame that first applies
+     * the switch and for any path the mixin does not cover.</p>
+     */
+    private void applyRenderScale(final Minecraft minecraft, final RenderTarget mainTarget) {
+        if (this.renderScaleSuspended) {
+            return;
+        }
+        float scale = MetalDebugSwitches.effectiveRenderScale();
+        if (scale == 1.0f && this.appliedTargetWidth < 0) {
+            // Default path: never resize, so an unswitched run is unchanged.
+            return;
+        }
+        Window window = minecraft.getWindow();
+        if (window == null) {
+            return;
+        }
+        int windowWidth = window.getWidth();
+        int windowHeight = window.getHeight();
+        if (windowWidth <= 0 || windowHeight <= 0) {
+            return;
+        }
+        int targetWidth = MetalDebugSwitches.scaledExtent(windowWidth, scale);
+        int targetHeight = MetalDebugSwitches.scaledExtent(windowHeight, scale);
+        if (mainTarget.width == targetWidth && mainTarget.height == targetHeight) {
+            this.appliedTargetWidth = targetWidth;
+            this.appliedTargetHeight = targetHeight;
+            recordRenderScaleProbe(scale, mainTarget.width, mainTarget.height, windowWidth, windowHeight);
+            return;
+        }
+        try {
+            mainTarget.resize(targetWidth, targetHeight);
+        } catch (RuntimeException failure) {
+            // RenderTarget.resize rebuilds every attachment; a driver failure
+            // must not crash the game. Latch the process-wide fallback (the
+            // mixin reads the same latch), warn once and try to restore the
+            // window extent on the next frame.
+            if (MetalDebugSwitches.failRenderScale()) {
+                Metallum.LOGGER.warn(
+                        "[metallum-iris] renderScale {} could not resize the main target {}x{} -> {}x{};"
+                                + " falling back to 1.0",
+                        scale, mainTarget.width, mainTarget.height, targetWidth, targetHeight, failure
+                );
+            }
+            this.appliedTargetWidth = mainTarget.width;
+            this.appliedTargetHeight = mainTarget.height;
+            if (scale == 1.0f) {
+                // The restore itself failed; stop poking the target this generation.
+                this.renderScaleSuspended = true;
+                this.appliedTargetWidth = -1;
+                this.appliedTargetHeight = -1;
+            }
+            return;
+        }
+        this.appliedTargetWidth = mainTarget.width;
+        this.appliedTargetHeight = mainTarget.height;
+        recordRenderScaleProbe(scale, mainTarget.width, mainTarget.height, windowWidth, windowHeight);
+    }
+
+    /** One probe line per generation on the first frame that carries the scaled extent. */
+    private void recordRenderScaleProbe(
+            final float scale,
+            final int targetWidth,
+            final int targetHeight,
+            final int windowWidth,
+            final int windowHeight
+    ) {
+        if (this.renderScaleProbeReported || scale == 1.0f) {
+            return;
+        }
+        this.renderScaleProbeReported = true;
+        MetalProbeReport.record(
+                "perf renderScale=" + scale
+                        + " target=" + targetWidth + "x" + targetHeight
+                        + " window=" + windowWidth + "x" + windowHeight
+        );
+    }
+
+    /**
+     * Restores the vanilla main target to the window extent when the generation
+     * is retired (pack switch / world leave), so the GUI does not stay at the
+     * scaled resolution.
+     */
+    private void restoreMainTargetExtent() {
+        if (this.appliedTargetWidth < 0) {
+            return;
+        }
+        this.appliedTargetWidth = -1;
+        this.appliedTargetHeight = -1;
+        if (MetalDeviceRegistry.getActiveDevice() == null) {
+            return;
+        }
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft == null || minecraft.gameRenderer == null || minecraft.getWindow() == null) {
+            return;
+        }
+        Window window = minecraft.getWindow();
+        int windowWidth = window.getWidth();
+        int windowHeight = window.getHeight();
+        if (windowWidth <= 0 || windowHeight <= 0) {
+            return;
+        }
+        RenderTarget target = minecraft.gameRenderer.mainRenderTarget();
+        if (target == null || (target.width == windowWidth && target.height == windowHeight)) {
+            return;
+        }
+        try {
+            target.resize(windowWidth, windowHeight);
+        } catch (RuntimeException failure) {
+            Metallum.LOGGER.warn(
+                    "[metallum-iris] could not restore the main target to {}x{} after render scaling",
+                    windowWidth, windowHeight, failure
+            );
+        }
+    }
+
+    /**
+     * Probe receipt for the opt-in shadow-resolution override. The override is
+     * a process-wide switch applied when the generation creates its shadow
+     * targets, so a mismatch can only mean the creation path drifted.
+     */
+    private void reportShadowResolutionOverride() {
+        if (MetalDebugSwitches.SHADOW_RESOLUTION == 0 || this.shadowResolutionProbeReported) {
+            return;
+        }
+        IrisMetalShadowTargets shadows = this.resources.shadowTargets();
+        if (shadows == null) {
+            return;
+        }
+        this.shadowResolutionProbeReported = true;
+        int packResolution = this.directives.getShadowDirectives().getResolution();
+        if (shadows.resolution() != MetalDebugSwitches.SHADOW_RESOLUTION) {
+            Metallum.LOGGER.warn(
+                    "[metallum-iris] shadow resolution override {} did not reach the shadow targets (got {})",
+                    MetalDebugSwitches.SHADOW_RESOLUTION, shadows.resolution()
+            );
+        }
+        MetalProbeReport.record(
+                "perf shadow resolution=" + shadows.resolution() + " pack=" + packResolution
         );
     }
 
@@ -547,6 +720,10 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
 
     @Override
     public void destroy() {
+        // Leave the vanilla target at the window extent before the generation's
+        // GPU resources go away (pack switch / world leave). No-op unless the
+        // render-scale switch actually resized it.
+        restoreMainTargetExtent();
         IrisMetalPackLifecycle.onSemanticPipelineDestroyed();
         this.frameState.endWorldRendering();
         // Defensive: a driver that threw mid-pass must not leave Iris's

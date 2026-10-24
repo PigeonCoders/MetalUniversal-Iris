@@ -12,6 +12,7 @@
     "render.NoVanillaCloudRendererMixin",
     "render.ForceCloudStatusOffMixin",
     "render.MetalProbeReportMixin",
+    "render.MetalRenderScaleMixin",
     "sodium.DrawBackendMixin",
     "sodium.DrawContextMixin",
     "sodium.SodiumPreferredGraphicsApiMixin",

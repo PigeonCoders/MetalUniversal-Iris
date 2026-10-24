@@ -45,6 +45,36 @@ public final class MetalDebugSwitches {
      */
     public static final boolean PERF = enabledFlag("metallum.perf");
     /**
+     * Opt-in whole-frame render-scale factor ({@code
+     * -Dmetallum.iris.renderScale=<0.5..1.0>}, default 1.0). The Iris Metal
+     * pipeline resizes the vanilla main render target to {@code window *
+     * RENDER_SCALE}; every derived target (colortex, depth, {@code size.buffer}
+     * base) follows that extent, and the native present path already upscales a
+     * smaller source to the drawable. The GUI is upscaled with it, matching the
+     * launcher's resolution-scale behavior. Values outside the range clamp into
+     * it; unset, non-numeric, NaN and infinite values stay 1.0.
+     */
+    public static final float RENDER_SCALE = parseRenderScale(
+            System.getProperty("metallum.iris.renderScale", "1.0").trim()
+    );
+    /**
+     * Opt-in shadow-map resolution override ({@code
+     * -Dmetallum.iris.shadowResolution=<256..4096>}, even, default 0 = use the
+     * pack's {@code shadow.resolution} directive). Odd requests round down to
+     * the previous even extent (no half-pixel viewports); 0 and out-of-range
+     * values keep the pack value.
+     */
+    public static final int SHADOW_RESOLUTION = parseShadowResolution(
+            System.getProperty("metallum.iris.shadowResolution", "0").trim()
+    );
+    /**
+     * Latched after the first main-target resize failure. Every render-scale
+     * caller (the pipeline's fallback resize and the {@code GameRenderer}
+     * redirect) then falls back to 1.0 instead of retrying a failing GPU
+     * allocation every frame.
+     */
+    private static volatile boolean renderScaleFailed;
+    /**
      * Probe-only: logs every per-drawbuffer {@code blend.*} override that
      * {@code IrisMetalCompiledPrograms.colorTargets} folds into the Metal PSO
      * blend state (once per program+slot+target), so the colortex&rarr;slot
@@ -218,7 +248,8 @@ public final class MetalDebugSwitches {
             || !SHADOW_CULLING.isEmpty() || !SHADOW_DEPTH_FIX || BLEND_OVERRIDES
             || !SIZE_BUFFER || DUMP_BINDINGS || LOG_UNIFORMS || FLIP_TRACE
             || !VERTEX_ENGINE_PROJECTION || !GLSLANG_PRECISION_PREAMBLE
-            || !GLSLANG_BUILTIN_RENAME || PERF;
+            || !GLSLANG_BUILTIN_RENAME || PERF
+            || RENDER_SCALE != 1.0f || SHADOW_RESOLUTION != 0;
 
     /** One {@code stageStrip} entry: a pass name plus the target index to tile. */
     public record StripEntry(String passName, int targetIndex) {
@@ -265,6 +296,75 @@ public final class MetalDebugSwitches {
         }
     }
 
+    /**
+     * Render-scale parse: clamps into {@code 0.5..1.0}; malformed, NaN and
+     * infinite input falls back to the default 1.0 (no scaling).
+     */
+    static float parseRenderScale(final String raw) {
+        final float parsed;
+        try {
+            parsed = Float.parseFloat(raw);
+        } catch (NumberFormatException malformed) {
+            return 1.0f;
+        }
+        if (!Float.isFinite(parsed)) {
+            return 1.0f;
+        }
+        return Math.max(0.5f, Math.min(1.0f, parsed));
+    }
+
+    /**
+     * Rounded scaled extent: {@code round(extent * scale)}, never below 1. The
+     * window framebuffer extent is always positive in production; the lower
+     * bound only protects malformed zero/negative inputs.
+     */
+    public static int scaledExtent(final int extent, final float scale) {
+        return Math.max(1, Math.round(extent * scale));
+    }
+
+    /**
+     * Shadow-resolution override parse: 0 (use the pack value) or an even
+     * extent in {@code 256..4096}. Odd requests round down; everything outside
+     * the range falls back to 0.
+     */
+    static int parseShadowResolution(final String raw) {
+        final int parsed;
+        try {
+            parsed = Integer.parseInt(raw);
+        } catch (NumberFormatException malformed) {
+            return 0;
+        }
+        if (parsed == 0) {
+            return 0;
+        }
+        if (parsed < 256 || parsed > 4096) {
+            return 0;
+        }
+        return parsed & ~1;
+    }
+
+    /** The effective shadow resolution: the override when set, else the pack's. */
+    static int resolveShadowResolution(final int packResolution, final int override) {
+        return override == 0 ? packResolution : override;
+    }
+
+    /** The render scale actually in effect; 1.0 once a resize has failed. */
+    public static float effectiveRenderScale() {
+        return renderScaleFailed ? 1.0f : RENDER_SCALE;
+    }
+
+    /**
+     * Latches the render-scale fallback after a main-target resize failure.
+     *
+     * @return {@code true} for the first failing caller (the one that should
+     *         log the warning), {@code false} for every later caller
+     */
+    public static boolean failRenderScale() {
+        boolean first = !renderScaleFailed;
+        renderScaleFailed = true;
+        return first;
+    }
+
     private static List<StripEntry> parseStageStrip(final String raw) {
         List<StripEntry> entries = new ArrayList<>();
         for (String part : raw.split(",")) {
@@ -292,13 +392,13 @@ public final class MetalDebugSwitches {
 
     static {
         if (PROBES_ACTIVE) {
-            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: build={} skipDeferred={} skipPost={} view={} viewGain={} skipPass={} noShadowMatrices={} zeroVl={} zeroBloom={} stageStrip={} noVanillaSky={} noVanillaClouds={} noCloudsHard={} magentaClear={} shadowPass={} noShadows={} shadowCulling={} shadowDepthFix={} blendOverrides={} sizeBuffer={} dumpBindings={} logUniforms={} flipTrace={} vertexEngineProjection={} glslangPrecision={} glslangBuiltinRename={} perf={}",
+            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: build={} skipDeferred={} skipPost={} view={} viewGain={} skipPass={} noShadowMatrices={} zeroVl={} zeroBloom={} stageStrip={} noVanillaSky={} noVanillaClouds={} noCloudsHard={} magentaClear={} shadowPass={} noShadows={} shadowCulling={} shadowDepthFix={} blendOverrides={} sizeBuffer={} dumpBindings={} logUniforms={} flipTrace={} vertexEngineProjection={} glslangPrecision={} glslangBuiltinRename={} perf={} renderScale={} shadowResolution={}",
                     BUILD_TAG, SKIP_DEFERRED, SKIP_POST, VIEW, VIEW_GAIN, SKIP_PASS, NO_SHADOW_MATRICES, ZERO_VL, ZERO_BLOOM,
                     System.getProperty("metallum.iris.debug.stageStrip", ""),
                     NO_VANILLA_SKY, NO_VANILLA_CLOUDS, NO_CLOUDS_HARD, MAGENTA_CLEAR,
                     SHADOW_PASS, NO_SHADOWS, SHADOW_CULLING, SHADOW_DEPTH_FIX, BLEND_OVERRIDES, SIZE_BUFFER,
                     DUMP_BINDINGS, LOG_UNIFORMS, FLIP_TRACE, VERTEX_ENGINE_PROJECTION, GLSLANG_PRECISION_PREAMBLE,
-                    GLSLANG_BUILTIN_RENAME, PERF);
+                    GLSLANG_BUILTIN_RENAME, PERF, RENDER_SCALE, SHADOW_RESOLUTION);
         }
     }
 }

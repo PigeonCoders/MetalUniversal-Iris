@@ -113,6 +113,8 @@ public final class MetalProbeReport {
                 .append(System.lineSeparator());
         content.append("  frameHistory=").append(MetalDebugSwitches.FRAME_HISTORY).append(System.lineSeparator());
         content.append("  perf=").append(MetalDebugSwitches.PERF).append(System.lineSeparator());
+        content.append("  renderScale=").append(MetalDebugSwitches.RENDER_SCALE).append(System.lineSeparator());
+        content.append("  shadowResolution=").append(MetalDebugSwitches.SHADOW_RESOLUTION).append(System.lineSeparator());
         content.append("  stageStrip=").append(System.getProperty("metallum.iris.debug.stageStrip", ""))
                 .append(System.lineSeparator());
         if (!RECORDED_LINES.isEmpty()) {
@@ -169,6 +171,12 @@ public final class MetalProbeReport {
         }
         addIf(active, "frameHistory=off", !MetalDebugSwitches.FRAME_HISTORY);
         addIf(active, "perf", MetalDebugSwitches.PERF);
+        if (MetalDebugSwitches.RENDER_SCALE != 1.0f) {
+            active.add("renderScale=" + MetalDebugSwitches.RENDER_SCALE);
+        }
+        if (MetalDebugSwitches.SHADOW_RESOLUTION != 0) {
+            active.add("shadowResolution=" + MetalDebugSwitches.SHADOW_RESOLUTION);
+        }
         if (!MetalDebugSwitches.VIEW.isEmpty()) {
             active.add("view=" + MetalDebugSwitches.VIEW);
         }

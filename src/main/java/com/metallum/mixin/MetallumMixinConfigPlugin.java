@@ -18,17 +18,19 @@ public final class MetallumMixinConfigPlugin implements IMixinConfigPlugin {
     private static final String DEFAULT_GRAPHICS_BACKEND = "\"default\"";
 
     /**
-     * Bisection probe mixins that must apply whenever the mod runs on macOS,
-     * regardless of the {@code preferredGraphicsBackend} value in options.txt.
-     * They are fully inert at runtime while {@code MetalDebugSwitches} is
-     * unset, so applying them unconditionally changes no behavior.
+     * Bisection probe / opt-in performance mixins that must apply whenever the
+     * mod runs on macOS, regardless of the {@code preferredGraphicsBackend}
+     * value in options.txt. They are fully inert at runtime while
+     * {@code MetalDebugSwitches} is unset, so applying them unconditionally
+     * changes no behavior.
      */
     private static final Set<String> ALWAYS_APPLY_RENDER_PROBES = Set.of(
             "com.metallum.mixin.render.NoVanillaSkyMixin",
             "com.metallum.mixin.render.NoVanillaCloudsMixin",
             "com.metallum.mixin.render.NoVanillaCloudRendererMixin",
             "com.metallum.mixin.render.ForceCloudStatusOffMixin",
-            "com.metallum.mixin.render.MetalProbeReportMixin"
+            "com.metallum.mixin.render.MetalProbeReportMixin",
+            "com.metallum.mixin.render.MetalRenderScaleMixin"
     );
 
     private boolean isMacOs;

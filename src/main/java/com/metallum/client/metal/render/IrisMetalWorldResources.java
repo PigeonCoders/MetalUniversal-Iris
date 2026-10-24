@@ -331,7 +331,9 @@ final class IrisMetalWorldResources implements AutoCloseable {
         return new IrisMetalShadowTargets(
                 device,
                 colorFormats,
-                shadow.getResolution(),
+                MetalDebugSwitches.resolveShadowResolution(
+                        shadow.getResolution(), MetalDebugSwitches.SHADOW_RESOLUTION
+                ),
                 nearestColor,
                 mipmappedColor,
                 nearestDepth,
