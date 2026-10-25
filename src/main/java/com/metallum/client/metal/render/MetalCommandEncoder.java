@@ -1,5 +1,6 @@
 package com.metallum.client.metal.render;
 
+import com.metallum.Metallum;
 import com.metallum.client.metal.render.bridge.MetalNativeBridge;
 import com.metallum.client.metal.render.mtl.*;
 import com.mojang.blaze3d.buffers.GpuBuffer;
@@ -52,6 +53,7 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
     private long encoderStoreBytes;
     private boolean encoderTrafficPending;
     private final Long2ObjectOpenHashMap<java.util.ArrayDeque<MemorySegment>> dynamicBackingPool = new Long2ObjectOpenHashMap<>();
+    private static final int MAX_POOLED_DYNAMIC_BACKINGS_PER_SIZE = 8;
 
     MetalCommandEncoder(final MetalDevice device) {
         this.device = device;
@@ -228,6 +230,7 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
 
         transientMemory.rotate();
         destroyQueue.rotate();
+        Stats.tickRenderStats();
     }
 
     MTLRenderCommandEncoder renderCommandEncoder(
@@ -771,6 +774,9 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         long size = buffer.allocationSize();
         MemorySegment old = buffer.nativeHandle();
         MemorySegment fresh = acquireDynamicBacking(size, buffer.resourceOptions());
+        if (fresh.address() == 0L) {
+            return;
+        }
         ByteBuffer freshStorage = MetalNativeBridge.nativeByteBufferView(
                 MetalNativeBridge.metallum_get_buffer_contents(fresh), size).order(ByteOrder.nativeOrder());
 
@@ -785,23 +791,33 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         dst.put(data.duplicate());
 
         buffer.swapBacking(fresh, freshStorage);
-        recycleDynamicBacking(old, size);
+        recycleDynamicBacking(old, size, buffer.resourceOptions());
     }
 
     private MemorySegment acquireDynamicBacking(final long size, final long resourceOptions) {
-        java.util.ArrayDeque<MemorySegment> bucket = dynamicBackingPool.get(size);
+        final long key = MetalDevice.composePoolKey(size, resourceOptions);
+        final java.util.ArrayDeque<MemorySegment> bucket = dynamicBackingPool.get(key);
         if (bucket != null && !bucket.isEmpty()) {
             return bucket.pop();
         }
-        MemorySegment handle = MetalNativeBridge.metallum_create_buffer(device.metalDeviceHandle(), size, resourceOptions);
+        final MemorySegment handle = MetalNativeBridge.metallum_create_buffer(device.metalDeviceHandle(), size, resourceOptions);
         if (MetalNativeBridge.isNullHandle(handle)) {
-            throw new IllegalStateException("Failed to create dynamic backing buffer");
+            Metallum.LOGGER.warn("dynamic backing OOM, skipping uniform update this frame");
+            return MemorySegment.NULL;
         }
         return handle;
     }
 
-    private void recycleDynamicBacking(final MemorySegment handle, final long size) {
-        queueForDestroy(() -> dynamicBackingPool.computeIfAbsent(size, k -> new java.util.ArrayDeque<>()).push(handle));
+    private void recycleDynamicBacking(final MemorySegment handle, final long size, final long resourceOptions) {
+        queueForDestroy(() -> {
+            final long key = MetalDevice.composePoolKey(size, resourceOptions);
+            java.util.ArrayDeque<MemorySegment> bucket = dynamicBackingPool.computeIfAbsent(key, k -> new java.util.ArrayDeque<>());
+            if (bucket.size() < MAX_POOLED_DYNAMIC_BACKINGS_PER_SIZE) {
+                bucket.push(handle);
+            } else {
+                MetalNativeBridge.metallum_release_object(handle);
+            }
+        });
     }
 
     @Override

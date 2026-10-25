@@ -35,7 +35,14 @@ class MetalGpuBuffer extends GpuBuffer {
         this.dynamic = isDynamic(usage);
         this.cpuAccessible = isCpuAccessible(usage) || this.dynamic;
         this.resourceOptions = toMtlResourceOptions(usage);
-        this.allocationSize = (size + 15L) & ~15L;
+        if (size <= 0L) {
+            throw new IllegalArgumentException("Metal buffer size must be > 0 (got " + size + ")");
+        }
+        long aligned = (size + 15L) & ~15L;
+        if (aligned <= 0L) {
+            throw new IllegalArgumentException("Metal buffer size overflow after alignment: " + size);
+        }
+        this.allocationSize = aligned;
 
         MemorySegment pooled = device.tryAcquirePooledBuffer(this.allocationSize, this.resourceOptions);
         if (!MetalNativeBridge.isNullHandle(pooled)) {
@@ -45,16 +52,20 @@ class MetalGpuBuffer extends GpuBuffer {
                 if (MetalNativeBridge.isNullHandle(contents)) {
                     MetalNativeBridge.metallum_release_object(pooled);
                     this.nativeHandle = null;
-                    throw new IllegalStateException("MTLBuffer.contents returned null for pooled buffer");
+                    throw new IllegalStateException("MTLBuffer.contents returned null for pooled buffer (size=" + this.allocationSize + ", resourceOptions=" + this.resourceOptions + ")");
                 }
                 this.storage = MetalNativeBridge.nativeByteBufferView(contents, this.allocationSize).order(ByteOrder.nativeOrder());
             }
             return;
         }
 
+        long max = device.maxBufferAllocationSize();
+        if (max > 0L && this.allocationSize > max) {
+            throw new IllegalArgumentException("Metal buffer size " + this.allocationSize + " exceeds device max " + max);
+        }
         this.nativeHandle = MetalNativeBridge.metallum_create_buffer(device.metalDeviceHandle(), this.allocationSize, this.resourceOptions);
         if (MetalNativeBridge.isNullHandle(this.nativeHandle)) {
-            throw new IllegalStateException("Failed to create Metal buffer");
+            throw new IllegalStateException("Failed to create Metal buffer (size=" + this.allocationSize + ", resourceOptions=" + this.resourceOptions + ", device=" + this.device.getClass().getSimpleName() + ")");
         }
 
         if (this.cpuAccessible) {
@@ -62,7 +73,7 @@ class MetalGpuBuffer extends GpuBuffer {
             if (MetalNativeBridge.isNullHandle(contents)) {
                 MetalNativeBridge.metallum_release_object(this.nativeHandle);
                 this.nativeHandle = null;
-                throw new IllegalStateException("MTLBuffer.contents returned null");
+                throw new IllegalStateException("MTLBuffer.contents returned null (size=" + this.allocationSize + ", resourceOptions=" + this.resourceOptions + ")");
             }
 
             this.storage = MetalNativeBridge.nativeByteBufferView(contents, this.allocationSize).order(ByteOrder.nativeOrder());
@@ -107,8 +118,8 @@ class MetalGpuBuffer extends GpuBuffer {
     }
 
     MemorySegment nativeHandle() {
-        if (this.nativeHandle == null) {
-            throw new IllegalStateException("Native Metal buffer is closed");
+        if (this.nativeHandle == null || this.nativeHandle.address() == 0L) {
+            throw new IllegalStateException("Native Metal buffer is closed or null");
         }
         return this.nativeHandle;
     }
