@@ -12,6 +12,7 @@ import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.irisshaders.iris.Iris;
+import net.irisshaders.iris.pipeline.WorldRenderingPipeline;
 import org.joml.Vector4f;
 import org.joml.Vector4fc;
 import org.jspecify.annotations.NonNull;
@@ -257,16 +258,32 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
                     : colorTextureViews[index].nativeHandle();
         }
         MemorySegment depthAttachment = depthTextureView == null ? MemorySegment.NULL : depthTextureView.nativeHandle();
-        boolean sameAttachments = currentEncoder instanceof MTLRenderCommandEncoder
+        boolean openRenderEncoder = currentEncoder instanceof MTLRenderCommandEncoder;
+        boolean sameAttachments = openRenderEncoder
                 && sameAttachmentHandles(renderColorAttachments, colorAttachments)
                 && MetalPipelineSupport.sameHandle(renderDepthAttachment, depthAttachment);
-        if (sameAttachments && !clearDepthEnabled && !hasClearColor(clearColorEnabled)) {
+        boolean clearPending = clearDepthEnabled || hasClearColor(clearColorEnabled);
+        if (sameAttachments && !clearPending) {
+            MetalPerformanceProbe.recordEncoderDecision(MetalPerformanceProbe.EncoderDecision.REUSE);
             return (MTLRenderCommandEncoder) currentEncoder;
         }
-        if (!sameAttachments && currentEncoder instanceof MTLRenderCommandEncoder) {
+        if (!sameAttachments && openRenderEncoder) {
             // An attachment change tears down the open render encoder and
             // starts a new one; count the transition, not the first encoder.
             MetalPerformanceProbe.recordEncoderSwitch();
+        }
+        if (MetalPerformanceProbe.ENABLED) {
+            // Same inputs the branch above just tested, in the same order, so
+            // the attribution can never disagree with the decision itself.
+            MetalPerformanceProbe.recordEncoderDecision(MetalPerformanceProbe.encoderDecision(
+                    currentEncoder != null,
+                    openRenderEncoder,
+                    renderColorAttachments.length,
+                    colorAttachments.length,
+                    sameAttachmentHandles(renderColorAttachments, colorAttachments),
+                    MetalPipelineSupport.sameHandle(renderDepthAttachment, depthAttachment),
+                    clearPending
+            ));
         }
 
         endEncoder();
@@ -572,6 +589,61 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
                 colorBpp, colorCleared, depthBpp, depthClear
         );
         MetalPerformanceProbe.recordRenderPassTraffic(descriptor.label().get(), traffic);
+        if (MetalPerformanceProbe.capturingOrder()) {
+            // The dump samples only the first frames of a world, so the extra
+            // label read and identity scan never run in steady state.
+            MetalPerformanceProbe.recordRenderPassOrder(descriptor.label().get(), passFlipSide(colorViews));
+        }
+    }
+
+    /**
+     * Probe-only ({@code -Dmetallum.perf}, order dump frames only): which
+     * ping-pong side this pass's color attachments belong to, resolved from
+     * {@link IrisMetalPingPongTargets} by texture identity (never from a label
+     * string, so it still works with debug labels off).
+     *
+     * @return {@code "main"} / {@code "alt"} when every recognized attachment
+     *         is on that side, {@code "mixed"} when they disagree, and
+     *         {@code null} when no attachment is a ping-pong target (a vanilla
+     *         pass) or the generation's targets are gone.
+     */
+    private static @Nullable String passFlipSide(final MetalGpuTextureView[] colorViews) {
+        try {
+            WorldRenderingPipeline pipeline = Iris.getPipelineManager().getPipelineNullable();
+            if (!(pipeline instanceof MetalWorldRenderingPipeline metal)) {
+                return null;
+            }
+            IrisMetalWorldResources resources = metal.resources();
+            IrisMetalRenderTargets renderTargets = resources.renderTargets();
+            IrisMetalPingPongTargets colorTargets = renderTargets.colorTargets();
+            IrisMetalShadowTargets shadowTargets = resources.shadowTargets();
+            IrisMetalPingPongTargets shadowColorTargets =
+                    shadowTargets == null ? null : shadowTargets.colorTargets();
+            String side = null;
+            for (MetalGpuTextureView view : colorViews) {
+                if (view == null) {
+                    continue;
+                }
+                GpuTexture texture = view.texture();
+                String viewSide = colorTargets.sideOf(texture);
+                if (viewSide == null && shadowColorTargets != null) {
+                    viewSide = shadowColorTargets.sideOf(texture);
+                }
+                if (viewSide == null) {
+                    continue;
+                }
+                if (side == null) {
+                    side = viewSide;
+                } else if (!side.equals(viewSide)) {
+                    return "mixed";
+                }
+            }
+            return side;
+        } catch (RuntimeException ignored) {
+            // A resize or pack reload can close the targets between passes; a
+            // probe sample must never take the frame down for that.
+            return null;
+        }
     }
 
     /**

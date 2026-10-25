@@ -259,6 +259,28 @@ final class IrisMetalPingPongTargets implements AutoCloseable {
         return flipped.get(checkIndex(index));
     }
 
+    /**
+     * Probe-only ({@code -Dmetallum.perf}): which side of this pair a texture
+     * is, resolved by identity rather than by its label string. Returns
+     * {@code "main"}, {@code "alt"}, or {@code null} when the texture does not
+     * belong to this pair. Read-only: flipping state is never touched.
+     */
+    String sideOf(final GpuTexture texture) {
+        if (!MetalPerformanceProbe.ENABLED || texture == null) {
+            return null;
+        }
+        ensureOpen();
+        for (int index = 0; index < formats.length; index++) {
+            if (main[index] == texture) {
+                return "main";
+            }
+            if (alt[index] == texture) {
+                return "alt";
+            }
+        }
+        return null;
+    }
+
     boolean flippedAtLeastOnce(final int index) {
         return flippedAtLeastOnce.get(checkIndex(index));
     }

@@ -31,6 +31,13 @@ final class MetalPerformanceProbe {
     private static final int SAMPLE_CAPACITY = 128;
     private static final double BYTES_PER_MIB = 1024.0 * 1024.0;
 
+    /** Level frames whose render passes are dumped by {@code perf order}. */
+    static final int ORDER_FRAMES = 3;
+    /** Pass labels dumped per frame before the line is truncated with {@code …}. */
+    static final int ORDER_ENTRY_LIMIT = 80;
+    private static final String ORDER_OVERFLOW = "…";
+    private static final String ORDER_SEPARATOR = " | ";
+
     /** CPU stages timed around the world-pipeline boundaries. */
     enum Stage {
         PREPARE_RESOURCES("prepare"),
@@ -48,6 +55,42 @@ final class MetalPerformanceProbe {
     }
 
     private static final Stage[] STAGES = Stage.values();
+
+    /**
+     * Why {@link #renderCommandEncoder} did or did not hand back the open
+     * encoder. Ordered so the {@code perf encoders reuse=…} line can be built
+     * straight from the ordinal array; the names are the probe tokens.
+     */
+    enum EncoderDecision {
+        /** Same attachment handles, no pending clear: the open encoder is reused. */
+        REUSE("reuse"),
+        /** No encoder open at all (frame start, after {@code endEncoder}). */
+        NO_OPEN("noOpen"),
+        /** The open encoder is a blit/compute encoder, not a render encoder. */
+        KIND("kind"),
+        /** Both are render encoders but the color slot count differs. */
+        COLOR_COUNT("colorCount"),
+        /** Same color slot count but at least one slot's texture handle differs. */
+        SLOT_HANDLE("slotHandle"),
+        /** Color set identical, depth attachment handle differs. */
+        DEPTH("depth"),
+        /** Attachments identical, but this pass would clear: merging would drop the clear. */
+        CLEAR("clear"),
+        /** Defensive bucket (no caller currently produces it). */
+        OTHER("other");
+
+        final String token;
+
+        EncoderDecision(final String token) {
+            this.token = token;
+        }
+    }
+
+    private static final EncoderDecision[] ENCODER_DECISIONS = EncoderDecision.values();
+    // Exists only for an enabled run; guarded like every other probe buffer.
+    private static final long[] ENCODER_DECISION_COUNTS = ENABLED
+            ? new long[ENCODER_DECISIONS.length]
+            : null;
     // Sample storage exists only for an enabled run; all accessors are behind
     // the ENABLED guard, so a release process allocates none of it.
     private static final long[][] STAGE_SAMPLES = ENABLED
@@ -129,6 +172,15 @@ final class MetalPerformanceProbe {
     private static int windowFrames;
     private static boolean switchLineRecorded;
 
+    /** Pass labels of the frame currently being dumped ({@code orderFrame > 0}). */
+    private static final String[] ORDER_LABELS = ENABLED ? new String[ORDER_ENTRY_LIMIT] : null;
+    private static int orderCount;
+    private static boolean orderOverflow;
+    /** Level frames seen since the probe started; the static counter that stops the dump. */
+    private static int levelFrame;
+    /** Frame number whose pass order is being captured, 0 = not capturing. */
+    private static int orderFrame;
+
     private MetalPerformanceProbe() {
     }
 
@@ -142,11 +194,23 @@ final class MetalPerformanceProbe {
             switchLineRecorded = true;
             MetalProbeReport.record("perf switches perf=on");
         }
+        levelFrame++;
+        if (levelFrame <= ORDER_FRAMES) {
+            // Sample the first frames only: the world has just been loaded and
+            // the framegraph is at its steady-state pass list.
+            orderFrame = levelFrame;
+            orderCount = 0;
+            orderOverflow = false;
+        }
     }
 
     /** Records the frame CPU time and emits the 120-frame window summary. */
     static void endFrame() {
-        if (!ENABLED || frameStartNanos == 0L) {
+        if (!ENABLED) {
+            return;
+        }
+        flushOrderLine();
+        if (frameStartNanos == 0L) {
             return;
         }
         long elapsed = System.nanoTime() - frameStartNanos;
@@ -205,10 +269,161 @@ final class MetalPerformanceProbe {
         }
     }
 
+    /**
+     * True only while one of the first {@link #ORDER_FRAMES} level frames is
+     * being sampled. Callers use it to skip building the label and the
+     * flip-side token at all once the dump is done.
+     */
+    static boolean capturingOrder() {
+        return ENABLED && orderFrame > 0;
+    }
+
+    /**
+     * Appends one render pass to the current frame's order dump. {@code label}
+     * is the descriptor's own label (never a new concatenation); {@code side}
+     * is the probe-only {@code main}/{@code alt}/{@code mixed} flip
+     * attribution, or {@code null} when the attachment is not an Iris
+     * ping-pong target.
+     */
+    static void recordRenderPassOrder(final String label, final String side) {
+        if (!ENABLED || orderFrame == 0) {
+            return;
+        }
+        int next = appendOrderEntry(ORDER_LABELS, orderCount, orderEntry(label, side));
+        if (next == orderCount) {
+            orderOverflow = true;
+        }
+        orderCount = next;
+    }
+
+    /** One dump entry: the existing label plus the probe-only flip-side suffix (pure). */
+    static String orderEntry(final String label, final String side) {
+        String base = label == null || label.isEmpty() ? "unnamed" : label;
+        // '|' is the entry separator; a label containing one would split a
+        // single pass into two columns of the dump.
+        if (base.indexOf('|') >= 0) {
+            base = base.replace('|', '/');
+        }
+        return side == null || side.isEmpty() ? base : base + '(' + side + ')';
+    }
+
+    /** Appends one entry while there is room; returns the new count (pure, capped). */
+    static int appendOrderEntry(final String[] labels, final int count, final String entry) {
+        int limit = Math.min(labels.length, ORDER_ENTRY_LIMIT);
+        if (count < 0 || count >= limit) {
+            return count;
+        }
+        labels[count] = entry;
+        return count + 1;
+    }
+
+    /**
+     * The {@code perf order frame=1 a | b | …} line. At most
+     * {@link #ORDER_ENTRY_LIMIT} entries are emitted; a frame with more passes
+     * ends in {@code | …} instead of growing without bound (pure).
+     */
+    static String passOrderLine(
+            final int frame,
+            final String[] labels,
+            final int count,
+            final boolean overflow
+    ) {
+        int limit = Math.min(labels.length, ORDER_ENTRY_LIMIT);
+        int emitted = Math.max(0, Math.min(count, limit));
+        StringBuilder line = new StringBuilder("perf order frame=").append(frame);
+        for (int index = 0; index < emitted; index++) {
+            line.append(index == 0 ? " " : ORDER_SEPARATOR).append(labels[index]);
+        }
+        if (overflow) {
+            line.append(emitted == 0 ? " " : ORDER_SEPARATOR).append(ORDER_OVERFLOW);
+        }
+        return line.toString();
+    }
+
+    /** Emits and closes the current frame's dump; no-op when not capturing. */
+    private static void flushOrderLine() {
+        if (orderFrame == 0) {
+            return;
+        }
+        MetalProbeReport.record(passOrderLine(orderFrame, ORDER_LABELS, orderCount, orderOverflow));
+        orderFrame = 0;
+        orderCount = 0;
+        orderOverflow = false;
+        for (int index = 0; index < ORDER_LABELS.length; index++) {
+            ORDER_LABELS[index] = null;
+        }
+    }
+
     static void recordEncoderSwitch() {
         if (ENABLED) {
             encoderSwitches++;
         }
+    }
+
+    /**
+     * Classifies one {@code renderCommandEncoder} call (pure, native-free).
+     *
+     * <p>The argument set is exactly the state the real branch tests, in the
+     * real order: an attachment-set comparison can only be made between two
+     * render encoders, so a missing or non-render open encoder wins first; then
+     * the color slot count, the per-slot handles and the depth handle (the
+     * three ways {@code sameAttachmentHandles} can fail); then the pending
+     * clear, which blocks reuse even with identical attachments. The result is
+     * {@link EncoderDecision#REUSE} in exactly the case the branch returns the
+     * open encoder.</p>
+     */
+    static EncoderDecision encoderDecision(
+            final boolean hasOpenEncoder,
+            final boolean openIsRenderEncoder,
+            final int openColorSlots,
+            final int newColorSlots,
+            final boolean sameSlotHandles,
+            final boolean sameDepthHandle,
+            final boolean clearPending
+    ) {
+        if (!hasOpenEncoder) {
+            return EncoderDecision.NO_OPEN;
+        }
+        if (!openIsRenderEncoder) {
+            return EncoderDecision.KIND;
+        }
+        if (openColorSlots != newColorSlots) {
+            return EncoderDecision.COLOR_COUNT;
+        }
+        if (!sameSlotHandles) {
+            return EncoderDecision.SLOT_HANDLE;
+        }
+        if (!sameDepthHandle) {
+            return EncoderDecision.DEPTH;
+        }
+        if (clearPending) {
+            return EncoderDecision.CLEAR;
+        }
+        return EncoderDecision.REUSE;
+    }
+
+    /** Folds one encoder decision into the current window. */
+    static void recordEncoderDecision(final EncoderDecision decision) {
+        if (ENABLED) {
+            ENCODER_DECISION_COUNTS[(decision == null ? EncoderDecision.OTHER : decision).ordinal()]++;
+        }
+    }
+
+    /**
+     * The {@code perf encoders reuse=…} attribution line: why the 44 passes
+     * became 31 native encoders, split into the branch that rejected reuse.
+     * Every bucket except {@code reuse} opened exactly one native render
+     * encoder, so their sum tracks {@code perf encoders real=…}.
+     */
+    static String encoderDecisionSummary(final long[] counts) {
+        StringBuilder line = new StringBuilder("perf encoders");
+        for (EncoderDecision decision : ENCODER_DECISIONS) {
+            long value = counts == null || decision.ordinal() >= counts.length
+                    ? 0L
+                    : counts[decision.ordinal()];
+            line.append(' ').append(decision.token).append('=').append(value);
+        }
+        return line.toString();
     }
 
     /** One native render encoder opened to encode draws ({@code renderCommandEncoder} new branch). */
@@ -482,6 +697,11 @@ final class MetalPerformanceProbe {
         // new encoder, which is what makes the declared bandwidth an upper bound.
         MetalProbeReport.record(encoderSummary(realRenderEncoders, clearRenderEncoders, blitEncoders));
 
+        // Why the per-pass encoder reuse did or did not happen: one bucket per
+        // `renderCommandEncoder` call, so every non-reuse bucket is one native
+        // encoder and their sum tracks realRenderEncoders above.
+        MetalProbeReport.record(encoderDecisionSummary(ENCODER_DECISION_COUNTS));
+
         StringBuilder stages = new StringBuilder("perf stages");
         for (Stage stage : STAGES) {
             int index = stage.ordinal();
@@ -608,6 +828,9 @@ final class MetalPerformanceProbe {
         blitEncoders = 0L;
         encoderLoadBytes = 0L;
         encoderStoreBytes = 0L;
+        if (ENCODER_DECISION_COUNTS != null) {
+            Arrays.fill(ENCODER_DECISION_COUNTS, 0L);
+        }
         textureCopyBytes = 0L;
         uniformUploadBytes = 0L;
         trafficLoadBytes = 0L;
