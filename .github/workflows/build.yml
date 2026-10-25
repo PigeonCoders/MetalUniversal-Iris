@@ -43,6 +43,30 @@ jobs:
             brew install cmake
           fi
           cmake --version
+      # MetalFX ships as a system framework; the native build links it with
+      # `-framework MetalFX`. Print the SDK headers so an Xcode/SDK change
+      # that drops the framework (or a runner image without it) fails here
+      # with a readable diff instead of inside the Swift compile step.
+      - name: select latest xcode
+        run: |
+          set -euo pipefail
+          echo "xcode-select current path: $(xcode-select -p)"
+          LATEST_XCODE=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "${LATEST_XCODE}" ]; then
+            echo "Selecting latest Xcode: ${LATEST_XCODE}"
+            sudo xcode-select -s "${LATEST_XCODE}"
+          fi
+          echo "xcode-select new path: $(xcode-select -p)"
+          echo "swiftc version: $(xcrun -f swiftc)"
+          echo "SDK path: $(xcrun --show-sdk-path)"
+          echo "MetalFX framework check:"
+          ls -la "$(xcrun --show-sdk-path)/System/Library/Frameworks/MetalFX.framework/Headers/" 2>/dev/null || echo "MetalFX headers not found at default SDK path"
+          echo "=== MTLFXSpatialScaler.h ==="
+          cat "$(xcrun --show-sdk-path)/System/Library/Frameworks/MetalFX.framework/Headers/MTLFXSpatialScaler.h" 2>/dev/null
+          echo "=== MTLFXTemporalScaler.h ==="
+          cat "$(xcrun --show-sdk-path)/System/Library/Frameworks/MetalFX.framework/Headers/MTLFXTemporalScaler.h" 2>/dev/null
+          echo "=== MTLFXFrameInterpolator.h ==="
+          cat "$(xcrun --show-sdk-path)/System/Library/Frameworks/MetalFX.framework/Headers/MTLFXFrameInterpolator.h" 2>/dev/null
       - name: build
         run: ./gradlew buildMacNative buildMacSpvc buildMacGlslang buildIOSNative buildIOSSpvc buildIOSGlslang build
       - name: capture build artifacts

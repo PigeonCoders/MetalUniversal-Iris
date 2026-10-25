@@ -680,13 +680,36 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         return currentRenderPass;
     }
 
-    void presentTextureToDrawable(final MemorySegment drawable, final GpuTextureView textureView) {
+    void presentTextureToDrawable(final MemorySegment drawable, final GpuTextureView textureView, final int outputWidth, final int outputHeight) {
         MetalGpuTexture source = (MetalGpuTexture) textureView.texture();
         flushPendingClear(source);
         submitRenderPass();
         endEncoder();
         MTLCommandBuffer commandBuffer = commandBuffer();
-        commandBuffer.encodePresentTextureToDrawable(drawable, source.nativeHandle(), fence);
+        // Run MetalFX (spatial upscale + frame interpolation) if enabled.
+        // The pipeline returns either the original source texture (when no
+        // MetalFX feature is active) or an intermediate upscaled /
+        // interpolated texture that the present path blits to the drawable.
+        MemorySegment presentTexture = source.nativeHandle();
+        com.metallum.client.metal.fx.MetalFxConfig fxConfig = com.metallum.client.metal.fx.MetalFxConfig.get();
+        if ((fxConfig.isSpatialUpscalingActive()
+                || fxConfig.isTemporalUpscalingActive()
+                || fxConfig.isFrameInterpolationActive())
+                && outputWidth > 0 && outputHeight > 0) {
+            try {
+                presentTexture = device.metalFxPipeline().maybeEncode(
+                        commandBuffer.nativeHandle(),
+                        source.nativeHandle(),
+                        source.getWidth(0), source.getHeight(0),
+                        outputWidth, outputHeight,
+                        this::queueForDestroy
+                );
+            } catch (Throwable t) {
+                com.metallum.Metallum.LOGGER.warn("[MetalFX] present-path encode failed; presenting source directly", t);
+                presentTexture = source.nativeHandle();
+            }
+        }
+        commandBuffer.encodePresentTextureToDrawable(drawable, presentTexture, fence);
     }
 
     @Override
@@ -1085,7 +1108,7 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         return new MetalFence(this, currentSubmitIndex);
     }
 
-    void queueForDestroy(final Runnable destroyAction) {
+    public void queueForDestroy(final Runnable destroyAction) {
         destroyQueue.add(destroyAction);
     }
 

@@ -1,6 +1,7 @@
 package com.metallum.mixin.render;
 
 import com.metallum.Metallum;
+import com.metallum.client.metal.fx.MetalFxCompat;
 import com.metallum.client.metal.render.MetalDebugSwitches;
 import com.mojang.blaze3d.pipeline.RenderTarget;
 import net.minecraft.client.renderer.GameRenderer;
@@ -27,6 +28,13 @@ import org.spongepowered.asm.mixin.injection.Redirect;
  * image at fewer pixels. A failed resize latches
  * {@link MetalDebugSwitches#failRenderScale()} (shared with the pipeline's
  * fallback) and restores the full window extent instead of crashing.
+ *
+ * <p><b>MetalFX hand-off.</b> When MetalFX spatial upscaling owns the internal
+ * resolution ({@link MetalFxCompat#isInternalResolutionOwnedByMetalFx()}),
+ * this redirect forwards the window extent untouched: {@code WindowMixin}
+ * has already shrunk what the window reports, so the arguments here are the
+ * MetalFX internal size. Applying the render scale on top would multiply the
+ * two shrink factors (0.77 * 0.75 = 0.58).
  */
 @Mixin(GameRenderer.class)
 abstract class MetalRenderScaleMixin {
@@ -42,6 +50,14 @@ abstract class MetalRenderScaleMixin {
             final int windowWidth,
             final int windowHeight
     ) {
+        if (MetalFxCompat.isInternalResolutionOwnedByMetalFx()) {
+            // MetalFX (WindowMixin) already shrank the extent Window reports;
+            // the window arguments below are that shrunk extent. Forward them
+            // untouched — applying our own scale here would multiply the two
+            // shrink factors and also fight the pipeline's hand-off.
+            renderer.resize(windowWidth, windowHeight);
+            return;
+        }
         float scale = MetalDebugSwitches.effectiveRenderScale();
         if (scale == 1.0f || windowWidth <= 0 || windowHeight <= 0) {
             renderer.resize(windowWidth, windowHeight);

@@ -1,5 +1,6 @@
 package com.metallum.client.metal.render;
 
+import com.metallum.Metallum;
 import com.metallum.client.metal.render.bridge.MetalNativeBridge;
 import com.metallum.client.metal.render.mtl.MTLHazardTrackingMode;
 import com.metallum.client.metal.render.mtl.MTLResourceOptions;
@@ -63,9 +64,9 @@ class MetalGpuBuffer extends GpuBuffer {
         if (max > 0L && this.allocationSize > max) {
             throw new IllegalArgumentException("Metal buffer size " + this.allocationSize + " exceeds device max " + max);
         }
-        this.nativeHandle = MetalNativeBridge.metallum_create_buffer(device.metalDeviceHandle(), this.allocationSize, this.resourceOptions);
+        this.nativeHandle = allocateWithOomRecovery(device, this.allocationSize, this.resourceOptions);
         if (MetalNativeBridge.isNullHandle(this.nativeHandle)) {
-            throw new IllegalStateException("Failed to create Metal buffer (size=" + this.allocationSize + ", resourceOptions=" + this.resourceOptions + ", device=" + this.device.getClass().getSimpleName() + ")");
+            throw new IllegalStateException("Failed to create Metal buffer (size=" + this.allocationSize + ", resourceOptions=" + this.resourceOptions + ", device=" + this.device.getClass().getSimpleName() + ") — driver returned null after emergency drain + GC. Process is likely at the iOS jetsam ceiling; reduce render distance / resource pack resolution.");
         }
 
         if (this.cpuAccessible) {
@@ -78,6 +79,82 @@ class MetalGpuBuffer extends GpuBuffer {
 
             this.storage = MetalNativeBridge.nativeByteBufferView(contents, this.allocationSize).order(ByteOrder.nativeOrder());
         }
+    }
+
+    /**
+     * Allocates an {@code MTLBuffer} with a single OOM-recovery retry.
+     *
+     * <p>Background: on iOS the app's resident memory is hard-capped by
+     * the OS (jetsam, ~3 GB even with the {@code increased-memory-limit}
+     * entitlement). When Sodium's {@code GlBufferArena} requests a large
+     * vertex/index buffer at the wrong moment, the Metal driver returns
+     * {@code null} from {@code newBufferWithLength:options:}. The original
+     * code surfaced this as {@code IllegalStateException("Failed to create
+     * Metal buffer")}, which propagated up the render thread and — because
+     * there is no Minecraft-level catch for it on iOS — the JVM process
+     * was killed without writing a crash log, exactly matching the
+     * reported "闪退无日志" symptom.
+     *
+     * <p>Recovery strategy (single-shot, on the render thread):
+     * <ol>
+     *   <li>Force-drain the per-device buffer pool. The pool can hold up
+     *       to 256 MB of "free" {@code MTLBuffer}s that the OS still
+     *       charges against the process; releasing them gives the driver
+     *       back a large contiguous free region immediately.</li>
+     *   <li>{@code System.gc()} + short sleep. Hints the JVM to finalise
+     *       any {@code MemorySegment}-backed wrappers whose backing
+     *       {@code MTLBuffer} has not yet been released via the cleaner.
+     *       Only useful for buffers allocated outside this pool; the
+     *       pool itself is already drained in step 1.</li>
+     *   <li>Retry the allocation exactly once. If it still fails we
+     *       return {@code null} and the caller throws a descriptive
+     *       exception rather than NPE'ing its way to an uncatchable
+     *       native crash.</li>
+     * </ol>
+     *
+     * <p>The recovery is conservative on purpose: it does NOT loop, does
+     * NOT block on GPU work (which could deadlock against the very submit
+     * that triggered the allocation), and does NOT release buffers that
+     * are still in-flight — only ones already in the pool.
+     */
+    private static MemorySegment allocateWithOomRecovery(
+            final MetalDevice device,
+            final long length,
+            final long resourceOptions
+    ) {
+        MemorySegment handle = MetalNativeBridge.metallum_create_buffer(
+                device.metalDeviceHandle(), length, resourceOptions);
+        if (!MetalNativeBridge.isNullHandle(handle)) {
+            return handle;
+        }
+        // First allocation failed. Almost always means we're at the iOS
+        // jetsam ceiling or hit the per-buffer size limit. Try one
+        // emergency recovery before giving up.
+        Metallum.LOGGER.warn(
+                "[metallum] MTLBuffer allocation failed (size={} bytes, options={}); "
+                        + "attempting emergency pool drain + GC retry",
+                length, resourceOptions);
+        try {
+            device.emergencyDrainBufferPool();
+        } catch (Throwable t) {
+            Metallum.LOGGER.warn("[metallum] emergency pool drain threw", t);
+        }
+        try {
+            System.gc();
+            Thread.sleep(5L);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        }
+        MemorySegment retry = MetalNativeBridge.metallum_create_buffer(
+                device.metalDeviceHandle(), length, resourceOptions);
+        if (MetalNativeBridge.isNullHandle(retry)) {
+            Metallum.LOGGER.error(
+                    "[metallum] MTLBuffer allocation FAILED after retry (size={} bytes). "
+                            + "Process is likely at the iOS jetsam ceiling; reduce render "
+                            + "distance / resource pack resolution / loaded mods.",
+                    length);
+        }
+        return retry;
     }
 
     MetalGpuBuffer(final MetalDevice device, @GpuBuffer.Usage final int usage, final long size, final @Nullable MemorySegment wrappedHandle) {

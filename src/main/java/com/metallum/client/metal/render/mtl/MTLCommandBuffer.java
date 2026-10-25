@@ -14,6 +14,10 @@ public final class MTLCommandBuffer {
         this.handle = handle;
     }
 
+    private MemorySegment handle() {
+        return this.handle;
+    }
+
     public MTLBlitCommandEncoder makeBlitCommandEncoder() {
         MemorySegment encoder = MetalNativeBridge.MTLCommandBuffer_makeBlitCommandEncoder(handle());
         if (MetalNativeBridge.isNullHandle(encoder)) {
@@ -155,7 +159,13 @@ public final class MTLCommandBuffer {
         handle = MemorySegment.NULL;
     }
 
-    private MemorySegment handle() {
+    /**
+     * @return the raw {@code MTLCommandBuffer} pointer. Exposed so the
+     * MetalFX present-path integration can pass it to the spatial scaler /
+     * frame interpolator encoders, which must run on the same command
+     * buffer as the present encode.
+     */
+    public MemorySegment nativeHandle() {
         if (MetalNativeBridge.isNullHandle(handle)) {
             throw new IllegalStateException("MTLCommandBuffer is closed");
         }

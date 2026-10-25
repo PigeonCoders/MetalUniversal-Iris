@@ -1,0 +1,47 @@
+{
+  "metallum.fx.button.open": "MetalFX 设置...",
+  "metallum.fx.button.open.tooltip": "配置 MetalFX 空间超分与帧插值。按 F8 可随时打开。",
+
+  "metallum.fx.options.title": "MetalFX 设置",
+  "metallum.fx.options.header": "Apple MetalFX 超分与帧插值",
+
+  "metallum.fx.options.spatial": "空间超分",
+  "metallum.fx.options.spatial.tooltip": "以显示分辨率的指定比例渲染 3D 场景，再用 MetalFX 超分放大。比例越低帧率越高但画面越模糊。",
+  "metallum.fx.options.temporal": "时间超分",
+  "metallum.fx.options.temporal.tooltip": "使用基于运动向量的时域超分，比纯空间超分更清晰。需要先开启空间超分。",
+  "metallum.fx.options.frame_interpolation": "帧插值",
+  "metallum.fx.options.frame_interpolation.tooltip": "在渲染帧之间生成插值帧以获得更流畅的画面。需要 macOS 26+ / iOS 26+ 及 M3+ / A17 Pro+ 芯片。需要先开启空间超分。",
+  "metallum.fx.options.group": "MetalFX 超分",
+  "metallum.fx.options.advanced_group": "高级",
+
+  "metallum.fx.spatial.off": "关闭",
+  "metallum.fx.spatial.quality": "质量 (77%)",
+  "metallum.fx.spatial.balanced": "平衡 (67%)",
+  "metallum.fx.spatial.performance": "性能 (56%)",
+  "metallum.fx.spatial.ultra_performance": "极致性能 (33%)",
+
+  "metallum.fx.temporal.off": "关闭",
+  "metallum.fx.temporal.auto": "自动 (时间)",
+
+  "metallum.fx.interp.off": "关闭",
+  "metallum.fx.interp.auto": "自动 (硬件)",
+  "metallum.fx.interp.force_blend": "自动 (硬件)",
+
+  "metallum.fx.capability.device": "设备：%s",
+  "metallum.fx.capability.spatial": "空间超分：%s",
+  "metallum.fx.capability.temporal": "时间超分：%s",
+  "metallum.fx.capability.interpolation": "帧插值：%s",
+  "metallum.fx.capability.supported": "支持",
+  "metallum.fx.capability.not_supported": "不支持",
+  "metallum.fx.capability.unknown_device": "未知",
+  "metallum.fx.capability.interp_hint": "硬件插值需要 macOS 26+ / iOS 26+ 及 M3+ / A17 Pro+ 芯片。当前设备不可用。",
+
+  "metallum.fx.warning.title": "MetalFX 适配警告",
+  "metallum.fx.warning.header": "请确认您的设备满足 Apple 官方 MetalFX 适配要求：",
+  "metallum.fx.warning.spatial.line": "空间超分 (Spatial)：macOS 13.0+ / iOS 16.0+，Apple GPU family 7 及以上（M1 / A14 及以上）",
+  "metallum.fx.warning.temporal.line": "时间超分 (Temporal)：macOS 13.0+ / iOS 16.0+，Apple GPU family 7 及以上（M1 / A14 及以上）",
+  "metallum.fx.warning.interp.line": "帧插值 (Frame Interpolator)：macOS 26.0+ / iOS 26.0+，硬件加速需 Apple GPU family 9（M3 / A17 Pro 及以上）",
+  "metallum.fx.warning.note": "在不符合要求的设备上启用 MetalFX 可能造成画面异常、性能下降或崩溃。",
+  "metallum.fx.warning.enable": "开启 MetalFX",
+  "metallum.fx.warning.cancel": "不开启"
+}

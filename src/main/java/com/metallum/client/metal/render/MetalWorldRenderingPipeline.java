@@ -2,6 +2,8 @@ package com.metallum.client.metal.render;
 
 import it.unimi.dsi.fastutil.objects.Object2ObjectMap;
 import com.metallum.Metallum;
+import com.metallum.client.metal.fx.MetalFxCompat;
+import com.metallum.client.metal.fx.MetalFxConfig;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.irisshaders.iris.features.FeatureFlags;
@@ -88,6 +90,8 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
     /** Even the restore-to-window resize failed; stop touching the main target entirely. */
     private boolean renderScaleSuspended;
     private boolean renderScaleProbeReported;
+    /** One receipt per generation when the render-scale path backs off for MetalFX. */
+    private boolean renderScaleOwnershipReported;
     private boolean shadowResolutionProbeReported;
     private boolean blockIdsInitialized;
     /**
@@ -418,6 +422,20 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
      * the switch and for any path the mixin does not cover.</p>
      */
     private void applyRenderScale(final Minecraft minecraft, final RenderTarget mainTarget) {
+        if (MetalFxCompat.isInternalResolutionOwnedByMetalFx()) {
+            // MetalFX owns the internal resolution: WindowMixin already reports
+            // the shrunk extent and MetalSurface upscales on present. Stacking
+            // our factor on top would multiply the two (0.77 * 0.75 = 0.58) and
+            // leave no single truth for the target size, so hand the target
+            // back to the MetalFX extent and leave it alone. With the default
+            // 1.0 there is nothing to hand back and nothing to report, so an
+            // unswitched run stays exactly as quiet as before.
+            if (MetalDebugSwitches.effectiveRenderScale() != 1.0f || this.appliedTargetWidth >= 0) {
+                restoreMainTargetExtent();
+                recordRenderScaleOwnedByMetalFx();
+            }
+            return;
+        }
         if (this.renderScaleSuspended) {
             return;
         }
@@ -489,6 +507,28 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
                         + " target=" + targetWidth + "x" + targetHeight
                         + " window=" + windowWidth + "x" + windowHeight
         );
+    }
+
+    /**
+     * Probe receipt for the hand-off: MetalFX is drawing the internal extent
+     * this generation, so {@code -Dmetallum.iris.renderScale} is inert no
+     * matter what the user set. Emitted once per generation (the switch and
+     * the MetalFX mode are both read live, so a dynamic toggle is visible on
+     * the next frame without spamming the probe file).
+     */
+    private void recordRenderScaleOwnedByMetalFx() {
+        if (this.renderScaleOwnershipReported) {
+            return;
+        }
+        this.renderScaleOwnershipReported = true;
+        MetalFxConfig fx = MetalFxConfig.get();
+        String message = "perf renderScale skipped: internal resolution owned by MetalFX"
+                + " (spatialMode=" + fx.spatialMode()
+                + ", metalFxScale=" + fx.spatialMode().renderScale
+                + ", requestedRenderScale=" + MetalDebugSwitches.RENDER_SCALE + ")";
+        this.receipts.recordEvent("renderScale.ownedByMetalFx");
+        MetalProbeReport.record(message);
+        Metallum.LOGGER.info("[metallum-iris] {}", message);
     }
 
     /**

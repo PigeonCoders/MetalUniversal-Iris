@@ -1,7 +1,10 @@
 package com.metallum.client.metal.render;
 
+import com.metallum.Metallum;
 import com.metallum.client.metal.render.bridge.MetalNativeBridge;
 import com.metallum.client.metal.render.mtl.MTLCommandQueue;
+import com.metallum.client.metal.fx.MetalFxConfig;
+import com.metallum.client.metal.fx.MetalFxPipeline;
 import com.mojang.blaze3d.GpuFormat;
 import com.mojang.blaze3d.buffers.GpuBuffer;
 import com.mojang.blaze3d.pipeline.ColorTargetState;
@@ -40,12 +43,34 @@ final class MetalDevice implements GpuDeviceBackend {
     private final MetalCommandEncoder commandEncoder;
     private final MetalGpuBuffer genericVertexAttributeBuffer;
     private final DeviceInfo deviceInfo;
+    private final MetalFxPipeline metalFxPipeline;
     public final MTLCommandQueue commandQueue;
     private final Map<RenderPipeline, MetalCompiledRenderPipeline> compiledPipelines = new IdentityHashMap<>();
     private final Map<ShaderCompilationKey, IntermediaryShaderModule> shaderCache = new HashMap<>();
     private final Map<MslFunctionKey, MemorySegment> functionCache = new HashMap<>();
     private static final int MAX_POOLED_BUFFER_BUCKETS = 32;
     private static final int MAX_POOLED_BUFFERS_PER_SIZE = 8;
+    /**
+     * Hard cap on the total bytes retained across every pooled bucket. iOS
+     * jetsams the app when its resident memory crosses ~3 GB; Sodium's
+     * {@code GlBufferArena} routinely requests multi-MB vertex/index
+     * buffers, so an unbounded pool could silently accumulate hundreds of
+     * megabytes of "free" MTLBuffers that the OS still bills against the
+     * process. Draining the pool proactively once it crosses this threshold
+     * lets the OS reclaim that memory between frames instead of waiting
+     * for a {@code close()} that may not come for hours.
+     */
+    private static final long MAX_POOLED_BYTES_TOTAL = 256L * 1024L * 1024L;
+    /**
+     * Buffers larger than this are never retained in the pool. They are
+     * almost always one-shot chunk geometry arenas whose allocation
+     * pattern (grow, free, grow again at a different size) makes pooling
+     * them actively harmful: each kept entry fragments the address space
+     * and the OS still charges it to the process. Releasing them eagerly
+     * lets the driver return the pages immediately.
+     */
+    private static final long POOL_RETAIN_MAX_BUFFER_BYTES = 4L * 1024L * 1024L;
+    private long pooledBytesTotal = 0L;
     private final Map<Long, Deque<MemorySegment>> bufferPool = new LinkedHashMap<>(16, 0.75f, true) {
         @Override
         protected boolean removeEldestEntry(final Map.Entry<Long, Deque<MemorySegment>> eldest) {
@@ -54,6 +79,12 @@ final class MetalDevice implements GpuDeviceBackend {
             }
             for (MemorySegment handle : eldest.getValue()) {
                 MetalNativeBridge.metallum_release_object(handle);
+            }
+            // Keep the byte budget honest: the evicted bucket's buffers are
+            // released here, not through the destroy queue.
+            pooledBytesTotal -= eldest.getKey() >>> 12;
+            if (pooledBytesTotal < 0L) {
+                pooledBytesTotal = 0L;
             }
             return true;
         }
@@ -102,11 +133,54 @@ final class MetalDevice implements GpuDeviceBackend {
         // from the Iris intercept mixins in com.metallum.mixin.iris) can reach
         // it without a GpuDevice.backend mixin accessor. Cleared in close().
         MetalDeviceRegistry.setActiveDevice(this);
+        // Query MetalFX device capabilities and load persisted user settings
+        // (all defaults are OFF). Both are no-ops on devices without MetalFX;
+        // the pipeline gracefully degrades to the legacy present path.
+        MetalFxConfig.reload();
+        MetalFxConfig.get().queryDeviceCapabilities(this.metalDeviceHandle);
+        this.metalFxPipeline = new MetalFxPipeline(this.metalDeviceHandle);
+        warnIfRenderScaleOverlapsMetalFx();
+    }
+
+    /**
+     * One startup warning when both internal-resolution mechanisms are armed:
+     * MetalFX spatial upscaling shrinks the size {@code Window} reports, and
+     * {@code -Dmetallum.iris.renderScale} would shrink the main target again
+     * (0.77 * 0.75 = 0.58 → visibly mushy). The MetalFX path wins; the render
+     * scale is skipped at runtime (see {@code MetalFxCompat}), this line only
+     * tells the user why their switch appears inert.
+     */
+    private static void warnIfRenderScaleOverlapsMetalFx() {
+        if (MetalDebugSwitches.RENDER_SCALE == 1.0f) {
+            return;
+        }
+        MetalFxConfig fx = MetalFxConfig.get();
+        if (!fx.isSpatialUpscalingActive()) {
+            return;
+        }
+        Metallum.LOGGER.warn(
+                "[metallum-iris] both MetalFX spatial upscaling (mode={}, scale={}) and "
+                        + "-Dmetallum.iris.renderScale={} are enabled; MetalFX owns the internal "
+                        + "resolution and the render scale is ignored for this session",
+                fx.spatialMode(), fx.spatialMode().renderScale, MetalDebugSwitches.RENDER_SCALE
+        );
+    }
+
+    /**
+     * @return the per-device MetalFX pipeline used by the present path to
+     * optionally upscale / interpolate frames. Returns a non-null instance
+     * even when MetalFX is disabled — the caller checks
+     * {@link com.metallum.client.metal.fx.MetalFxConfig#isSpatialUpscalingActive()}
+     * / {@link com.metallum.client.metal.fx.MetalFxConfig#isFrameInterpolationActive()}
+     * before encoding.
+     */
+    public MetalFxPipeline metalFxPipeline() {
+        return this.metalFxPipeline;
     }
 
     @Override
     public @NonNull GpuSurfaceBackend createSurface(final long windowHandle) {
-        return new MetalSurface(this, this.metalLayer);
+        return new MetalSurface(this, this.metalLayer, windowHandle);
     }
 
     @Override
@@ -233,6 +307,10 @@ final class MetalDevice implements GpuDeviceBackend {
         this.drainBufferPool();
         MetalDeviceRegistry.clearActiveDevice(this);
         try {
+            this.metalFxPipeline.close();
+        } catch (Throwable ignored) {
+        }
+        try {
             MetalNativeBridge.metallum_NSView_clearLayer(this.cocoaView);
         } catch (Throwable ignored) {
         }
@@ -255,7 +333,7 @@ final class MetalDevice implements GpuDeviceBackend {
         return this.deviceInfo;
     }
 
-    MemorySegment metalDeviceHandle() {
+    public MemorySegment metalDeviceHandle() {
         return this.metalDeviceHandle;
     }
 
@@ -300,10 +378,20 @@ final class MetalDevice implements GpuDeviceBackend {
 
     void queueBufferRelease(final MemorySegment handle, final long size, final long resourceOptions) {
         this.commandEncoder.queueForDestroy(() -> {
+            // Never pool very large buffers (chunk geometry arenas): their
+            // allocation pattern is grow-and-discard, and keeping them in
+            // the pool just inflates resident memory on iOS where the OS
+            // jetsams the process at ~3 GB. Release eagerly.
+            if (size > POOL_RETAIN_MAX_BUFFER_BYTES) {
+                MetalNativeBridge.metallum_release_object(handle);
+                return;
+            }
             long key = composePoolKey(size, resourceOptions);
             Deque<MemorySegment> bucket = bufferPool.computeIfAbsent(key, k -> new ArrayDeque<>());
-            if (bucket.size() < MAX_POOLED_BUFFERS_PER_SIZE) {
+            if (bucket.size() < MAX_POOLED_BUFFERS_PER_SIZE
+                    && pooledBytesTotal + size <= MAX_POOLED_BYTES_TOTAL) {
                 bucket.push(handle);
+                pooledBytesTotal += size;
             } else {
                 MetalNativeBridge.metallum_release_object(handle);
             }
@@ -345,6 +433,25 @@ final class MetalDevice implements GpuDeviceBackend {
             }
         }
         bufferPool.clear();
+        pooledBytesTotal = 0L;
+    }
+
+    /**
+     * Immediately releases every pooled {@code MTLBuffer}. Called by
+     * {@link MetalGpuBuffer} when {@code metallum_create_buffer} returns
+     * null — i.e. when the Metal driver refused the allocation, almost
+     * always because the process is approaching its resident-memory cap
+     * (iOS jetsam) or hit the per-buffer size limit. Draining the pool
+     * gives the driver an instant chunk of free address space to satisfy
+     * the retry, instead of waiting for the next submit's destroy-queue
+     * rotation to free the same buffers.
+     *
+     * <p>Must only be called from the render thread (the same thread that
+     * owns {@link MetalCommandEncoder}). Safe to call repeatedly — drains
+     * are idempotent.
+     */
+    void emergencyDrainBufferPool() {
+        drainBufferPool();
     }
 
     MetalCompiledRenderPipeline getOrCompilePipeline(final RenderPipeline pipeline) {

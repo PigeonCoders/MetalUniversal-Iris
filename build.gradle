@@ -6,6 +6,13 @@ plugins {
 version = project.mod_version
 group = project.maven_group
 
+// Build artefacts are published as `MetalUniversal-<version>.jar` (matching
+// the mod's display name and GitHub repo) rather than the Gradle project
+// name. The mod id stays `metallum` for Fabric / mixin compatibility.
+base {
+	archivesName = "metallum"
+}
+
 loom {
 	accessWidenerPath = file("src/main/resources/metallum.accesswidener")
 }
@@ -102,6 +109,7 @@ tasks.register("buildMacNative", Exec) {
 		"-target", "arm64-apple-macosx14.0",
 		"-framework", "Foundation",
 		"-framework", "Metal",
+		"-framework", "MetalFX",
 		"-framework", "QuartzCore",
 		"-o", "src/main/resources/natives/macos/libmetallum.dylib",
 		"src/main/native/MetallumNative.swift"
@@ -243,6 +251,17 @@ tasks.register("buildIOSNative", Exec) {
 	// The dylib is built with `-static`-style linking of the Swift stdlib so it
 	// can be loaded directly via dlopen on a jailbroken/signable device.
 	if (iosSdkPath != null) {
+		// MetalFX is weak-linked so the dylib still loads on iOS 14/15 where
+		// the framework is absent. `canImport(MetalFX)` is a compile-time
+		// check against the SDK (always present in modern Xcode); at runtime,
+		// `MTLFXSpatialScaler.supportsDevice` returns false on chips/OS
+		// versions that lack MetalFX, so the JVM falls back gracefully.
+		//
+		// NOTE: Xcode 26's swiftc driver no longer accepts `-weak_framework`
+		// directly (it rejects it with "unknown argument"). The flag must be
+		// forwarded to the linker (ld) via `-Xlinker`, which is the canonical
+		// way to pass link-time options through swiftc and is stable across
+		// Xcode versions. ld understands `-weak_framework <name>` natively.
 		commandLine "swiftc",
 			"-O",
 			"-whole-module-optimization",
@@ -252,6 +271,8 @@ tasks.register("buildIOSNative", Exec) {
 			"-sdk", iosSdkPath,
 			"-framework", "Foundation",
 			"-framework", "Metal",
+			"-Xlinker", "-weak_framework",
+			"-Xlinker", "MetalFX",
 			"-framework", "QuartzCore",
 			"-framework", "UIKit",
 			"-o", "src/main/resources/natives/ios/libmetallum.dylib",

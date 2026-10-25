@@ -643,6 +643,80 @@ public final class MetalNativeBridge {
             } else {
                 iosGetViewMetalLayer = null;
             }
+
+            // MetalFX entry points. The native dylib always exports these
+            // symbols (real implementations when MetalFX is available,
+            // stubs that return 0/null otherwise), so we look them up
+            // unconditionally. If a future dylib build is missing the
+            // symbols, we treat them as unsupported by leaving the handle
+            // null and the wrapper returns the "unsupported" sentinel.
+            fxSupportsSpatialScaler = lookup.find("metallum_fx_supports_spatial_scaler")
+                    .map(h -> downcall(h, FunctionDescriptor.of(INT, ValueLayout.ADDRESS)))
+                    .orElse(null);
+            fxSupportsTemporalScaler = lookup.find("metallum_fx_supports_temporal_scaler")
+                    .map(h -> downcall(h, FunctionDescriptor.of(INT, ValueLayout.ADDRESS)))
+                    .orElse(null);
+            fxSupportsFrameInterpolation = lookup.find("metallum_fx_supports_frame_interpolation")
+                    .map(h -> downcall(h, FunctionDescriptor.of(INT, ValueLayout.ADDRESS)))
+                    .orElse(null);
+            fxCreateSpatialScaler = lookup.find("metallum_fx_create_spatial_scaler")
+                    .map(h -> downcall(h,
+                            FunctionDescriptor.of(ValueLayout.ADDRESS,
+                                    ValueLayout.ADDRESS, LONG, LONG, LONG, LONG, LONG, LONG)))
+                    .orElse(null);
+            fxSpatialScalerEncode = lookup.find("metallum_fx_spatial_scaler_encode")
+                    .map(h -> downcall(h,
+                            FunctionDescriptor.ofVoid(
+                                    ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                                    ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                                    FLOAT, FLOAT, FLOAT)))
+                    .orElse(null);
+            fxCreateTemporalScaler = lookup.find("metallum_fx_create_temporal_scaler")
+                    .map(h -> downcall(h,
+                            FunctionDescriptor.of(ValueLayout.ADDRESS,
+                                    ValueLayout.ADDRESS, LONG, LONG, LONG, LONG,
+                                    LONG, LONG, LONG, LONG)))
+                    .orElse(null);
+            fxTemporalScalerEncode = lookup.find("metallum_fx_temporal_scaler_encode")
+                    .map(h -> downcall(h,
+                            FunctionDescriptor.ofVoid(
+                                    ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                                    ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                                    ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                                    ValueLayout.ADDRESS,
+                                    FLOAT, FLOAT, FLOAT, FLOAT, INT)))
+                    .orElse(null);
+            fxCreateFrameInterpolator = lookup.find("metallum_fx_create_frame_interpolator")
+                    .map(h -> downcall(h,
+                            FunctionDescriptor.of(ValueLayout.ADDRESS,
+                                    ValueLayout.ADDRESS, LONG, LONG, LONG)))
+                    .orElse(null);
+            fxFrameInterpolatorEncode = lookup.find("metallum_fx_frame_interpolator_encode")
+                    .map(h -> downcall(h,
+                            FunctionDescriptor.ofVoid(
+                                    ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                                    ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                                    ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                                    FLOAT, FLOAT, INT)))
+                    .orElse(null);
+            fxEncodeFrameBlend = lookup.find("metallum_fx_encode_frame_blend")
+                    .map(h -> downcall(h,
+                            FunctionDescriptor.of(INT,
+                                    ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                                    ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)))
+                    .orElse(null);
+            fxClearTexture = lookup.find("metallum_fx_clear_texture")
+                    .map(h -> downcall(h,
+                            FunctionDescriptor.of(INT,
+                                    ValueLayout.ADDRESS, ValueLayout.ADDRESS)))
+                    .orElse(null);
+            // Reactive tuning: (reactiveScale, reactiveRadius, motionConfidence).
+            // Optional — older dylibs without this symbol simply leave the
+            // handle null and the wrapper is a no-op.
+            fxSetReactiveTuning = lookup.find("metallum_fx_set_reactive_tuning")
+                    .map(h -> downcall(h,
+                            FunctionDescriptor.ofVoid(FLOAT, FLOAT, FLOAT)))
+                    .orElse(null);
         } catch (IOException e) {
             throw new IllegalStateException("Failed to load Metal native bridge", e);
         }
@@ -869,6 +943,27 @@ public final class MetalNativeBridge {
     private static final MethodHandle iosFindSurfaceView; // null on macOS
     private static final MethodHandle iosGetViewMetalLayer; // null on macOS
 
+    // MetalFX method handles. Each is null when the native dylib does not
+    // export the corresponding symbol (older build without MetalFX support),
+    // in which case the wrapper methods report unsupported / return null.
+    private static final MethodHandle fxSupportsSpatialScaler;
+    private static final MethodHandle fxSupportsTemporalScaler;
+    private static final MethodHandle fxSupportsFrameInterpolation;
+    private static final MethodHandle fxCreateSpatialScaler;
+    private static final MethodHandle fxSpatialScalerEncode;
+    private static final MethodHandle fxCreateTemporalScaler;
+    private static final MethodHandle fxTemporalScalerEncode;
+    private static final MethodHandle fxCreateFrameInterpolator;
+    private static final MethodHandle fxFrameInterpolatorEncode;
+    private static final MethodHandle fxEncodeFrameBlend;
+    private static final MethodHandle fxClearTexture;
+    // Reactive-mask tuning. Sets runtime scaling parameters that the native
+    // compute pipelines read when encoding the reactive / transparency mask.
+    // The handle is null on dylibs that predate this symbol; the wrapper is
+    // then a no-op so callers can unconditionally invoke it after pipeline
+    // setup without crashing older builds.
+    private static final MethodHandle fxSetReactiveTuning;
+
 
     private static MethodHandle downcall(final SymbolLookup lookup, final String symbol, final FunctionDescriptor descriptor) {
         return LINKER.downcallHandle(lookup.findOrThrow(symbol), descriptor, Linker.Option.critical(false));
@@ -882,6 +977,10 @@ public final class MetalNativeBridge {
         return lookup.find(symbol)
                 .map(address -> LINKER.downcallHandle(address, descriptor, Linker.Option.critical(false)))
                 .orElse(null);
+    }
+
+    private static MethodHandle downcall(final MemorySegment symbol, final FunctionDescriptor descriptor) {
+        return LINKER.downcallHandle(symbol, descriptor, Linker.Option.critical(false));
     }
 
     private static MethodHandle downcallWithoutCritical(final SymbolLookup lookup, final String symbol, final FunctionDescriptor descriptor) {
@@ -2351,5 +2450,313 @@ public final class MetalNativeBridge {
 
     private static RuntimeException bridgeFailure(final String symbol, final Throwable throwable) {
         return new IllegalStateException("Native bridge call failed: " + symbol, throwable);
+    }
+
+    // =========================================================================
+    // MetalFX — spatial upscaling & frame interpolation
+    // =========================================================================
+
+    public static boolean metallum_fx_supports_spatial_scaler(final MemorySegment device) {
+        if (fxSupportsSpatialScaler == null) return false;
+        try {
+            return (int) fxSupportsSpatialScaler.invokeExact(segment(device)) != 0;
+        } catch (Throwable throwable) {
+            throw bridgeFailure("metallum_fx_supports_spatial_scaler", throwable);
+        }
+    }
+
+    public static boolean metallum_fx_supports_temporal_scaler(final MemorySegment device) {
+        if (fxSupportsTemporalScaler == null) return false;
+        try {
+            return (int) fxSupportsTemporalScaler.invokeExact(segment(device)) != 0;
+        } catch (Throwable throwable) {
+            throw bridgeFailure("metallum_fx_supports_temporal_scaler", throwable);
+        }
+    }
+
+    public static boolean metallum_fx_supports_frame_interpolation(final MemorySegment device) {
+        if (fxSupportsFrameInterpolation == null) return false;
+        try {
+            return (int) fxSupportsFrameInterpolation.invokeExact(segment(device)) != 0;
+        } catch (Throwable throwable) {
+            throw bridgeFailure("metallum_fx_supports_frame_interpolation", throwable);
+        }
+    }
+
+    public static MemorySegment metallum_fx_create_spatial_scaler(
+            final MemorySegment device,
+            final long inputWidth, final long inputHeight,
+            final long outputWidth, final long outputHeight,
+            final long colorFormat, final long outputFormat
+    ) {
+        if (fxCreateSpatialScaler == null) return MemorySegment.NULL;
+        try {
+            return (MemorySegment) fxCreateSpatialScaler.invokeExact(
+                    segment(device), inputWidth, inputHeight, outputWidth, outputHeight,
+                    colorFormat, outputFormat);
+        } catch (Throwable throwable) {
+            throw bridgeFailure("metallum_fx_create_spatial_scaler", throwable);
+        }
+    }
+
+    public static void metallum_fx_spatial_scaler_encode(
+            final MemorySegment scaler,
+            final MemorySegment commandBuffer,
+            final MemorySegment sourceTexture,
+            final MemorySegment destinationTexture,
+            final float jitterOffsetX, final float jitterOffsetY, final float mipScale
+    ) {
+        if (fxSpatialScalerEncode == null) return;
+        try {
+            fxSpatialScalerEncode.invokeExact(
+                    segment(scaler), segment(commandBuffer),
+                    segment(sourceTexture), segment(destinationTexture),
+                    jitterOffsetX, jitterOffsetY, mipScale);
+        } catch (Throwable throwable) {
+            throw bridgeFailure("metallum_fx_spatial_scaler_encode", throwable);
+        }
+    }
+
+    public static MemorySegment metallum_fx_create_frame_interpolator(
+            final MemorySegment device,
+            final long outputWidth, final long outputHeight,
+            final long colorFormat
+    ) {
+        if (fxCreateFrameInterpolator == null) return MemorySegment.NULL;
+        try {
+            return (MemorySegment) fxCreateFrameInterpolator.invokeExact(
+                    segment(device), outputWidth, outputHeight, colorFormat);
+        } catch (Throwable throwable) {
+            throw bridgeFailure("metallum_fx_create_frame_interpolator", throwable);
+        }
+    }
+
+    public static void metallum_fx_frame_interpolator_encode(
+            final MemorySegment interpolator,
+            final MemorySegment commandBuffer,
+            final MemorySegment sourceColor,
+            final MemorySegment previousColor,
+            final MemorySegment motionVectors,
+            final MemorySegment destination,
+            final float motionVectorScaleX, final float motionVectorScaleY,
+            final int reset
+    ) {
+        if (fxFrameInterpolatorEncode == null) return;
+        try {
+            fxFrameInterpolatorEncode.invokeExact(
+                    segment(interpolator), segment(commandBuffer),
+                    segment(sourceColor), segment(previousColor),
+                    segment(motionVectors), segment(destination),
+                    motionVectorScaleX, motionVectorScaleY, reset);
+        } catch (Throwable throwable) {
+            throw bridgeFailure("metallum_fx_frame_interpolator_encode", throwable);
+        }
+    }
+
+    /**
+     * Encodes a 50/50 lerp between {@code sourceTexture} and
+     * {@code previousTexture} into {@code destinationTexture}. Used as a
+     * fallback when {@code MTLFXFrameInterpolator} is not supported by the
+     * device (e.g. M1/M2 on macOS, A14–A16 on iOS).
+     *
+     * @return {@code true} if the blend was encoded successfully
+     */
+    public static boolean metallum_fx_encode_frame_blend(
+            final MemorySegment device,
+            final MemorySegment commandBuffer,
+            final MemorySegment sourceTexture,
+            final MemorySegment previousTexture,
+            final MemorySegment destinationTexture
+    ) {
+        if (fxEncodeFrameBlend == null) return false;
+        try {
+            return (int) fxEncodeFrameBlend.invokeExact(
+                    segment(device), segment(commandBuffer),
+                    segment(sourceTexture), segment(previousTexture),
+                    segment(destinationTexture)) != 0;
+        } catch (Throwable throwable) {
+            throw bridgeFailure("metallum_fx_encode_frame_blend", throwable);
+        }
+    }
+
+    /**
+     * Clears the given texture to all zeros via a render pass with
+     * {@code loadAction = clear}. Used to initialise the MetalFX motion-vector
+     * texture, which has undefined initial contents under
+     * {@link MTLStorageMode#Private} — feeding garbage motion vectors into
+     * {@code MTLFXFrameInterpolator} crashes the encoder on stricter drivers
+     * (e.g. M5 Max).
+     *
+     * @param commandBuffer the active MTLCommandBuffer
+     * @param texture       the texture to clear (must be a renderable color target)
+     * @return {@code true} if the clear encoder was created successfully
+     */
+    public static boolean metallum_fx_clear_texture(
+            final MemorySegment commandBuffer,
+            final MemorySegment texture
+    ) {
+        if (fxClearTexture == null) return false;
+        try {
+            return (int) fxClearTexture.invokeExact(
+                    segment(commandBuffer), segment(texture)) != 0;
+        } catch (Throwable throwable) {
+            throw bridgeFailure("metallum_fx_clear_texture", throwable);
+        }
+    }
+
+    // =========================================================================
+    // MetalFX — temporal upscaling (MTLFXTemporalScaler)
+    // -------------------------------------------------------------------------
+    // Unlike MTLFXSpatialScaler (which only needs a color texture), the
+    // temporal scaler consumes motion vectors + depth to reconstruct a
+    // high-quality upscaled frame from a lower-resolution input, using
+    // history from previous frames. This is the path the motion pipeline
+    // built in phase 1 (MetalMotionContract / MetalEntityMotionCapture)
+    // feeds into: object + camera motion are merged into the
+    // motionVectors texture, depth comes from the scene depth buffer,
+    // and the temporal scaler produces the final upscaled color.
+    //
+    // The native handles (fxCreateTemporalScaler / fxTemporalScalerEncode)
+    // were already looked up by the static initialiser; these wrappers
+    // expose them to Java callers. The Swift implementation is in
+    // MetallumNative.swift under the same @_cdecl names.
+    // =========================================================================
+
+    /**
+     * Creates an {@code MTLFXTemporalScaler} for the given input/output
+     * dimensions and texture formats. The scaler is cached on the native
+     * side keyed by (device, dimensions, formats), so repeated calls with
+     * the same arguments return the same handle (retained again — the
+     * caller must eventually release it via
+     * {@link #metallum_release_object}).
+     *
+     * @param device             the MTLDevice
+     * @param inputWidth         source color/motion/depth width
+     * @param inputHeight        source color/motion/depth height
+     * @param outputWidth        destination width (drawable resolution)
+     * @param outputHeight       destination height (drawable resolution)
+     * @param colorFormat        MTLPixelFormat of the source color texture
+     * @param outputFormat       MTLPixelFormat of the destination texture
+     * @param motionVectorFormat MTLPixelFormat of the motion texture (RG32Float)
+     * @param depthFormat        MTLPixelFormat of the depth texture
+     *                           (Depth32Float typically)
+     * @return the scaler handle, or {@link MemorySegment#NULL} if creation
+     *         failed or MetalFX temporal scaling is unsupported
+     */
+    public static MemorySegment metallum_fx_create_temporal_scaler(
+            final MemorySegment device,
+            final long inputWidth, final long inputHeight,
+            final long outputWidth, final long outputHeight,
+            final long colorFormat, final long outputFormat,
+            final long motionVectorFormat, final long depthFormat
+    ) {
+        if (fxCreateTemporalScaler == null) return MemorySegment.NULL;
+        try {
+            return (MemorySegment) fxCreateTemporalScaler.invokeExact(
+                    segment(device),
+                    inputWidth, inputHeight, outputWidth, outputHeight,
+                    colorFormat, outputFormat, motionVectorFormat, depthFormat);
+        } catch (Throwable throwable) {
+            throw bridgeFailure("metallum_fx_create_temporal_scaler", throwable);
+        }
+    }
+
+    /**
+     * Encodes the temporal scaler into the given command buffer. The scaler
+     * reads {@code sourceColor}, {@code motionVectors}, and {@code depth}
+     * and writes the upscaled result into {@code destination}.
+     *
+     * <p>{@code prevColor}, {@code motionVectors}, and {@code depth} may be
+     * null/empty; the Swift side treats null as "not set" and the scaler
+     * falls back to its internal history. In practice all three should be
+     * provided for the temporal path to produce useful output.
+     *
+     * @param scaler              the handle from
+     *                            {@link #metallum_fx_create_temporal_scaler}
+     * @param commandBuffer       the active MTLCommandBuffer
+     * @param sourceColor         current-frame low-res color texture
+     * @param prevColor           previous-frame color texture (may be null;
+     *                            the temporal scaler manages history
+     *                            internally, so this is currently ignored
+     *                            by the Swift implementation but kept in
+     *                            the signature for forward compatibility)
+     * @param motionVectors       RG32Float motion texture (may be null)
+     * @param depth               depth texture (may be null)
+     * @param destination         the upscaled output texture
+     * @param jitterOffsetX       sub-pixel jitter applied this frame
+     *                            (Halton(2) sample, see MetalFxMath)
+     * @param jitterOffsetY       sub-pixel jitter applied this frame
+     *                            (Halton(3) sample, see MetalFxMath)
+     * @param motionVectorScaleX  pixels-per-NDC-unit X (= inputWidth / 2)
+     * @param motionVectorScaleY  pixels-per-NDC-unit Y (= inputHeight / 2)
+     * @param reset               1 to reset temporal history (first frame
+     *                            or after a cut), 0 otherwise
+     */
+    public static void metallum_fx_temporal_scaler_encode(
+            final MemorySegment scaler,
+            final MemorySegment commandBuffer,
+            final MemorySegment sourceColor,
+            final MemorySegment prevColor,
+            final MemorySegment motionVectors,
+            final MemorySegment depth,
+            final MemorySegment destination,
+            final float jitterOffsetX, final float jitterOffsetY,
+            final float motionVectorScaleX, final float motionVectorScaleY,
+            final int reset
+    ) {
+        if (fxTemporalScalerEncode == null) return;
+        try {
+            fxTemporalScalerEncode.invokeExact(
+                    segment(scaler), segment(commandBuffer),
+                    segment(sourceColor), segment(prevColor),
+                    segment(motionVectors), segment(depth),
+                    segment(destination),
+                    jitterOffsetX, jitterOffsetY,
+                    motionVectorScaleX, motionVectorScaleY, reset);
+        } catch (Throwable throwable) {
+            throw bridgeFailure("metallum_fx_temporal_scaler_encode", throwable);
+        }
+    }
+
+    /**
+     * Sets runtime tuning parameters for the reactive-mask compute
+     * pipelines (transparency_reactive, cutout_dilate). These control how
+     * aggressively transient pixels — transparency edges, depth
+     * discontinuities, hand-rendered overlays — suppress temporal
+     * accumulation in the temporal scaler / frame interpolator.
+     *
+     * <p>The values are stored process-wide on the native side and read by
+     * the next encode of the reactive compute pipelines. Calling this
+     * before the pipelines exist is safe (the values are cached and
+     * applied when the pipelines are first built).
+     *
+     * <p>No-op on dylibs that do not export
+     * {@code metallum_fx_set_reactive_tuning} (older builds). Callers can
+     * invoke this unconditionally after device setup.
+     *
+     * @param reactiveScale    multiplier on the reactive mask's influence
+     *                         on temporal accumulation. 0.0 disables
+     *                         reactive suppression; 1.0 applies the mask
+     *                         at full strength. Typical range [0.0, 1.0].
+     * @param reactiveRadius   dilation radius in texels applied to the
+     *                         reactive mask before feeding the scaler.
+     *                         Larger values stabilise edges but blur
+     *                         fine detail. Typical range [0, 4].
+     * @param motionConfidence threshold below which a motion sample is
+     *                         treated as low-confidence and history is
+     *                         rejected. Range [0.0, 1.0]; 0.0 trusts all
+     *                         motion, 1.0 rejects all history.
+     */
+    public static void metallum_fx_set_reactive_tuning(
+            final float reactiveScale,
+            final float reactiveRadius,
+            final float motionConfidence
+    ) {
+        if (fxSetReactiveTuning == null) return;
+        try {
+            fxSetReactiveTuning.invokeExact(reactiveScale, reactiveRadius, motionConfidence);
+        } catch (Throwable throwable) {
+            throw bridgeFailure("metallum_fx_set_reactive_tuning", throwable);
+        }
     }
 }

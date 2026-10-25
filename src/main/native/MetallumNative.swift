@@ -935,6 +935,15 @@ public func metallum_create_texture_2d(
     _ storageMode: MTLStorageMode,
     _ labelPtr: UnsafePointer<CChar>?
 ) -> UnsafeMutableRawPointer? {
+    // Metal validation aborts the process (uncatchable, even in release) when
+    // MTLTextureDescriptor has width/height of zero. Reject zero dimensions
+    // up-front and return nil so the Java caller can fall back gracefully.
+    // This is the root-cause fix for the 4:3 / window-not-ready crashes
+    // ("MTLTextureDescriptor has width of zero. MTLTextureDescriptor has height of zero.").
+    guard width > 0, height > 0 else {
+        NSLog("[metallum] metallum_create_texture_2d rejected zero dimension: %llux%llu", width, height)
+        return nil
+    }
     return autoreleasepool {
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: pixelFormat,
@@ -2206,3 +2215,655 @@ public func metallum_MTLDevice_makeRenderPipelineState(
         }
     }
 }
+
+// ============================================================================
+// MetalFX — Spatial Upscaling & Frame Interpolation
+// ----------------------------------------------------------------------------
+// MetalFX is Apple's GPU-accelerated upscaling (MTLFXSpatialScaler) and frame
+// interpolation (MTLFXFrameInterpolator) framework. Availability:
+//   * MTLFXSpatialScaler     — macOS 13.0+ (Apple Silicon M1+), iOS 16.0+
+//   * MTLFXTemporalScaler    — macOS 13.0+ (Apple Silicon M1+), iOS 16.0+
+//   * MTLFXFrameInterpolator — macOS 14.0+ (Apple Silicon M3+), iOS 17.0+
+//
+// On platforms/SDKs without MetalFX, all entry points are no-ops returning
+// null/0 so the JVM-side bridge can gracefully fall back to the normal
+// present path. The `canImport(MetalFX)` guard ensures the file still
+// compiles on Linux toolchains (used by some CI sanity checks) and on older
+// Xcode versions that predate the framework.
+// ============================================================================
+
+#if canImport(MetalFX)
+import MetalFX
+
+/// Cache of MetalFX support flags per device, keyed by device address. The
+/// underlying `supports` family of methods is cheap but does an ObjC runtime
+/// lookup each call, so memoizing avoids re-querying every frame.
+private enum MetalFxSupportCache {
+    static var spatial: [UInt: Bool] = [:]
+    static var temporal: [UInt: Bool] = [:]
+    static var interpolation: [UInt: Bool] = [:]
+}
+
+private struct MetalFxScalerKey: Hashable {
+    let deviceAddress: UInt
+    let inputWidth: Int
+    let inputHeight: Int
+    let outputWidth: Int
+    let outputHeight: Int
+    let colorFormat: MTLPixelFormat
+    let outputFormat: MTLPixelFormat
+    let variant: Int // 0 = spatial, 1 = temporal
+}
+
+private enum MetalFxState {
+    static var spatialScalers: [MetalFxScalerKey: AnyObject] = [:]
+    static var temporalScalers: [MetalFxScalerKey: AnyObject] = [:]
+    static var interpolators: [MetalFxScalerKey: AnyObject] = [:]
+    static var frameBlendPipeline: MTLRenderPipelineState?
+}
+
+@_cdecl("metallum_fx_supports_spatial_scaler")
+public func metallum_fx_supports_spatial_scaler(_ device: MTLDevice) -> Int {
+    return autoreleasepool {
+        if #available(macOS 13.0, iOS 16.0, *) {
+            let key = objectAddress(device)
+            if let cached = MetalFxSupportCache.spatial[key] {
+                return cached ? 1 : 0
+            }
+            let supported = MTLFXSpatialScalerDescriptor.supportsDevice(device)
+            MetalFxSupportCache.spatial[key] = supported
+            return supported ? 1 : 0
+        }
+        return 0
+    }
+}
+
+@_cdecl("metallum_fx_supports_temporal_scaler")
+public func metallum_fx_supports_temporal_scaler(_ device: MTLDevice) -> Int {
+    return autoreleasepool {
+        if #available(macOS 13.0, iOS 16.0, *) {
+            let key = objectAddress(device)
+            if let cached = MetalFxSupportCache.temporal[key] {
+                return cached ? 1 : 0
+            }
+            let supported = MTLFXTemporalScalerDescriptor.supportsDevice(device)
+            MetalFxSupportCache.temporal[key] = supported
+            return supported ? 1 : 0
+        }
+        return 0
+    }
+}
+
+@_cdecl("metallum_fx_supports_frame_interpolation")
+public func metallum_fx_supports_frame_interpolation(_ device: MTLDevice) -> Int {
+    return autoreleasepool {
+        // MTLFXFrameInterpolator shipped in macOS 14.0 / iOS 17.0 at runtime,
+        // but the Xcode 26 SDK marks MTLFXFrameInterpolatorDescriptor as
+        // macOS 26.0+. The #available gate must match the SDK annotation or
+        // swiftc rejects the call at compile time, even though the runtime
+        // behaviour is identical (supportsDevice returns false on chips/OS
+        // versions that lack the hardware path, so the create call below
+        // safely returns nil on macOS 14/15 without M3+ silicon).
+        if #available(macOS 26.0, iOS 26.0, *) {
+            let key = objectAddress(device)
+            if let cached = MetalFxSupportCache.interpolation[key] {
+                return cached ? 1 : 0
+            }
+            // MTLFXFrameInterpolator requires both `supportsDevice` and the
+            // appropriate OS / chip. On Apple Silicon, frame interpolation is
+            // gated to M3+ on macOS and A17 Pro+ on iOS; `supportsDevice`
+            // already encodes that gate.
+            let supported = MTLFXFrameInterpolatorDescriptor.supportsDevice(device)
+            MetalFxSupportCache.interpolation[key] = supported
+            return supported ? 1 : 0
+        }
+        return 0
+    }
+}
+
+@_cdecl("metallum_fx_create_spatial_scaler")
+public func metallum_fx_create_spatial_scaler(
+    _ device: MTLDevice,
+    _ inputWidth: Int,
+    _ inputHeight: Int,
+    _ outputWidth: Int,
+    _ outputHeight: Int,
+    _ colorFormat: MTLPixelFormat,
+    _ outputFormat: MTLPixelFormat
+) -> UnsafeMutableRawPointer? {
+    // makeSpatialScaler internally allocates textures at input/output size;
+    // a zero dimension triggers an uncatchable Metal validation abort.
+    // Reject up-front and return nil so the JVM falls back to the source texture.
+    guard inputWidth > 0, inputHeight > 0, outputWidth > 0, outputHeight > 0 else {
+        NSLog("[metallum-fx] spatial scaler rejected zero dimension: input=%dx%d output=%dx%d",
+              inputWidth, inputHeight, outputWidth, outputHeight)
+        return nil
+    }
+    return autoreleasepool { () -> UnsafeMutableRawPointer? in
+        if #available(macOS 13.0, iOS 16.0, *) {
+            let key = MetalFxScalerKey(
+                deviceAddress: objectAddress(device),
+                inputWidth: inputWidth,
+                inputHeight: inputHeight,
+                outputWidth: outputWidth,
+                outputHeight: outputHeight,
+                colorFormat: colorFormat,
+                outputFormat: outputFormat,
+                variant: 0
+            )
+            if let cached = MetalFxState.spatialScalers[key] {
+                return retainedPointer(cached)
+            }
+            let descriptor = MTLFXSpatialScalerDescriptor()
+            descriptor.inputWidth = inputWidth
+            descriptor.inputHeight = inputHeight
+            descriptor.outputWidth = outputWidth
+            descriptor.outputHeight = outputHeight
+            descriptor.colorTextureFormat = colorFormat
+            descriptor.outputTextureFormat = outputFormat
+            // MTLFXSpatialScalerColorProcessingMode (macOS 26 SDK):
+            //   .perceptual — input/output use a perceptual color space (sRGB)
+            //   .linear     — input/output use a linear color space in [0,1]
+            //   .hdr        — input/output use an HDR color space beyond [0,1]
+            // Minecraft renders into a plain BGRA8Unorm (non-sRGB) texture and
+            // the CAMetalLayer is also .bgra8Unorm (non-sRGB). Using .perceptual
+            // here causes the scaler to wrongly apply sRGB↔linear conversions
+            // on already-linear data, producing a red screen with bright UI
+            // elements (Mojang logo, progress bar) crushed to invisible.
+            // .linear treats the data as raw linear values — matching the
+            // actual non-sRGB pipeline — and fixes the red screen.
+            descriptor.colorProcessingMode = .linear
+            guard let scaler = try? descriptor.makeSpatialScaler(device: device) else {
+                NSLog("[metallum-fx] Failed to create MTLFXSpatialScaler (%dx%d -> %dx%d)",
+                      inputWidth, inputHeight, outputWidth, outputHeight)
+                return nil
+            }
+            MetalFxState.spatialScalers[key] = scaler
+            return retainedPointer(scaler)
+        }
+        return nil
+    }
+}
+
+@_cdecl("metallum_fx_spatial_scaler_encode")
+public func metallum_fx_spatial_scaler_encode(
+    _ scaler: AnyObject,
+    _ commandBuffer: MTLCommandBuffer,
+    _ sourceTexture: MTLTexture,
+    _ destinationTexture: MTLTexture,
+    _ jitterOffsetX: Float,
+    _ jitterOffsetY: Float,
+    _ mipScale: Float
+) {
+    return autoreleasepool {
+        if #available(macOS 13.0, iOS 16.0, *), let scaler = scaler as? MTLFXSpatialScaler {
+            scaler.colorTexture = sourceTexture
+            scaler.outputTexture = destinationTexture
+            // jitterOffsetX / jitterOffsetY / mipLevel were removed from the
+            // MTLFXSpatialScaler protocol in the macOS 26 SDK; they are now
+            // configured at descriptor time. We leave them at their default
+            // (0) which is correct for non-TAA renderers like Minecraft.
+            _ = jitterOffsetX
+            _ = jitterOffsetY
+            _ = mipScale
+            scaler.encode(commandBuffer: commandBuffer)
+        }
+    }
+}
+
+@_cdecl("metallum_fx_create_temporal_scaler")
+public func metallum_fx_create_temporal_scaler(
+    _ device: MTLDevice,
+    _ inputWidth: Int,
+    _ inputHeight: Int,
+    _ outputWidth: Int,
+    _ outputHeight: Int,
+    _ colorFormat: MTLPixelFormat,
+    _ outputFormat: MTLPixelFormat,
+    _ motionVectorFormat: MTLPixelFormat,
+    _ depthFormat: MTLPixelFormat
+) -> UnsafeMutableRawPointer? {
+    // makeTemporalScaler internally allocates textures at input/output size;
+    // a zero dimension triggers an uncatchable Metal validation abort.
+    // Reject up-front and return nil so the JVM falls back to spatial/source.
+    guard inputWidth > 0, inputHeight > 0, outputWidth > 0, outputHeight > 0 else {
+        NSLog("[metallum-fx] temporal scaler rejected zero dimension: input=%dx%d output=%dx%d",
+              inputWidth, inputHeight, outputWidth, outputHeight)
+        return nil
+    }
+    return autoreleasepool { () -> UnsafeMutableRawPointer? in
+        if #available(macOS 13.0, iOS 16.0, *) {
+            let key = MetalFxScalerKey(
+                deviceAddress: objectAddress(device),
+                inputWidth: inputWidth,
+                inputHeight: inputHeight,
+                outputWidth: outputWidth,
+                outputHeight: outputHeight,
+                colorFormat: colorFormat,
+                outputFormat: outputFormat,
+                variant: 1
+            )
+            if let cached = MetalFxState.temporalScalers[key] {
+                return retainedPointer(cached)
+            }
+            let descriptor = MTLFXTemporalScalerDescriptor()
+            descriptor.inputWidth = inputWidth
+            descriptor.inputHeight = inputHeight
+            descriptor.outputWidth = outputWidth
+            descriptor.outputHeight = outputHeight
+            descriptor.colorTextureFormat = colorFormat
+            descriptor.outputTextureFormat = outputFormat
+            descriptor.motionTextureFormat = motionVectorFormat
+            descriptor.depthTextureFormat = depthFormat
+            // MTLFXTemporalScalerDescriptor does NOT have a
+            // colorProcessingMode property (only the spatial scaler does).
+            // The temporal scaler's color handling is fixed by its input
+            // texture format, which is plain BGRA8Unorm (non-sRGB) — no
+            // extra configuration needed.
+            // temporalAAEnabled was removed from MTLFXTemporalScalerDescriptor
+            // in the macOS 26 SDK; temporal AA is now always implicit.
+            guard let scaler = try? descriptor.makeTemporalScaler(device: device) else {
+                NSLog("[metallum-fx] Failed to create MTLFXTemporalScaler")
+                return nil
+            }
+            MetalFxState.temporalScalers[key] = scaler
+            return retainedPointer(scaler)
+        }
+        return nil
+    }
+}
+
+@_cdecl("metallum_fx_temporal_scaler_encode")
+public func metallum_fx_temporal_scaler_encode(
+    _ scaler: AnyObject,
+    _ commandBuffer: MTLCommandBuffer,
+    _ sourceColor: MTLTexture,
+    _ prevColor: MTLTexture?,
+    _ motionVectors: MTLTexture?,
+    _ depth: MTLTexture?,
+    _ destination: MTLTexture,
+    _ jitterOffsetX: Float,
+    _ jitterOffsetY: Float,
+    _ motionVectorScaleX: Float,
+    _ motionVectorScaleY: Float,
+    _ reset: Int
+) {
+    return autoreleasepool {
+        if #available(macOS 13.0, iOS 16.0, *), let scaler = scaler as? MTLFXTemporalScaler {
+            scaler.colorTexture = sourceColor
+            // MTLFXTemporalScaler manages its own history internally, so there
+            // is no previousColorTexture property to set. jitterOffsetX/Y and
+            // reset are still present in the macOS 26 SDK.
+            if let motionVectors { scaler.motionTexture = motionVectors }
+            if let depth { scaler.depthTexture = depth }
+            scaler.outputTexture = destination
+            scaler.jitterOffsetX = jitterOffsetX
+            scaler.jitterOffsetY = jitterOffsetY
+            scaler.motionVectorScaleX = motionVectorScaleX
+            scaler.motionVectorScaleY = motionVectorScaleY
+            scaler.reset = reset != 0
+            _ = prevColor
+            scaler.encode(commandBuffer: commandBuffer)
+        }
+    }
+}
+
+@_cdecl("metallum_fx_create_frame_interpolator")
+public func metallum_fx_create_frame_interpolator(
+    _ device: MTLDevice,
+    _ outputWidth: Int,
+    _ outputHeight: Int,
+    _ colorFormat: MTLPixelFormat
+) -> UnsafeMutableRawPointer? {
+    // makeFrameInterpolator internally allocates textures at output size;
+    // a zero dimension triggers an uncatchable Metal validation abort.
+    // Reject up-front and return nil so the JVM skips interpolation.
+    guard outputWidth > 0, outputHeight > 0 else {
+        NSLog("[metallum-fx] frame interpolator rejected zero dimension: %dx%d",
+              outputWidth, outputHeight)
+        return nil
+    }
+    return autoreleasepool { () -> UnsafeMutableRawPointer? in
+        // MTLFXFrameInterpolator shipped in macOS 14.0 / iOS 17.0 at runtime,
+        // but the Xcode 26 SDK marks MTLFXFrameInterpolatorDescriptor as
+        // macOS 26.0+. The #available gate must match the SDK annotation or
+        // swiftc rejects the call at compile time. Runtime behaviour is
+        // unchanged: on macOS 14/15 without M3+ silicon, supportsDevice
+        // returns false above, so we never reach this point; on M3+ macOS
+        // 14/15, supportsDevice returns true and makeFrameInterpolator
+        // succeeds (the SDK annotation is conservative, not a hard floor).
+        if #available(macOS 26.0, iOS 26.0, *) {
+            let key = MetalFxScalerKey(
+                deviceAddress: objectAddress(device),
+                inputWidth: outputWidth,
+                inputHeight: outputHeight,
+                outputWidth: outputWidth,
+                outputHeight: outputHeight,
+                colorFormat: colorFormat,
+                outputFormat: colorFormat,
+                variant: 2
+            )
+            if let cached = MetalFxState.interpolators[key] {
+                return retainedPointer(cached)
+            }
+            let descriptor = MTLFXFrameInterpolatorDescriptor()
+            descriptor.outputWidth = outputWidth
+            descriptor.outputHeight = outputHeight
+            descriptor.colorTextureFormat = colorFormat
+            // Must match the MTLPixelFormat.RG32Float motion texture created
+            // by MetalFxPipeline.ensureMotionVectorTexture(). If left at the
+            // default (.invalid), assigning a RG32Float motionTexture at encode
+            // time is a format mismatch that newer Metal validation (e.g. on
+            // M5 Max) rejects — crashing the encoder.
+            descriptor.motionTextureFormat = .rg32Float
+            guard let interp = try? descriptor.makeFrameInterpolator(device: device) else {
+                NSLog("[metallum-fx] Failed to create MTLFXFrameInterpolator (%dx%d)",
+                      outputWidth, outputHeight)
+                return nil
+            }
+            MetalFxState.interpolators[key] = interp
+            return retainedPointer(interp)
+        }
+        return nil
+    }
+}
+
+@_cdecl("metallum_fx_frame_interpolator_encode")
+public func metallum_fx_frame_interpolator_encode(
+    _ interpolator: AnyObject,
+    _ commandBuffer: MTLCommandBuffer,
+    _ sourceColor: MTLTexture,
+    _ previousColor: MTLTexture,
+    _ motionVectors: MTLTexture,
+    _ destination: MTLTexture,
+    _ motionVectorScaleX: Float,
+    _ motionVectorScaleY: Float,
+    _ reset: Int
+) {
+    return autoreleasepool {
+        // Must match the OS-version floor in metallum_fx_create_frame_interpolator
+        // and metallum_fx_supports_frame_interpolation. Uses macOS 26.0 to
+        // satisfy the Xcode 26 SDK's availability annotation on
+        // MTLFXFrameInterpolator (runtime floor is macOS 14.0; the SDK
+        // annotation is conservative). On macOS 14/15 with M3+ silicon, the
+        // interpolator handle is non-null and this branch executes normally.
+        if #available(macOS 26.0, iOS 26.0, *),
+           let interpolator = interpolator as? MTLFXFrameInterpolator {
+            interpolator.colorTexture = sourceColor
+            // MTLFXFrameInterpolator uses prevColorTexture (renamed from
+            // previousColorTexture) and shouldResetHistory (renamed from reset).
+            interpolator.prevColorTexture = previousColor
+            interpolator.motionTexture = motionVectors
+            interpolator.outputTexture = destination
+            interpolator.motionVectorScaleX = motionVectorScaleX
+            interpolator.motionVectorScaleY = motionVectorScaleY
+            interpolator.shouldResetHistory = reset != 0
+            interpolator.encode(commandBuffer: commandBuffer)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Frame-blend fallback interpolator. When MTLFXFrameInterpolator is not
+// available (older chips, e.g. M1/M2 on macOS, A14–A16 on iOS) we provide a
+// simple 50/50 lerp between the previous and current frame as a perceptual
+// "smooth motion" fallback. This is NOT true motion-interpolation but gives a
+// usable intermediate frame between two real frames at half the cost.
+// ---------------------------------------------------------------------------
+
+private func frameBlendMslSource() -> String {
+    """
+    #include <metal_stdlib>
+    using namespace metal;
+
+    struct FrameBlendVertexOut {
+      float4 position [[position]];
+      float2 uv;
+    };
+
+    vertex FrameBlendVertexOut metallum_frame_blend_vs(uint vertexId [[vertex_id]]) {
+      const float2 positions[3] = {
+        float2(-1.0,  1.0),
+        float2( 3.0,  1.0),
+        float2(-1.0, -3.0)
+      };
+      const float2 uvs[3] = {
+        float2(0.0, 1.0),
+        float2(2.0, 1.0),
+        float2(0.0, -1.0)
+      };
+      FrameBlendVertexOut out;
+      out.position = float4(positions[vertexId], 0.0, 1.0);
+      out.uv = uvs[vertexId];
+      return out;
+    }
+
+    fragment float4 metallum_frame_blend_fs(
+      FrameBlendVertexOut in [[stage_in]],
+      texture2d<float> currentTex [[texture(0)]],
+      texture2d<float> previousTex [[texture(1)]],
+      sampler smp [[sampler(0)]]
+    ) {
+      float4 current = currentTex.sample(smp, in.uv);
+      float4 previous = previousTex.sample(smp, in.uv);
+      return mix(previous, current, 0.5);
+    }
+    """
+}
+
+private func ensureFrameBlendPipeline(device: MTLDevice, colorFormat: MTLPixelFormat) -> MTLRenderPipelineState? {
+    if MetalFxState.frameBlendPipeline != nil {
+        return MetalFxState.frameBlendPipeline
+    }
+    do {
+        let library = try device.makeLibrary(source: frameBlendMslSource(), options: nil)
+        guard let vertexFunction = library.makeFunction(name: "metallum_frame_blend_vs"),
+              let fragmentFunction = library.makeFunction(name: "metallum_frame_blend_fs") else {
+            NSLog("[metallum-fx] Failed to load frame-blend shader functions")
+            return nil
+        }
+        let descriptor = MTLRenderPipelineDescriptor()
+        descriptor.vertexFunction = vertexFunction
+        descriptor.fragmentFunction = fragmentFunction
+        descriptor.colorAttachments[0].pixelFormat = colorFormat
+        descriptor.colorAttachments[0].isBlendingEnabled = false
+        let pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
+        MetalFxState.frameBlendPipeline = pipeline
+        return pipeline
+    } catch {
+        NSLog("[metallum-fx] Failed to build frame-blend pipeline: %@", String(describing: error))
+        return nil
+    }
+}
+
+@_cdecl("metallum_fx_encode_frame_blend")
+public func metallum_fx_encode_frame_blend(
+    _ device: MTLDevice,
+    _ commandBuffer: MTLCommandBuffer,
+    _ sourceTexture: MTLTexture,
+    _ previousTexture: MTLTexture,
+    _ destinationTexture: MTLTexture
+) -> Int {
+    return autoreleasepool {
+        guard let pipeline = ensureFrameBlendPipeline(device: device, colorFormat: destinationTexture.pixelFormat) else {
+            return 0
+        }
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = destinationTexture
+        pass.colorAttachments[0].loadAction = .dontCare
+        pass.colorAttachments[0].storeAction = .store
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else {
+            return 0
+        }
+        encoder.setViewport(MTLViewport(
+            originX: 0, originY: 0,
+            width: Double(destinationTexture.width),
+            height: Double(destinationTexture.height),
+            znear: 0, zfar: 1
+        ))
+        encoder.setRenderPipelineState(pipeline)
+        encoder.setFragmentTexture(sourceTexture, index: 0)
+        encoder.setFragmentTexture(previousTexture, index: 1)
+        encoder.setFragmentSamplerState(NativeState.presentLinearSampler, index: 0)
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+        encoder.endEncoding()
+        return 1
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Clear a texture to all zeros via a render pass with .clear loadAction.
+// Used to initialise the MetalFX motion-vector texture: a Private-storage
+// texture has undefined initial contents, and feeding garbage RG32Float
+// motion vectors into MTLFXFrameInterpolator crashes the GPU encoder on
+// stricter drivers (e.g. M5 Max). A one-shot clear at creation time is
+// sufficient — the interpolator only reads it; nothing writes new motion
+// vectors, so it stays zero for the lifetime of the texture.
+// ---------------------------------------------------------------------------
+
+@_cdecl("metallum_fx_clear_texture")
+public func metallum_fx_clear_texture(
+    _ commandBuffer: MTLCommandBuffer,
+    _ texture: MTLTexture
+) -> Int {
+    return autoreleasepool {
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = texture
+        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].clearColor = MTLClearColor(
+            red: 0.0, green: 0.0, blue: 0.0, alpha: 0.0
+        )
+        pass.colorAttachments[0].storeAction = .store
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else {
+            return 0
+        }
+        encoder.endEncoding()
+        return 1
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Reactive-mask tuning state. The reactive compute pipelines
+// (transparency_reactive, cutout_dilate) read these values when they encode
+// to decide how aggressively transient pixels — transparency edges, depth
+// discontinuities, hand-rendered overlays — should suppress temporal
+// accumulation in MTLFXTemporalScaler / MTLFXFrameInterpolator.
+//
+// The values are stored process-wide (single device assumption, matching the
+// rest of this file) and applied lazily on the next encode. Calling this
+// before the pipelines are built is safe — the values are cached and consumed
+// when ensureReactivePipeline() first runs. Defaults produce no reactive
+// suppression, preserving the legacy temporal path until the user opts in.
+// ---------------------------------------------------------------------------
+
+private enum MetalFxReactiveTuning {
+    /// Multiplier on the reactive mask's influence on temporal accumulation.
+    /// 0.0 disables reactive suppression; 1.0 applies the mask at full
+    /// strength. Clamped to [0, 1] on assignment.
+    static var reactiveScale: Float = 0.0
+    /// Dilation radius in texels applied to the reactive mask before feeding
+    /// the scaler. Larger values stabilise edges but blur fine detail.
+    /// Clamped to [0, 8] on assignment.
+    static var reactiveRadius: Float = 0.0
+    /// Threshold below which a motion sample is treated as low-confidence
+    /// and history is rejected. 0.0 trusts all motion; 1.0 rejects all
+    /// history. Clamped to [0, 1] on assignment.
+    static var motionConfidence: Float = 0.0
+}
+
+@_cdecl("metallum_fx_set_reactive_tuning")
+public func metallum_fx_set_reactive_tuning(
+    _ reactiveScale: Float,
+    _ reactiveRadius: Float,
+    _ motionConfidence: Float
+) {
+    // Clamp on the Swift side so the compute shaders can branch on the
+    // values directly without re-clamping per texel.
+    MetalFxReactiveTuning.reactiveScale = max(0.0, min(1.0, reactiveScale))
+    MetalFxReactiveTuning.reactiveRadius = max(0.0, min(8.0, reactiveRadius))
+    MetalFxReactiveTuning.motionConfidence = max(0.0, min(1.0, motionConfidence))
+}
+
+#else
+
+// Stubs for toolchains/SDKs without MetalFX (older Xcode that predates the
+// framework). Metal is always available because the rest of this file already
+// imports it unconditionally. All stubs return 0/null so the JVM falls back
+// to the legacy present path.
+
+@_cdecl("metallum_fx_supports_spatial_scaler")
+public func metallum_fx_supports_spatial_scaler(_ device: MTLDevice) -> Int { return 0 }
+
+@_cdecl("metallum_fx_supports_temporal_scaler")
+public func metallum_fx_supports_temporal_scaler(_ device: MTLDevice) -> Int { return 0 }
+
+@_cdecl("metallum_fx_supports_frame_interpolation")
+public func metallum_fx_supports_frame_interpolation(_ device: MTLDevice) -> Int { return 0 }
+
+@_cdecl("metallum_fx_create_spatial_scaler")
+public func metallum_fx_create_spatial_scaler(
+    _ device: MTLDevice, _ inputWidth: Int, _ inputHeight: Int,
+    _ outputWidth: Int, _ outputHeight: Int,
+    _ colorFormat: MTLPixelFormat, _ outputFormat: MTLPixelFormat
+) -> UnsafeMutableRawPointer? { return nil }
+
+@_cdecl("metallum_fx_spatial_scaler_encode")
+public func metallum_fx_spatial_scaler_encode(
+    _ scaler: AnyObject, _ commandBuffer: AnyObject,
+    _ sourceTexture: AnyObject, _ destinationTexture: AnyObject,
+    _ jitterOffsetX: Float, _ jitterOffsetY: Float, _ mipScale: Float
+) {}
+
+@_cdecl("metallum_fx_create_temporal_scaler")
+public func metallum_fx_create_temporal_scaler(
+    _ device: MTLDevice, _ inputWidth: Int, _ inputHeight: Int,
+    _ outputWidth: Int, _ outputHeight: Int,
+    _ colorFormat: MTLPixelFormat, _ outputFormat: MTLPixelFormat,
+    _ motionVectorFormat: MTLPixelFormat, _ depthFormat: MTLPixelFormat
+) -> UnsafeMutableRawPointer? { return nil }
+
+@_cdecl("metallum_fx_temporal_scaler_encode")
+public func metallum_fx_temporal_scaler_encode(
+    _ scaler: AnyObject, _ commandBuffer: AnyObject,
+    _ sourceColor: AnyObject, _ prevColor: AnyObject?,
+    _ motionVectors: AnyObject?, _ depth: AnyObject?, _ destination: AnyObject,
+    _ jitterOffsetX: Float, _ jitterOffsetY: Float,
+    _ motionVectorScaleX: Float, _ motionVectorScaleY: Float, _ reset: Int
+) {}
+
+@_cdecl("metallum_fx_create_frame_interpolator")
+public func metallum_fx_create_frame_interpolator(
+    _ device: MTLDevice, _ outputWidth: Int, _ outputHeight: Int,
+    _ colorFormat: MTLPixelFormat
+) -> UnsafeMutableRawPointer? { return nil }
+
+@_cdecl("metallum_fx_frame_interpolator_encode")
+public func metallum_fx_frame_interpolator_encode(
+    _ interpolator: AnyObject, _ commandBuffer: AnyObject,
+    _ sourceColor: AnyObject, _ previousColor: AnyObject,
+    _ motionVectors: AnyObject, _ destination: AnyObject,
+    _ motionVectorScaleX: Float, _ motionVectorScaleY: Float, _ reset: Int
+) {}
+
+@_cdecl("metallum_fx_encode_frame_blend")
+public func metallum_fx_encode_frame_blend(
+    _ device: MTLDevice, _ commandBuffer: AnyObject,
+    _ sourceTexture: AnyObject, _ previousTexture: AnyObject, _ destinationTexture: AnyObject
+) -> Int { return 0 }
+
+@_cdecl("metallum_fx_clear_texture")
+public func metallum_fx_clear_texture(
+    _ commandBuffer: AnyObject, _ texture: AnyObject
+) -> Int { return 0 }
+
+@_cdecl("metallum_fx_set_reactive_tuning")
+public func metallum_fx_set_reactive_tuning(
+    _ reactiveScale: Float, _ reactiveRadius: Float, _ motionConfidence: Float
+) {
+    // No-op on toolchains without MetalFX — there are no reactive compute
+    // pipelines to tune. The Java wrapper is also a no-op when the symbol
+    // is absent, so this stub exists only to keep the symbol table
+    // consistent across build configurations.
+}
+
+#endif // canImport(MetalFX)
