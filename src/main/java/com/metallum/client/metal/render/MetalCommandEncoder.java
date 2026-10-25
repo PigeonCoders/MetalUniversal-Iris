@@ -158,8 +158,21 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
             MetalGpuTexture next = !pendingColorClears.isEmpty()
                     ? pendingColorClears.keySet().iterator().next()
                     : pendingDepthClears.keySet().iterator().next();
+            int before = pendingColorClears.size() + pendingDepthClears.size();
             flushPendingClear(next);
+            if (pendingColorClears.size() + pendingDepthClears.size() >= before) {
+                // Defensive: never spin forever if a future clear implementation
+                // stops removing its own entry.
+                pendingColorClears.remove(next);
+                pendingDepthClears.remove(next);
+            }
         }
+    }
+
+    /** Drops queued clears whose targets are about to be destroyed. */
+    void discardPendingClears() {
+        this.pendingColorClears.clear();
+        this.pendingDepthClears.clear();
     }
 
     boolean hasPendingClear(final MetalGpuTexture texture) {
@@ -1147,6 +1160,15 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         Vector4fc colorClear = pendingColorClears.remove(texture);
         Double depthClear = pendingDepthClears.remove(texture);
         if (colorClear == null && depthClear == null) {
+            return;
+        }
+        if (texture.isClosed()) {
+            // The target was torn down (generation rebuild, resize, pack
+            // switch) while this clear was still queued. Dropping it is
+            // correct: the replacement target queues its own clear, and the
+            // old native texture is already released, so touching it here
+            // would throw "Native Metal texture is closed".
+            MetalPerformanceProbe.recordClearDiscarded();
             return;
         }
 

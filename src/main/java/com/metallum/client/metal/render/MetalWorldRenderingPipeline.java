@@ -730,6 +730,14 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
         // process-wide shadow flag set for the next generation.
         ShadowRenderer.ACTIVE = false;
         this.receipts.recordEvent("generation.destroy");
+        // Deferred clears reference generation-owned targets. Drop them before
+        // the resources below release those textures: a queued clear on a
+        // closed texture throws from MetalGpuTexture.nativeHandle() the next
+        // time a compute/clear pass flushes the queue.
+        MetalDevice destroyingDevice = MetalDeviceRegistry.getActiveDevice();
+        if (destroyingDevice != null) {
+            destroyingDevice.createCommandEncoder().discardPendingClears();
+        }
         if (this.compiledPrograms != null) {
             this.compiledPrograms.close();
             this.compiledPrograms = null;

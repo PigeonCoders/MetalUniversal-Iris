@@ -165,6 +165,7 @@ final class MetalPerformanceProbe {
     private static long trafficStoreBytes;
     private static long clearsQueued;
     private static long clearsMaterialized;
+    private static long clearsDiscarded;
     private static long clearOnlyPasses;
 
     private static long frameStartNanos;
@@ -532,6 +533,16 @@ final class MetalPerformanceProbe {
         }
     }
 
+    /**
+     * One pending clear dropped because its target was torn down before the
+     * clear was flushed (generation rebuild / resize).
+     */
+    static void recordClearDiscarded() {
+        if (ENABLED) {
+            clearsDiscarded++;
+        }
+    }
+
     /** One pending clear that had to open its own transient render encoder. */
     static void recordClearMaterialized() {
         if (ENABLED) {
@@ -727,9 +738,9 @@ final class MetalPerformanceProbe {
                 ? 0L
                 : Math.round(renderPassesCreated / (double) windowFrames);
         MetalProbeReport.record(String.format(Locale.ROOT,
-                "perf bandwidth declared w=%d load=%dMB store=%dMB passes=%d clears=%d clearQ=%d kinds=%d",
+                "perf bandwidth declared w=%d load=%dMB store=%dMB passes=%d clears=%d clearQ=%d clearDrop=%d kinds=%d",
                 windowFrames, toMib(trafficLoadBytes), toMib(trafficStoreBytes), passesPerFrame,
-                clearsMaterialized + clearOnlyPasses, clearsQueued, PASS_TRAFFIC.size()));
+                clearsMaterialized + clearOnlyPasses, clearsQueued, clearsDiscarded, PASS_TRAFFIC.size()));
 
         MetalProbeReport.record(String.format(Locale.ROOT,
                 "perf bandwidth encoder w=%d load=%dMB store=%dMB encoders=%d",
@@ -833,6 +844,7 @@ final class MetalPerformanceProbe {
         trafficStoreBytes = 0L;
         clearsQueued = 0L;
         clearsMaterialized = 0L;
+        clearsDiscarded = 0L;
         clearOnlyPasses = 0L;
         if (PASS_TRAFFIC != null) {
             PASS_TRAFFIC.clear();
