@@ -88,12 +88,15 @@ final class MetalDevice implements GpuDeviceBackend {
         this.commandQueue = MTLCommandQueue.create(metalDeviceHandle);
         MetalNativeBridge.metallum_init_pipelines(metalDeviceHandle);
         this.commandEncoder = new MetalCommandEncoder(this);
+        // Publish device limits before anything allocates: MetalGpuBuffer
+        // validates its size against maxBufferAllocationSize(), and the
+        // generic vertex attribute buffer below is the first allocation.
+        this.deviceInfo = buildDeviceInfo(deviceName);
         this.genericVertexAttributeBuffer = (MetalGpuBuffer) this.createBuffer(
                 () -> "OpenGL generic vertex attribute defaults",
                 GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_COPY_DST,
                 genericVertexAttributeDefaults()
         );
-        this.deviceInfo = buildDeviceInfo(deviceName);
         // Publish this device as the process-wide active Metal device so that
         // the public MetalCrossShaderCompiler shaderpack entry points (called
         // from the Iris intercept mixins in com.metallum.mixin.iris) can reach
@@ -269,7 +272,13 @@ final class MetalDevice implements GpuDeviceBackend {
     }
 
     long maxBufferAllocationSize() {
-        return this.deviceInfo.limits().maxMemoryAllocationSize();
+        // Defensive: a buffer can be created while the device is still being
+        // constructed (the constructor publishes deviceInfo before its own
+        // first allocation, but future callers may not). "Unknown" is reported
+        // as 0 = unlimited so a construction-order slip degrades into skipping
+        // the size pre-check instead of taking the whole backend down.
+        final DeviceInfo info = this.deviceInfo;
+        return info == null ? 0L : info.limits().maxMemoryAllocationSize();
     }
 
     void waitForSubmittedGpuWork() {
