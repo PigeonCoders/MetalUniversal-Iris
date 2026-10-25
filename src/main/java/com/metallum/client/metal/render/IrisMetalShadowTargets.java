@@ -371,17 +371,26 @@ final class IrisMetalShadowTargets implements AutoCloseable {
         }
         RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> label);
         MetalGpuTextureView[] views = new MetalGpuTextureView[drawBuffers.length];
+        IrisMetalRenderTargets.AttachmentViewOwnership owned =
+                new IrisMetalRenderTargets.AttachmentViewOwnership();
         boolean[] written = new boolean[colorTargets.targetCount()];
         for (int slot = 0; slot < drawBuffers.length; slot++) {
             int target = validateDrawTarget(drawBuffers[slot], written, "Shadow color clear");
-            MetalGpuTextureView view = new MetalGpuTextureView(
-                    alt ? colorAlt[target] : colorMain[target], 0, 1
+            // Full-range view by default: the same native handle whatever the
+            // pass order, so the color clear shares the caster's encoder
+            // instead of reopening it (see MetalRenderPolicy).
+            MetalGpuTextureView fullView = alt ? colorAltViews[target] : colorMainViews[target];
+            MetalGpuTextureView view = IrisMetalRenderTargets.attachmentView(
+                    fullView, alt ? colorAlt[target] : colorMain[target]
             );
+            owned.add(fullView, view);
             views[slot] = view;
             descriptor.withColorAttachment(view, Optional.of(clearColors[slot]));
         }
         descriptor.withRenderArea(new RenderPass.RenderArea(0, 0, resolution, resolution));
-        return new IrisMetalRenderTargets.RenderPassDescriptorWithViews(descriptor, views);
+        return new IrisMetalRenderTargets.RenderPassDescriptorWithViews(
+                descriptor, views, owned.toArray()
+        );
     }
 
     IrisMetalRenderTargets.RenderPassDescriptorWithViews createShadowGbufferDescriptor(
@@ -396,10 +405,17 @@ final class IrisMetalShadowTargets implements AutoCloseable {
         }
         RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> label);
         MetalGpuTextureView[] views = new MetalGpuTextureView[drawBuffers.length + 1];
+        IrisMetalRenderTargets.AttachmentViewOwnership owned =
+                new IrisMetalRenderTargets.AttachmentViewOwnership();
         boolean[] written = new boolean[colorTargets.targetCount()];
         for (int slot = 0; slot < drawBuffers.length; slot++) {
             int target = validateDrawTarget(drawBuffers[slot], written, "Shadow DRAWBUFFERS");
-            MetalGpuTextureView view = new MetalGpuTextureView(colorMain[target], 0, 1);
+            // Caster draws write the fixed "main" side; a full-range attachment
+            // view keeps the encoder alive across consecutive draws.
+            MetalGpuTextureView view = IrisMetalRenderTargets.attachmentView(
+                    colorMainViews[target], colorMain[target]
+            );
+            owned.add(colorMainViews[target], view);
             views[slot] = view;
             descriptor.withColorAttachment(
                     view,
@@ -408,14 +424,17 @@ final class IrisMetalShadowTargets implements AutoCloseable {
                             : Optional.of(clearColors[slot])
             );
         }
-        MetalGpuTextureView depthView = new MetalGpuTextureView(shadowDepth, 0, 1);
+        MetalGpuTextureView depthView = IrisMetalRenderTargets.attachmentView(shadowDepthView, shadowDepth);
+        owned.add(shadowDepthView, depthView);
         views[drawBuffers.length] = depthView;
         descriptor.withDepthAttachment(
                 depthView,
                 clearDepth == null ? OptionalDouble.empty() : OptionalDouble.of(clearDepth)
         );
         descriptor.withRenderArea(new RenderPass.RenderArea(0, 0, resolution, resolution));
-        return new IrisMetalRenderTargets.RenderPassDescriptorWithViews(descriptor, views);
+        return new IrisMetalRenderTargets.RenderPassDescriptorWithViews(
+                descriptor, views, owned.toArray()
+        );
     }
 
     IrisMetalRenderTargets.RenderPassDescriptorWithViews createShadowCompositeDescriptor(
@@ -441,18 +460,27 @@ final class IrisMetalShadowTargets implements AutoCloseable {
         }
         RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> label);
         MetalGpuTextureView[] views = new MetalGpuTextureView[drawBuffers.length];
+        IrisMetalRenderTargets.AttachmentViewOwnership owned =
+                new IrisMetalRenderTargets.AttachmentViewOwnership();
         boolean[] written = new boolean[colorTargets.targetCount()];
         for (int slot = 0; slot < drawBuffers.length; slot++) {
             int target = validateDrawTarget(drawBuffers[slot], written, "Shadow composite DRAWBUFFERS");
-            MetalGpuTexture destination = readsFromAlt.get(target) ? colorMain[target] : colorAlt[target];
-            MetalGpuTextureView view = new MetalGpuTextureView(destination, 0, 1);
+            MetalGpuTextureView fullView = readsFromAlt.get(target)
+                    ? colorMainViews[target]
+                    : colorAltViews[target];
+            MetalGpuTextureView view = IrisMetalRenderTargets.attachmentView(
+                    fullView, readsFromAlt.get(target) ? colorMain[target] : colorAlt[target]
+            );
+            owned.add(fullView, view);
             views[slot] = view;
             descriptor.withColorAttachment(view, Optional.empty());
         }
         descriptor.withRenderArea(new RenderPass.RenderArea(
                 viewportX, viewportY, viewportWidth, viewportHeight
         ));
-        return new IrisMetalRenderTargets.RenderPassDescriptorWithViews(descriptor, views);
+        return new IrisMetalRenderTargets.RenderPassDescriptorWithViews(
+                descriptor, views, owned.toArray()
+        );
     }
 
     void publishFlipState(final BitSet finalReadsFromAlt) {

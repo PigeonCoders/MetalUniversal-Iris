@@ -1,6 +1,7 @@
 package com.metallum.client.metal.render;
 
 import com.metallum.Metallum;
+import org.jspecify.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -8,10 +9,13 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Runtime diagnostic switches (all default off; no behavior change when
- * unset). Enable-style flags accept a bare {@code -Dname} argument or
- * {@code -Dname=true}; the {@code =off}/{@code =false} kill switches keep
- * their own parsing.
+ * Runtime diagnostic and rollback switches. Enable-style flags ({@link
+ * #enabledFlag(String)}) are off when unset and accept a bare {@code -Dname}
+ * argument or {@code -Dname=true}; the {@code =off}/{@code =false} kill
+ * switches keep their own parsing. A few switches select the optimized default
+ * and document the legacy value that restores the old behavior
+ * ({@code shadowSeed=copy}, {@code depthCapture=eager},
+ * {@code attachmentViews=subresource}, {@code blitBatch=off}).
  */
 public final class MetalDebugSwitches {
     /** Identifies this probe build in device logs. */
@@ -203,6 +207,52 @@ public final class MetalDebugSwitches {
     public static final boolean FRAME_HISTORY = !"off".equalsIgnoreCase(
             System.getProperty("metallum.iris.frameHistory", "on").trim()
     );
+    /**
+     * Frame-start shadow depth seed. {@code clear} (default) clears shadowtex0
+     * and shadowtex1 independently to the same far value;
+     * {@code -Dmetallum.iris.shadowSeed=copy} restores the previous
+     * shadowtex0&rarr;shadowtex1 blit (16MB of shadow-map traffic + one more
+     * blit encoder per frame). Both modes leave shadowtex1 holding the value a
+     * just-cleared shadowtex0 would have been copied into it.
+     */
+    public static final boolean SHADOW_SEED_CLEAR = shadowSeedClear(
+            System.getProperty("metallum.iris.shadowSeed", "clear")
+    );
+    /** Effective {@code shadowSeed} mode, for the switch log / probe report. */
+    public static final String SHADOW_SEED_MODE = SHADOW_SEED_CLEAR ? "clear" : "copy";
+    /**
+     * First non-sky world-takeover pass depthtex0 seed. {@code lazy} (default)
+     * copies the vanilla main depth into Iris depthtex0 only when the program
+     * about to be encoded actually declares {@code depthtex0};
+     * {@code -Dmetallum.iris.debug.depthCapture=eager} restores the previous
+     * unconditional once-per-frame capture.
+     */
+    public static final boolean DEPTH_CAPTURE_LAZY = depthCaptureLazy(
+            System.getProperty("metallum.iris.debug.depthCapture", "lazy")
+    );
+    /** Effective {@code depthCapture} mode, for the switch log / probe report. */
+    public static final String DEPTH_CAPTURE_MODE = DEPTH_CAPTURE_LAZY ? "lazy" : "eager";
+    /**
+     * Render-attachment views use the whole texture ({@code full}, default)
+     * instead of a level-0-only subresource view. A full view makes
+     * {@code MetalGpuTextureView.nativeHandle()} return the texture itself, so
+     * a mipmapped attachment keeps a stable handle and the encoder can stay
+     * open across passes; {@code -Dmetallum.iris.debug.attachmentViews=subresource}
+     * restores the per-pass view churn for A/B comparison.
+     */
+    public static final boolean ATTACHMENT_VIEWS_FULL = attachmentViewsFull(
+            System.getProperty("metallum.iris.debug.attachmentViews", "full")
+    );
+    /** Effective {@code attachmentViews} mode, for the switch log / probe report. */
+    public static final String ATTACHMENT_VIEWS_MODE = ATTACHMENT_VIEWS_FULL ? "full" : "subresource";
+    /**
+     * Batches consecutive {@code copyTextureToTexture} calls into one blit
+     * encoder instead of ending and recreating it per copy; on by default.
+     * {@code -Dmetallum.iris.debug.blitBatch=off} restores one encoder per copy.
+     */
+    public static final boolean BLIT_BATCH = blitBatchEnabled(
+            System.getProperty("metallum.iris.debug.blitBatch", "on")
+    );
     /** Logs the sampler keys of the first non-terrain world pass once per process. */
     public static final boolean LOG_SAMPLERS = enabledFlag("metallum.iris.worldPass.logSamplers");
     /**
@@ -249,6 +299,8 @@ public final class MetalDebugSwitches {
             || !SIZE_BUFFER || DUMP_BINDINGS || LOG_UNIFORMS || FLIP_TRACE
             || !VERTEX_ENGINE_PROJECTION || !GLSLANG_PRECISION_PREAMBLE
             || !GLSLANG_BUILTIN_RENAME || PERF
+            || !SHADOW_SEED_CLEAR || !DEPTH_CAPTURE_LAZY
+            || !ATTACHMENT_VIEWS_FULL || !BLIT_BATCH
             || RENDER_SCALE != 1.0f || SHADOW_RESOLUTION != 0;
 
     /** One {@code stageStrip} entry: a pass name plus the target index to tile. */
@@ -284,6 +336,26 @@ public final class MetalDebugSwitches {
     static boolean enabledFlag(final String name) {
         String value = System.getProperty(name);
         return value != null && (value.isEmpty() || Boolean.parseBoolean(value));
+    }
+
+    /** {@code shadowSeed}: only {@code copy} selects the legacy blit seed; everything else clears both maps. */
+    static boolean shadowSeedClear(final @Nullable String raw) {
+        return !"copy".equalsIgnoreCase(raw == null ? "" : raw.trim());
+    }
+
+    /** {@code depthCapture}: only {@code eager} restores the unconditional once-per-frame capture. */
+    static boolean depthCaptureLazy(final @Nullable String raw) {
+        return !"eager".equalsIgnoreCase(raw == null ? "" : raw.trim());
+    }
+
+    /** {@code attachmentViews}: only {@code subresource} restores the level-0-only attachment views. */
+    static boolean attachmentViewsFull(final @Nullable String raw) {
+        return !"subresource".equalsIgnoreCase(raw == null ? "" : raw.trim());
+    }
+
+    /** {@code blitBatch}: only {@code off} restores one blit encoder per copy. */
+    static boolean blitBatchEnabled(final @Nullable String raw) {
+        return !"off".equalsIgnoreCase(raw == null ? "" : raw.trim());
     }
 
     /** Finite positive gain only; anything else (unset, NaN, 0, negative) stays 1. */
@@ -392,13 +464,14 @@ public final class MetalDebugSwitches {
 
     static {
         if (PROBES_ACTIVE) {
-            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: build={} skipDeferred={} skipPost={} view={} viewGain={} skipPass={} noShadowMatrices={} zeroVl={} zeroBloom={} stageStrip={} noVanillaSky={} noVanillaClouds={} noCloudsHard={} magentaClear={} shadowPass={} noShadows={} shadowCulling={} shadowDepthFix={} blendOverrides={} sizeBuffer={} dumpBindings={} logUniforms={} flipTrace={} vertexEngineProjection={} glslangPrecision={} glslangBuiltinRename={} perf={} renderScale={} shadowResolution={}",
+            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: build={} skipDeferred={} skipPost={} view={} viewGain={} skipPass={} noShadowMatrices={} zeroVl={} zeroBloom={} stageStrip={} noVanillaSky={} noVanillaClouds={} noCloudsHard={} magentaClear={} shadowPass={} noShadows={} shadowCulling={} shadowDepthFix={} blendOverrides={} sizeBuffer={} dumpBindings={} logUniforms={} flipTrace={} vertexEngineProjection={} glslangPrecision={} glslangBuiltinRename={} perf={} renderScale={} shadowResolution={} shadowSeed={} depthCapture={} attachmentViews={} blitBatch={}",
                     BUILD_TAG, SKIP_DEFERRED, SKIP_POST, VIEW, VIEW_GAIN, SKIP_PASS, NO_SHADOW_MATRICES, ZERO_VL, ZERO_BLOOM,
                     System.getProperty("metallum.iris.debug.stageStrip", ""),
                     NO_VANILLA_SKY, NO_VANILLA_CLOUDS, NO_CLOUDS_HARD, MAGENTA_CLEAR,
                     SHADOW_PASS, NO_SHADOWS, SHADOW_CULLING, SHADOW_DEPTH_FIX, BLEND_OVERRIDES, SIZE_BUFFER,
                     DUMP_BINDINGS, LOG_UNIFORMS, FLIP_TRACE, VERTEX_ENGINE_PROJECTION, GLSLANG_PRECISION_PREAMBLE,
-                    GLSLANG_BUILTIN_RENAME, PERF, RENDER_SCALE, SHADOW_RESOLUTION);
+                    GLSLANG_BUILTIN_RENAME, PERF, RENDER_SCALE, SHADOW_RESOLUTION,
+                    SHADOW_SEED_MODE, DEPTH_CAPTURE_MODE, ATTACHMENT_VIEWS_MODE, BLIT_BATCH ? "on" : "off");
         }
     }
 }

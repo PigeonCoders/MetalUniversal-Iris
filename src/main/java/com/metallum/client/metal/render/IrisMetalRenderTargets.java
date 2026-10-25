@@ -19,6 +19,8 @@ import org.joml.Vector4f;
 import org.joml.Vector4fc;
 import org.jspecify.annotations.Nullable;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalDouble;
@@ -424,10 +426,15 @@ final class IrisMetalRenderTargets implements AutoCloseable {
         }
         RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> label);
         MetalGpuTextureView[] views = new MetalGpuTextureView[drawBuffers.length + (withDepth ? 1 : 0)];
+        AttachmentViewOwnership owned = new AttachmentViewOwnership();
         for (int slot = 0; slot < drawBuffers.length; slot++) {
-            MetalGpuTextureView view = new MetalGpuTextureView(
-                    colorTargets.writeTexture(drawBuffers[slot]), 0, 1
-            );
+            MetalGpuTexture writeTexture = colorTargets.writeTexture(drawBuffers[slot]);
+            MetalGpuTextureView fullView = colorTargets.writeView(drawBuffers[slot]);
+            // Full-range attachment view by default (see MetalRenderPolicy):
+            // the cached view keeps one native handle across passes, so the
+            // encoder is not reopened; rendering still only writes level 0.
+            MetalGpuTextureView view = attachmentView(fullView, writeTexture);
+            owned.add(fullView, view);
             views[slot] = view;
             descriptor.withColorAttachment(
                     view,
@@ -437,7 +444,9 @@ final class IrisMetalRenderTargets implements AutoCloseable {
             );
         }
         if (withDepth) {
-            MetalGpuTextureView depthView = new MetalGpuTextureView(mainDepth, 0, 1);
+            MetalGpuTextureView fullDepthView = mainDepthView();
+            MetalGpuTextureView depthView = attachmentView(fullDepthView, mainDepth);
+            owned.add(fullDepthView, depthView);
             views[drawBuffers.length] = depthView;
             descriptor.withDepthAttachment(
                     depthView,
@@ -448,7 +457,9 @@ final class IrisMetalRenderTargets implements AutoCloseable {
         // render area must be the common draw-buffer extent (upstream
         // CompositeRenderer uses pass.viewWidth/viewHeight the same way).
         descriptor.withRenderArea(new RenderPass.RenderArea(0, 0, targetWidth, targetHeight));
-        return new RenderPassDescriptorWithViews(descriptor, views);
+        // Closing the descriptor must only release the views this call created;
+        // the generation-owned full-range views stay open.
+        return new RenderPassDescriptorWithViews(descriptor, views, owned.toArray());
     }
 
     RenderPassDescriptor createTerrainWriteDescriptor(
@@ -600,13 +611,77 @@ final class IrisMetalRenderTargets implements AutoCloseable {
         nearestMipSampler.close();
     }
 
+    /**
+     * Render-attachment view: the generation-owned full-range view when the
+     * attachment-view switch is on (default), otherwise the legacy
+     * level-0-only view, which the caller owns and must close (identity
+     * comparison against {@code fullView} detects that case).
+     *
+     * <p>A full-range view makes {@code MetalGpuTextureView.nativeHandle()}
+     * return the texture itself, so a mipmapped attachment keeps one handle
+     * across passes and the encoder can stay open. Rendering still only writes
+     * level 0 either way.</p>
+     */
+    static MetalGpuTextureView attachmentView(
+            final MetalGpuTextureView fullView,
+            final @Nullable MetalGpuTexture texture
+    ) {
+        if (texture == null) {
+            return fullView;
+        }
+        MetalRenderPolicy.AttachmentViewRange range = MetalRenderPolicy.attachmentViewRange(
+                MetalDebugSwitches.ATTACHMENT_VIEWS_FULL, texture.getMipLevels()
+        );
+        return MetalRenderPolicy.usesTextureHandle(range, texture.getMipLevels())
+                ? fullView
+                : new MetalGpuTextureView(texture, range.baseMipLevel(), range.mipLevels());
+    }
+
+    /**
+     * Collects the attachment views one descriptor builder created, so the
+     * descriptor closes exactly those. The default full-range path creates
+     * none and leaves the list unallocated.
+     */
+    static final class AttachmentViewOwnership {
+        private static final MetalGpuTextureView[] NONE = new MetalGpuTextureView[0];
+        private List<MetalGpuTextureView> created;
+
+        void add(final MetalGpuTextureView fullView, final MetalGpuTextureView attachmentView) {
+            if (attachmentView == fullView) {
+                return;
+            }
+            if (created == null) {
+                created = new ArrayList<>(2);
+            }
+            created.add(attachmentView);
+        }
+
+        MetalGpuTextureView[] toArray() {
+            return created == null ? NONE : created.toArray(new MetalGpuTextureView[0]);
+        }
+    }
+
+    /**
+     * A descriptor plus the attachment views it was built from.
+     *
+     * <p>{@code ownedViews} are the views this record created and must close
+     * (the legacy subresource path); views borrowed from a generation-owned
+     * target are only listed in {@code views} and stay open. Callers that build
+     * a descriptor from engine-provided views use the two-argument form, which
+     * owns {@code views}.</p>
+     */
     record RenderPassDescriptorWithViews(
             RenderPassDescriptor descriptor,
-            MetalGpuTextureView[] views
+            MetalGpuTextureView[] views,
+            MetalGpuTextureView[] ownedViews
     ) implements AutoCloseable {
+        RenderPassDescriptorWithViews(final RenderPassDescriptor descriptor, final MetalGpuTextureView[] views) {
+            this(descriptor, views, views);
+        }
+
         @Override
         public void close() {
-            for (MetalGpuTextureView view : views) {
+            for (MetalGpuTextureView view : ownedViews) {
                 if (view != null) {
                     view.close();
                 }

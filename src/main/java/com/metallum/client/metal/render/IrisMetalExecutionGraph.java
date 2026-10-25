@@ -667,23 +667,49 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
     }
 
     /**
-     * Clears shadowtex0 to the engine's reverse-z far value and seeds
-     * shadowtex1 from it at the start of the frame. The depth value {@code 0.0}
-     * is the engine's reverse-z far value; the encoder's {@code irisDepthClear}
-     * complement turns it into {@code 1.0} (standard-z far) while a pack is
-     * active.
+     * Engine-space reverse-z far value both shadow depth maps are seeded with
+     * at frame start. {@code MetalCommandEncoder.irisDepthClear} complements it
+     * exactly once, so under a shaderpack the maps are cleared to {@code 1.0}
+     * (standard-z "nothing occludes").
+     */
+    static final double SHADOW_FAR_ENGINE_DEPTH = 0.0;
+
+    /**
+     * Seeds shadowtex0 (depth with translucents) and shadowtex1 (no
+     * translucents) to the far value at the start of the frame. The default
+     * {@code clear} mode clears both maps directly; the
+     * {@code -Dmetallum.iris.shadowSeed=copy} rollback clears shadowtex0 and
+     * blits it into shadowtex1 (one more 16MB copy and blit encoder per frame).
      */
     void clearShadowDepth(final IrisMetalWorldResources resources) {
         IrisMetalShadowTargets shadows = resources.shadowTargets();
         if (shadows == null) {
             return;
         }
-        MetalCommandEncoder encoder = activeEncoder();
-        encoder.clearDepthTexture(shadows.shadowDepthTexture(), 0.0);
-        // shadowtex1 (no translucents) is a separate depth texture; packs
-        // sample both, so it must start at the same far value instead of
-        // holding undefined contents.
-        shadows.captureNoTranslucentsDepth(encoder);
+        seedShadowDepth(activeEncoder(), shadows, MetalDebugSwitches.SHADOW_SEED_CLEAR);
+    }
+
+    /**
+     * Frame-start shadow depth seed. Both modes hand the encoder the same
+     * engine-space value, so shadowtex1 always ends up holding what a copy of a
+     * just-cleared shadowtex0 would have transferred.
+     */
+    private static void seedShadowDepth(
+            final MetalCommandEncoder encoder,
+            final IrisMetalShadowTargets shadows,
+            final boolean clearBoth
+    ) {
+        encoder.clearDepthTexture(shadows.shadowDepthTexture(), SHADOW_FAR_ENGINE_DEPTH);
+        if (clearBoth) {
+            // shadowtex1 (no translucents) is a separate depth texture; packs
+            // sample both, so it must start at the same far value instead of
+            // holding undefined contents.
+            encoder.clearDepthTexture(
+                    shadows.shadowDepthNoTranslucentsTexture(), SHADOW_FAR_ENGINE_DEPTH
+            );
+        } else {
+            shadows.captureNoTranslucentsDepth(encoder);
+        }
     }
 
     /**
@@ -775,9 +801,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
      * matrices, ...), keeping the pre-M6.1 deterministic no-shadow state.
      */
     private void clearEmptyShadowTargets(final IrisMetalShadowTargets shadows) {
-        MetalCommandEncoder encoder = activeEncoder();
-        encoder.clearDepthTexture(shadows.shadowDepthTexture(), 0.0);
-        shadows.captureNoTranslucentsDepth(encoder);
+        seedShadowDepth(activeEncoder(), shadows, MetalDebugSwitches.SHADOW_SEED_CLEAR);
         clearShadowColors(shadows);
     }
 

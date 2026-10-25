@@ -33,6 +33,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalDouble;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
 
 /**
  * Non-terrain world-program wiring: routes entity / block-entity /
@@ -230,7 +231,9 @@ public final class IrisMetalWorldBridge {
      * whose re-creation races a pass boundary, can never take over an
      * unrelated pass. The first rewritten pass of each frame also lazily
      * copies the vanilla main depth (which by then contains the terrain) into
-     * the Iris depthtex0 texture.
+     * the Iris depthtex0 texture, but only when that pass's program actually
+     * declares {@code depthtex0} ({@code -Dmetallum.iris.debug.depthCapture=eager}
+     * restores the unconditional capture).
      *
      * <p>By default the rewritten pass keeps the <em>vanilla</em> depth
      * attachment: taken-over draws must test/write the same depth buffer the
@@ -283,25 +286,24 @@ public final class IrisMetalWorldBridge {
             drawBuffers = new int[]{0};
         }
         IrisMetalRenderTargets renderTargets = pipeline.resources().renderTargets();
-        if (!mainDepthCapturedThisFrame && !isSkyKey(key)) {
+        GpuTexture mainSceneDepth = vanillaMainDepthTexture();
+        if (shouldCaptureMainDepth(
+                MetalDebugSwitches.DEPTH_CAPTURE_LAZY,
+                mainDepthCapturedThisFrame,
+                isSkyKey(key),
+                passTargetsTexture(descriptor, mainSceneDepth),
+                () -> declaresDepthtex0(program.samplers())
+        )) {
             // Only seed depthtex0 from a pass that actually targets the vanilla
             // main scene depth, and never from a sky pass: the sky is the first
             // thing the framegraph renders, so capturing there would freeze
-            // depthtex0 before terrain depth exists. Weather
-            // (WEATHER_TARGET) and improved-transparency particle passes own
-            // separate depth buffers for the same reason. The translucent/hand
-            // boundary captures in MetalWorldRenderingPipeline still update
-            // depthtex0 later.
-            RenderPassDescriptor.Attachment<OptionalDouble> depthAttachment = descriptor.depthAttachment();
-            if (depthAttachment != null) {
-                GpuTextureView passDepth = depthAttachment.textureView();
-                GpuTexture mainSceneDepth = vanillaMainDepthTexture();
-                if (passDepth != null && mainSceneDepth != null
-                        && passDepth.texture() == mainSceneDepth) {
-                    mainDepthCapturedThisFrame = true;
-                    renderTargets.captureMainDepth(device.createCommandEncoder(), mainSceneDepth);
-                }
-            }
+            // depthtex0 before terrain depth exists. Weather (WEATHER_TARGET)
+            // and improved-transparency particle passes own separate depth
+            // buffers for the same reason. The translucent/hand boundary
+            // captures in MetalWorldRenderingPipeline still update depthtex0
+            // later.
+            mainDepthCapturedThisFrame = true;
+            renderTargets.captureMainDepth(device.createCommandEncoder(), mainSceneDepth);
         }
         RenderPassDescriptor.Attachment<OptionalDouble> vanillaDepth =
                 MetalDebugSwitches.WORLD_PASS_DEPTH_VANILLA ? descriptor.depthAttachment() : null;
@@ -868,6 +870,65 @@ public final class IrisMetalWorldBridge {
         return key == ShaderKey.SKY_BASIC
                 || key == ShaderKey.SKY_BASIC_COLOR
                 || key == ShaderKey.SKY_TEXTURED;
+    }
+
+    /**
+     * Whether this takeover seeds depthtex0 from the vanilla scene depth.
+     *
+     * <p>{@code lazy} (the default) requires the program about to be encoded to
+     * declare {@code depthtex0}: a draw that never samples it does not pay for
+     * the full-screen depth copy, and leaving the once-per-frame flag unset
+     * lets a later draw that does sample it still capture this frame.
+     * {@code eager} restores the old unconditional capture
+     * ({@code -Dmetallum.iris.debug.depthCapture=eager}).</p>
+     *
+     * <p>The declaration is a supplier so the per-pass sampler scan only runs
+     * once the cheap gates have passed.</p>
+     *
+     * @param lazy                       {@code depthCapture=lazy} (default)
+     * @param alreadyCapturedThisFrame   depthtex0 was already seeded this frame
+     * @param sky                        the pass belongs to a sky program
+     * @param targetsMainSceneDepth      the pass's depth attachment is the vanilla main depth
+     * @param programDeclaresDepthtex0   whether the linked program declares {@code depthtex0}
+     * @return {@code true} when the vanilla main depth must be copied into depthtex0
+     */
+    static boolean shouldCaptureMainDepth(
+            final boolean lazy,
+            final boolean alreadyCapturedThisFrame,
+            final boolean sky,
+            final boolean targetsMainSceneDepth,
+            final BooleanSupplier programDeclaresDepthtex0
+    ) {
+        if (alreadyCapturedThisFrame || sky || !targetsMainSceneDepth) {
+            return false;
+        }
+        return !lazy || programDeclaresDepthtex0.getAsBoolean();
+    }
+
+    /** True when the linked program declares the {@code depthtex0} sampler. */
+    static boolean declaresDepthtex0(final List<IrisMetalGlslLinker.SamplerDecl> samplers) {
+        for (IrisMetalGlslLinker.SamplerDecl sampler : samplers) {
+            if (sampler.sampled() && "depthtex0".equals(sampler.name())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** True when the pass's depth attachment is {@code texture} (null never matches). */
+    private static boolean passTargetsTexture(
+            final RenderPassDescriptor descriptor,
+            final @Nullable GpuTexture texture
+    ) {
+        if (texture == null) {
+            return false;
+        }
+        RenderPassDescriptor.Attachment<OptionalDouble> depthAttachment = descriptor.depthAttachment();
+        if (depthAttachment == null) {
+            return false;
+        }
+        GpuTextureView passDepth = depthAttachment.textureView();
+        return passDepth != null && passDepth.texture() == texture;
     }
 
     private static @Nullable WorldContext currentContext() {

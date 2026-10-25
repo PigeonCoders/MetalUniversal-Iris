@@ -46,6 +46,10 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
     private MTLCommandEncoder currentEncoder;
     private MemorySegment[] renderColorAttachments = new MemorySegment[0];
     private MemorySegment renderDepthAttachment = MemorySegment.NULL;
+    /** Pending per-encoder attachment traffic (set on native render encoder creation). */
+    private long encoderLoadBytes;
+    private long encoderStoreBytes;
+    private boolean encoderTrafficPending;
     private final Long2ObjectOpenHashMap<java.util.ArrayDeque<MemorySegment>> dynamicBackingPool = new Long2ObjectOpenHashMap<>();
 
     MetalCommandEncoder(final MetalDevice device) {
@@ -73,8 +77,17 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
     }
 
     MTLBlitCommandEncoder blitCommandEncoder() {
+        if (MetalRenderPolicy.reuseBlitEncoder(
+                MetalDebugSwitches.BLIT_BATCH,
+                currentEncoder instanceof MTLBlitCommandEncoder
+        )) {
+            // Batching: consecutive copies share the blit encoder that is
+            // already open instead of paying an end/recreate pair per copy.
+            return (MTLBlitCommandEncoder) currentEncoder;
+        }
         endEncoder();
         MTLBlitCommandEncoder encoder = commandBuffer().makeBlitCommandEncoder();
+        MetalPerformanceProbe.recordBlitEncoderCreated();
         encoder.waitForFence(fence);
         currentEncoder = encoder;
         return encoder;
@@ -99,9 +112,26 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
             }
             currentEncoder.endEncoding();
             currentEncoder = null;
+            flushEncoderTraffic();
         }
         renderColorAttachments = new MemorySegment[0];
         renderDepthAttachment = MemorySegment.NULL;
+    }
+
+    /**
+     * Charges the encoder that just ended. The pair is set when a native
+     * render encoder is opened ({@link #renderCommandEncoder},
+     * {@link #flushPendingClear}); a reused encoder never sets it again, so one
+     * reused attachment set is charged exactly one load + one store.
+     */
+    private void flushEncoderTraffic() {
+        if (!encoderTrafficPending) {
+            return;
+        }
+        encoderTrafficPending = false;
+        MetalPerformanceProbe.recordEncoderTraffic(encoderLoadBytes, encoderStoreBytes);
+        encoderLoadBytes = 0L;
+        encoderStoreBytes = 0L;
     }
 
     /**
@@ -250,11 +280,58 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
                 clearDepthEnabled ? 1 : 0,
                 clearDepthValue
         );
+        MetalPerformanceProbe.recordRenderEncoderCreated();
         encoder.waitForFence(fence, MTLRenderStages.VertexAndFragment);
         currentEncoder = encoder;
         renderColorAttachments = colorAttachments;
         renderDepthAttachment = depthAttachment;
+        accountEncoderTraffic(colorTextureViews, clearColorEnabled, depthTextureView, clearDepthEnabled);
         return encoder;
+    }
+
+    /**
+     * Charges this encoder's whole attachment extents once: every attachment
+     * is stored, and only the ones opened without a clear are loaded. Uses the
+     * level-0 extent of each attachment (Metal's load/store is per attachment,
+     * not per render area), which is the same unit the per-pass declared model
+     * charges for a full-screen pass.
+     */
+    private void accountEncoderTraffic(
+            final MetalGpuTextureView[] colorViews,
+            final int[] clearColorEnabled,
+            final @Nullable MetalGpuTextureView depthView,
+            final boolean clearDepthEnabled
+    ) {
+        encoderTrafficPending = false;
+        encoderLoadBytes = 0L;
+        encoderStoreBytes = 0L;
+        if (!MetalPerformanceProbe.ENABLED) {
+            return;
+        }
+        long[] colorBytes = new long[colorViews.length];
+        boolean[] colorCleared = new boolean[colorViews.length];
+        for (int index = 0; index < colorViews.length; index++) {
+            MetalGpuTextureView view = colorViews[index];
+            if (view == null) {
+                continue;
+            }
+            colorBytes[index] = attachmentBytes(view);
+            colorCleared[index] = clearColorEnabled[index] != 0;
+        }
+        long depthBytes = depthView == null ? 0L : attachmentBytes(depthView);
+        MetalPerformanceProbe.EncoderTraffic traffic = MetalPerformanceProbe.encoderTraffic(
+                colorBytes, colorCleared, depthBytes, clearDepthEnabled
+        );
+        encoderLoadBytes = traffic.loadBytes();
+        encoderStoreBytes = traffic.storeBytes();
+        encoderTrafficPending = true;
+    }
+
+    /** Level-0 extent of one attachment in bytes. */
+    private static long attachmentBytes(final MetalGpuTextureView view) {
+        GpuTexture texture = view.texture();
+        return (long) texture.getWidth(0) * (long) texture.getHeight(0)
+                * texture.getFormat().blockSize();
     }
 
     /**
@@ -263,7 +340,17 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
      * complemented. The GL backend does this in {@code GlCommandEncoder}.
      */
     private static double irisDepthClear(final double clearDepth) {
-        return Iris.isPackInUseQuick() ? 1.0 - Math.clamp(clearDepth, 0.0, 1.0) : clearDepth;
+        return complementDepthClear(clearDepth, Iris.isPackInUseQuick());
+    }
+
+    /**
+     * Pure {@link #irisDepthClear} body. The shaderpack-active flag is a
+     * parameter so the shadow-seed value equivalence can be unit tested
+     * without an Iris runtime: both shadow depth maps must be handed the same
+     * engine-space far value and get the complement applied exactly once.
+     */
+    static double complementDepthClear(final double clearDepth, final boolean shaderpackActive) {
+        return shaderpackActive ? 1.0 - Math.clamp(clearDepth, 0.0, 1.0) : clearDepth;
     }
 
     private static boolean hasClearColor(final int[] clearColorEnabled) {
@@ -887,7 +974,9 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
                 width,
                 height
         );
-        endEncoder();
+        if (!MetalDebugSwitches.BLIT_BATCH) {
+            endEncoder();
+        }
     }
 
     @Override
@@ -991,6 +1080,22 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
                 depthClear != null ? 1 : 0,
                 depthClear != null ? depthClear : 1.0
         );
+        MetalPerformanceProbe.recordClearEncoderCreated();
+        if (MetalPerformanceProbe.ENABLED) {
+            // A materialized clear never loads: both attached extents only
+            // store their cleared contents.
+            long clearBytes = (long) texture.getWidth(0) * (long) texture.getHeight(0)
+                    * texture.getFormat().blockSize();
+            MetalPerformanceProbe.EncoderTraffic clearTraffic = MetalPerformanceProbe.encoderTraffic(
+                    new long[]{colorClear != null ? clearBytes : 0L},
+                    new boolean[]{true},
+                    depthClear != null ? clearBytes : 0L,
+                    true
+            );
+            encoderTrafficPending = true;
+            encoderLoadBytes = clearTraffic.loadBytes();
+            encoderStoreBytes = clearTraffic.storeBytes();
+        }
         encoder.waitForFence(fence, MTLRenderStages.VertexAndFragment);
         currentEncoder = encoder;
         texture.recordMaterializedClear(colorClear, depthClear);

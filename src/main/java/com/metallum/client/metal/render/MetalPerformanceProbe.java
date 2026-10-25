@@ -74,6 +74,13 @@ final class MetalPerformanceProbe {
     private static long encoderSwitches;
     private static long textureCopyBytes;
     private static long uniformUploadBytes;
+    /** Native encoders this window actually opened, by kind. */
+    private static long realRenderEncoders;
+    private static long clearRenderEncoders;
+    private static long blitEncoders;
+    /** Attachment bytes counted per native encoder instead of per render pass. */
+    private static long encoderLoadBytes;
+    private static long encoderStoreBytes;
 
     /** Aggregated attachment bytes of one render pass creation (pure math, unit-testable). */
     record PassTraffic(
@@ -83,6 +90,15 @@ final class MetalPerformanceProbe {
             boolean depthAttachment,
             boolean fullCoverage
     ) {
+    }
+
+    /**
+     * Attachment bytes of one native render encoder's lifetime (pure math,
+     * unit-testable). A reused encoder (same attachment handles, no clear)
+     * contributes nothing additional, which is exactly the difference between
+     * this and the per-pass {@link PassTraffic} model.
+     */
+    record EncoderTraffic(long loadBytes, long storeBytes) {
     }
 
     // Per-pass-name aggregate: load, store, colors, depth flag, occurrences,
@@ -193,6 +209,80 @@ final class MetalPerformanceProbe {
         if (ENABLED) {
             encoderSwitches++;
         }
+    }
+
+    /** One native render encoder opened to encode draws ({@code renderCommandEncoder} new branch). */
+    static void recordRenderEncoderCreated() {
+        if (ENABLED) {
+            realRenderEncoders++;
+        }
+    }
+
+    /** One transient render encoder opened only to materialize a pending clear. */
+    static void recordClearEncoderCreated() {
+        if (ENABLED) {
+            clearRenderEncoders++;
+        }
+    }
+
+    /** One blit encoder opened. */
+    static void recordBlitEncoderCreated() {
+        if (ENABLED) {
+            blitEncoders++;
+        }
+    }
+
+    /**
+     * Attachment bytes of one native render encoder. Unlike
+     * {@link #passTraffic} this is charged once per encoder, so a window full of
+     * passes that reuse the same attachment set reports the traffic Metal
+     * actually pays ({@code load} only for attachments the encoder opened
+     * without a clear, {@code store} for every attached extent).
+     */
+    static EncoderTraffic encoderTraffic(
+            final long[] colorBytes,
+            final boolean[] colorCleared,
+            final long depthBytes,
+            final boolean depthCleared
+    ) {
+        long load = 0L;
+        long store = 0L;
+        for (int index = 0; index < colorBytes.length; index++) {
+            long bytes = colorBytes[index];
+            if (bytes <= 0L) {
+                continue;
+            }
+            store += bytes;
+            if (!colorCleared[index]) {
+                load += bytes;
+            }
+        }
+        if (depthBytes > 0L) {
+            store += depthBytes;
+            if (!depthCleared) {
+                load += depthBytes;
+            }
+        }
+        return new EncoderTraffic(load, store);
+    }
+
+    /** Folds one finished native render encoder into the window. */
+    static void recordEncoderTraffic(final long loadBytes, final long storeBytes) {
+        if (!ENABLED) {
+            return;
+        }
+        encoderLoadBytes += loadBytes;
+        encoderStoreBytes += storeBytes;
+    }
+
+    /**
+     * The {@code perf encoders ...} line. {@code real} counts draw encoders,
+     * {@code clear} the transient clear encoders and {@code blit} the blit
+     * encoders; only {@code real} should track pass creations when attachments
+     * are stable.
+     */
+    static String encoderSummary(final long real, final long clear, final long blit) {
+        return String.format(Locale.ROOT, "perf encoders real=%d clear=%d blit=%d", real, clear, blit);
     }
 
     static void recordTextureCopy(final long bytes) {
@@ -344,7 +434,18 @@ final class MetalPerformanceProbe {
         }
     }
 
-    /** One completed command-buffer GPU duration in milliseconds. */
+    /**
+     * One completed command-buffer GPU duration in milliseconds.
+     *
+     * <p>Per-pass GPU time is deliberately not sampled: it needs an
+     * {@code MTLCounterSampleBuffer} built from {@code
+     * MTLCommonCounterSetTimestamp}, a sample attachment on every encoder and a
+     * resolve/readback path, none of which this repository's FFM bridge
+     * exposes (only {@code MTLCommandBuffer.gpuStartTime/gpuEndTime}). That is
+     * a native (Swift {@code @_cdecl}) change which cannot be built or
+     * validated on the Linux development host, so
+     * {@code -Dmetallum.perf.perPassGpu} is not wired.</p>
+     */
     static void recordGpuFrame(final double milliseconds) {
         if (!ENABLED || !Double.isFinite(milliseconds) || milliseconds < 0.0) {
             return;
@@ -376,6 +477,11 @@ final class MetalPerformanceProbe {
                 drawCalls, renderPassesCreated, renderPassesSubmitted, encoderSwitches,
                 textureCopyBytes / BYTES_PER_MIB, uniformUploadBytes / BYTES_PER_MIB));
 
+        // Real native encoder openings, next to the per-pass `encoders=` switch
+        // count above: pass creations that reuse the open encoder do not pay a
+        // new encoder, which is what makes the declared bandwidth an upper bound.
+        MetalProbeReport.record(encoderSummary(realRenderEncoders, clearRenderEncoders, blitEncoders));
+
         StringBuilder stages = new StringBuilder("perf stages");
         for (Stage stage : STAGES) {
             int index = stage.ordinal();
@@ -391,19 +497,28 @@ final class MetalPerformanceProbe {
     }
 
     /**
-     * One totaled attachment-traffic line plus the eight heaviest pass names.
-     * Sorted by load+store so the top of the list is where the bandwidth goes;
-     * {@code full=true} means the render area covered every attachment view, so
-     * a {@code .dontCare}/clear-only load decision would be safe for it.
+     * One declared-traffic total (every render pass charged full-screen load +
+     * store), the matching encoder-boundary total, and the eight heaviest pass
+     * names. Both totals share the window; {@code declared} is the
+     * upper-bound model this probe has always reported, {@code encoder} is
+     * what the native encoders were actually charged. Sorted by load+store so
+     * the top of the list is where the bandwidth goes; {@code full=true} means
+     * the render area covered every attachment view, so a
+     * {@code .dontCare}/clear-only load decision would be safe for it.
      */
     private static void reportBandwidth() {
         long passesPerFrame = windowFrames == 0
                 ? 0L
                 : Math.round(renderPassesCreated / (double) windowFrames);
         MetalProbeReport.record(String.format(Locale.ROOT,
-                "perf bandwidth total w=%d load=%dMB store=%dMB passes=%d clears=%d clearQ=%d kinds=%d",
+                "perf bandwidth declared w=%d load=%dMB store=%dMB passes=%d clears=%d clearQ=%d kinds=%d",
                 windowFrames, toMib(trafficLoadBytes), toMib(trafficStoreBytes), passesPerFrame,
                 clearsMaterialized + clearOnlyPasses, clearsQueued, PASS_TRAFFIC.size()));
+
+        MetalProbeReport.record(String.format(Locale.ROOT,
+                "perf bandwidth encoder w=%d load=%dMB store=%dMB encoders=%d",
+                windowFrames, toMib(encoderLoadBytes), toMib(encoderStoreBytes),
+                realRenderEncoders + clearRenderEncoders));
 
         List<Map.Entry<String, long[]>> ranked = new ArrayList<>(PASS_TRAFFIC.entrySet());
         ranked.sort((left, right) -> Long.compare(weight(right.getValue()), weight(left.getValue())));
@@ -488,6 +603,11 @@ final class MetalPerformanceProbe {
         renderPassesCreated = 0L;
         renderPassesSubmitted = 0L;
         encoderSwitches = 0L;
+        realRenderEncoders = 0L;
+        clearRenderEncoders = 0L;
+        blitEncoders = 0L;
+        encoderLoadBytes = 0L;
+        encoderStoreBytes = 0L;
         textureCopyBytes = 0L;
         uniformUploadBytes = 0L;
         trafficLoadBytes = 0L;
