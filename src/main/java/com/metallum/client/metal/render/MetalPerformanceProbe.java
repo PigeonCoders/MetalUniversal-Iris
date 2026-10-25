@@ -500,10 +500,6 @@ final class MetalPerformanceProbe {
         return String.format(Locale.ROOT, "perf encoders real=%d clear=%d blit=%d", real, clear, blit);
     }
 
-    static void recordTextureCopy(final long bytes) {
-        recordTextureCopy(bytes, COPY_REASON_OTHER);
-    }
-
     /**
      * Per-reason texture-copy attribution. {@code reason} is a constant label
      * owned by the caller (history canonicalization, depth captures, fallback

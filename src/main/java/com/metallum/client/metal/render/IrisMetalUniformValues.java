@@ -465,10 +465,6 @@ final class IrisMetalUniformValues implements AutoCloseable {
         block.device.createCommandEncoder().writeToBuffer(block.buffer.slice(), staging);
     }
 
-    int coreDrawBlockSize(final ShaderKey key) {
-        return drawBlockSize(key);
-    }
-
     int drawBlockSize(final Object token) {
         Block block = findBlock(token);
         return block != null && block.layout.stream().anyMatch(member -> isDynamicDrawUniform(member.name()))
@@ -490,15 +486,6 @@ final class IrisMetalUniformValues implements AutoCloseable {
                 CORE_PROJECTION_INVERSE.equals(member.name()));
     }
 
-    void materializeCoreDraw(
-            final ShaderKey key,
-            final ByteBuffer output,
-            final @Nullable ByteBuffer dynamicTransforms,
-            final @Nullable ByteBuffer projection
-    ) {
-        materializeDraw(key, output, dynamicTransforms, projection);
-    }
-
     void materializeDraw(
             final Object token,
             final ByteBuffer output,
@@ -518,16 +505,6 @@ final class IrisMetalUniformValues implements AutoCloseable {
                 this.renderStageSource.getAsInt(),
                 usesMojangCoreTransforms(token)
         );
-    }
-
-    static void materializeCoreDrawUniforms(
-            final ByteBuffer base,
-            final List<IrisMetalGlslLinker.UniformMember> layout,
-            final ByteBuffer output,
-            final @Nullable ByteBuffer dynamicTransforms,
-            final @Nullable ByteBuffer projection
-    ) {
-        materializeDrawUniforms(base, layout, output, dynamicTransforms, projection, 0, true);
     }
 
     static void materializeDrawUniforms(

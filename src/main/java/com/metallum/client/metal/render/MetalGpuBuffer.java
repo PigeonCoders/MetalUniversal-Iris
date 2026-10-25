@@ -175,10 +175,6 @@ class MetalGpuBuffer extends GpuBuffer {
         });
     }
 
-    public int getUsage() {
-        return this.usage();
-    }
-
     private static boolean isCpuAccessible(@GpuBuffer.Usage final int usage) {
         return (usage & GpuBuffer.USAGE_MAP_READ) != 0
                 || (usage & GpuBuffer.USAGE_MAP_WRITE) != 0

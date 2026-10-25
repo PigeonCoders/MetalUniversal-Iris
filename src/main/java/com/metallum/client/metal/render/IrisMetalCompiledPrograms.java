@@ -139,10 +139,6 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
         ));
     }
 
-    synchronized int cachedPipelineCount() {
-        return this.sodiumPipelines.size() + this.vanillaPipelines.size();
-    }
-
     private MetalCompiledRenderPipeline compile(
             final String role,
             final IrisMetalGlslLinker.LinkedRasterProgram program,
