@@ -104,6 +104,10 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
     private @Nullable String reportedShadowStatus;
 
     public MetalWorldRenderingPipeline(final ProgramSet programSet) {
+        // Safe boundary for MetalFX settings: the previous level's pipeline is
+        // gone (or is being replaced), so the surface and scalers can be
+        // rebuilt for the new internal resolution without tearing a frame.
+        com.metallum.client.metal.fx.MetalFxConfig.get().applyPending();
         this.generation = GENERATIONS.incrementAndGet();
         this.programSet = Objects.requireNonNull(programSet, "programSet");
         this.programs = new IrisMetalWorldPrograms(this.generation, this.programSet);

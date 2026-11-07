@@ -56,7 +56,7 @@ public final class MetalFxOptionsScreen extends Screen {
 
         // 空间超分 — 循环按钮（OFF / QUALITY / BALANCED / PERFORMANCE / ULTRA_PERFORMANCE）
         CycleButton<MetalFxConfig.SpatialMode> spatialButton =
-                CycleButton.<MetalFxConfig.SpatialMode>builder(MetalFxOptionsScreen::spatialModeLabel, cfg.spatialMode())
+                CycleButton.<MetalFxConfig.SpatialMode>builder(MetalFxOptionsScreen::spatialModeLabel, cfg.displaySpatialMode())
                         .withValues(MetalFxConfig.SpatialMode.values())
                         .create(Component.translatable("metallum.fx.options.spatial"),
                                 (button, mode) -> cfg.setSpatialMode(mode));
@@ -65,7 +65,7 @@ public final class MetalFxOptionsScreen extends Screen {
 
         // 时间超分 — 开关（OFF / AUTO）
         CycleButton<MetalFxConfig.TemporalUpscalingMode> temporalButton =
-                CycleButton.<MetalFxConfig.TemporalUpscalingMode>builder(MetalFxOptionsScreen::temporalModeLabel, cfg.temporalMode())
+                CycleButton.<MetalFxConfig.TemporalUpscalingMode>builder(MetalFxOptionsScreen::temporalModeLabel, cfg.displayTemporalMode())
                         .withValues(MetalFxConfig.TemporalUpscalingMode.values())
                         .create(Component.translatable("metallum.fx.options.temporal"),
                                 (button, mode) -> cfg.setTemporalMode(mode));
@@ -74,7 +74,7 @@ public final class MetalFxOptionsScreen extends Screen {
 
         // 帧插值 — 开关（OFF / AUTO）
         CycleButton<MetalFxConfig.FrameInterpolationMode> interpButton =
-                CycleButton.<MetalFxConfig.FrameInterpolationMode>builder(MetalFxOptionsScreen::interpModeLabel, cfg.interpolationMode())
+                CycleButton.<MetalFxConfig.FrameInterpolationMode>builder(MetalFxOptionsScreen::interpModeLabel, cfg.displayInterpolationMode())
                         .withValues(MetalFxConfig.FrameInterpolationMode.values())
                         .create(Component.translatable("metallum.fx.options.frame_interpolation"),
                                 (button, mode) -> cfg.setInterpolationMode(mode));

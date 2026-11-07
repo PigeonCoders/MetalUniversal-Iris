@@ -71,7 +71,7 @@ public final class MetallumSodiumConfig implements ConfigEntryPoint {
                     .setDefaultValue(MetalFxConfig.SpatialMode.OFF)
                     .setImpact(OptionImpact.VARIES)
                     .setBinding(MetalFxConfig.get()::setSpatialMode,
-                            MetalFxConfig.get()::spatialMode)
+                            MetalFxConfig.get()::displaySpatialMode)
                     .setStorageHandler(MetallumSodiumConfig::saveConfig));
 
             // 时间超分 — 枚举选项（OFF/AUTO），仅空间超分开启时可用
@@ -82,7 +82,7 @@ public final class MetallumSodiumConfig implements ConfigEntryPoint {
                     .setDefaultValue(MetalFxConfig.TemporalUpscalingMode.OFF)
                     .setImpact(OptionImpact.HIGH)
                     .setBinding(MetalFxConfig.get()::setTemporalMode,
-                            MetalFxConfig.get()::temporalMode)
+                            MetalFxConfig.get()::displayTemporalMode)
                     .setStorageHandler(MetallumSodiumConfig::saveConfig)
                     .setEnabledProvider(
                             state -> state.readEnumOption(SPATIAL_ID, MetalFxConfig.SpatialMode.class)
@@ -97,7 +97,7 @@ public final class MetallumSodiumConfig implements ConfigEntryPoint {
                     .setDefaultValue(MetalFxConfig.FrameInterpolationMode.OFF)
                     .setImpact(OptionImpact.HIGH)
                     .setBinding(MetalFxConfig.get()::setInterpolationMode,
-                            MetalFxConfig.get()::interpolationMode)
+                            MetalFxConfig.get()::displayInterpolationMode)
                     .setStorageHandler(MetallumSodiumConfig::saveConfig)
                     .setEnabledProvider(
                             state -> state.readEnumOption(SPATIAL_ID, MetalFxConfig.SpatialMode.class)
@@ -128,6 +128,19 @@ public final class MetallumSodiumConfig implements ConfigEntryPoint {
 
     private static void saveConfig() {
         MetalFxConfig.save();
+        // MetalFX resizes the surface; applying it while a world is rendering
+        // tears the main target out from under in-flight Iris textures (hard
+        // crash on device). Changes are latched when the next level loads.
+        MetalFxConfig config = MetalFxConfig.get();
+        if (config.hasPendingChanges()) {
+            var minecraft = net.minecraft.client.Minecraft.getInstance();
+            if (minecraft.level != null && minecraft.gui != null && minecraft.gui.hud != null) {
+                // Action-bar style hint: the settings are saved but cannot be
+                // applied until the current level's pipeline is rebuilt.
+                minecraft.gui.hud.getChat().addClientSystemMessage(
+                        net.minecraft.network.chat.Component.translatable("metallum.fx.options.pending"));
+            }
+        }
     }
 
     private static Component spatialModeLabel(MetalFxConfig.SpatialMode mode) {

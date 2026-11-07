@@ -104,9 +104,20 @@ public final class MetalFxConfig {
 
     private static volatile MetalFxConfig INSTANCE = new MetalFxConfig();
 
+    /**
+     * Active values — what the render path actually uses this session. They are
+     * latched at a safe boundary (world/level load) by {@link #applyPending()}
+     * and never change mid-frame: shrinking the reported window while a world
+     * is still rendering makes Minecraft rebuild the main target underneath
+     * in-flight Iris textures, which crashes on device.
+     */
     private volatile SpatialMode spatialMode = SpatialMode.OFF;
     private volatile FrameInterpolationMode interpolationMode = FrameInterpolationMode.OFF;
     private volatile TemporalUpscalingMode temporalMode = TemporalUpscalingMode.OFF;
+    /** Values edited in the settings UI; become active on the next level load. */
+    private volatile SpatialMode pendingSpatialMode = SpatialMode.OFF;
+    private volatile FrameInterpolationMode pendingInterpolationMode = FrameInterpolationMode.OFF;
+    private volatile TemporalUpscalingMode pendingTemporalMode = TemporalUpscalingMode.OFF;
     /**
      * Whether the user has acknowledged the MetalFX warning dialog at least
      * once. Persisted so the warning only shows the first time the user
@@ -148,15 +159,72 @@ public final class MetalFxConfig {
     }
 
     public void setSpatialMode(SpatialMode mode) {
-        this.spatialMode = mode;
+        this.pendingSpatialMode = mode;
     }
 
     public void setInterpolationMode(FrameInterpolationMode mode) {
-        this.interpolationMode = mode;
+        this.pendingInterpolationMode = mode;
     }
 
     public void setTemporalMode(TemporalUpscalingMode mode) {
-        this.temporalMode = mode;
+        this.pendingTemporalMode = mode;
+    }
+
+    /** Value the settings UI must display (may differ from the active one). */
+    public SpatialMode displaySpatialMode() {
+        return pendingSpatialMode;
+    }
+
+    /** Value the settings UI must display (may differ from the active one). */
+    public FrameInterpolationMode displayInterpolationMode() {
+        return pendingInterpolationMode;
+    }
+
+    /** Value the settings UI must display (may differ from the active one). */
+    public TemporalUpscalingMode displayTemporalMode() {
+        return pendingTemporalMode;
+    }
+
+    public SpatialMode pendingSpatialMode() {
+        return pendingSpatialMode;
+    }
+
+    public FrameInterpolationMode pendingInterpolationMode() {
+        return pendingInterpolationMode;
+    }
+
+    public TemporalUpscalingMode pendingTemporalMode() {
+        return pendingTemporalMode;
+    }
+
+    /**
+     * @return {@code true} when the UI has edits that are not active yet.
+     */
+    public boolean hasPendingChanges() {
+        return pendingSpatialMode != spatialMode
+                || pendingInterpolationMode != interpolationMode
+                || pendingTemporalMode != temporalMode;
+    }
+
+    /**
+     * Latches the pending values, so the next frame sizes the surface and the
+     * MetalFX scalers from the new modes. Must only be called at a safe
+     * boundary - the start of a level's pipeline construction, or startup -
+     * never while a frame is in flight.
+     *
+     * @return {@code true} if anything changed
+     */
+    public synchronized boolean applyPending() {
+        boolean changed = hasPendingChanges();
+        this.spatialMode = this.pendingSpatialMode;
+        this.interpolationMode = this.pendingInterpolationMode;
+        this.temporalMode = this.pendingTemporalMode;
+        if (changed) {
+            Metallum.LOGGER.info(
+                    "[MetalFX] applied settings: spatial={} temporal={} interpolation={}",
+                    this.spatialMode, this.temporalMode, this.interpolationMode);
+        }
+        return changed;
     }
 
     /**
@@ -291,10 +359,15 @@ public final class MetalFxConfig {
             } catch (IOException e) {
                 Metallum.LOGGER.warn("[MetalFX] Failed to load config from {}: {}", configPath, e.getMessage());
             }
-            cfg.spatialMode = parseEnum(props.getProperty(KEY_SPATIAL), SpatialMode.OFF, SpatialMode.class);
-            cfg.interpolationMode = parseEnum(props.getProperty(KEY_INTERP), FrameInterpolationMode.OFF, FrameInterpolationMode.class);
-            cfg.temporalMode = parseEnum(props.getProperty(KEY_TEMPORAL), TemporalUpscalingMode.OFF, TemporalUpscalingMode.class);
+            cfg.pendingSpatialMode = parseEnum(props.getProperty(KEY_SPATIAL), SpatialMode.OFF, SpatialMode.class);
+            cfg.pendingInterpolationMode = parseEnum(props.getProperty(KEY_INTERP), FrameInterpolationMode.OFF, FrameInterpolationMode.class);
+            cfg.pendingTemporalMode = parseEnum(props.getProperty(KEY_TEMPORAL), TemporalUpscalingMode.OFF, TemporalUpscalingMode.class);
             cfg.acknowledged = Boolean.parseBoolean(props.getProperty(KEY_ACKNOWLEDGED, "false"));
+            // Startup semantics: whatever is on disk is active from the first
+            // frame, so a launch behaves exactly like a level reload.
+            cfg.spatialMode = cfg.pendingSpatialMode;
+            cfg.interpolationMode = cfg.pendingInterpolationMode;
+            cfg.temporalMode = cfg.pendingTemporalMode;
         }
         // Preserve previously-queried device capabilities across reloads so
         // changing a setting in-game doesn't force a re-query (the Metal
@@ -307,7 +380,22 @@ public final class MetalFxConfig {
         cfg.blendSupported = prev.blendSupported;
         cfg.deviceName = prev.deviceName;
         cfg.acknowledged = prev.acknowledged || cfg.acknowledged;
-        INSTANCE = cfg;
+        // Mutate in place: Sodium config options capture MetalFxConfig.get()::setX
+        // method references at registration time, so replacing INSTANCE would
+        // leave those bindings writing into a detached object.
+        prev.spatialMode = cfg.spatialMode;
+        prev.interpolationMode = cfg.interpolationMode;
+        prev.temporalMode = cfg.temporalMode;
+        prev.pendingSpatialMode = cfg.pendingSpatialMode;
+        prev.pendingInterpolationMode = cfg.pendingInterpolationMode;
+        prev.pendingTemporalMode = cfg.pendingTemporalMode;
+        prev.acknowledged = cfg.acknowledged;
+        prev.deviceCapabilitiesQueried = cfg.deviceCapabilitiesQueried;
+        prev.spatialSupported = cfg.spatialSupported;
+        prev.temporalSupported = cfg.temporalSupported;
+        prev.interpolationSupported = cfg.interpolationSupported;
+        prev.blendSupported = cfg.blendSupported;
+        prev.deviceName = cfg.deviceName;
     }
 
     /**
@@ -317,9 +405,9 @@ public final class MetalFxConfig {
     public static synchronized void save() {
         MetalFxConfig cfg = INSTANCE;
         Properties props = new Properties();
-        props.setProperty(KEY_SPATIAL, cfg.spatialMode.name());
-        props.setProperty(KEY_INTERP, cfg.interpolationMode.name());
-        props.setProperty(KEY_TEMPORAL, cfg.temporalMode.name());
+        props.setProperty(KEY_SPATIAL, cfg.pendingSpatialMode.name());
+        props.setProperty(KEY_INTERP, cfg.pendingInterpolationMode.name());
+        props.setProperty(KEY_TEMPORAL, cfg.pendingTemporalMode.name());
         props.setProperty(KEY_ACKNOWLEDGED, Boolean.toString(cfg.acknowledged));
         Path configPath = configPath();
         try {
