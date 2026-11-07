@@ -76,7 +76,10 @@ final class MetalPerformanceProbe {
         DEPTH("depth"),
         /** Attachments identical, but this pass would clear: merging would drop the clear. */
         CLEAR("clear"),
-        /** Defensive bucket (no caller currently produces it). */
+        /**
+         * Defensive bucket. Also attributes a pass that could only not reuse the
+         * open encoder because its P1 attachment actions differ.
+         */
         OTHER("other");
 
         final String token;
@@ -124,6 +127,9 @@ final class MetalPerformanceProbe {
     /** Attachment bytes counted per native encoder instead of per render pass. */
     private static long encoderLoadBytes;
     private static long encoderStoreBytes;
+    /** Attachment bytes this window did not load/store because of the P1 masks. */
+    private static long elidedLoadBytes;
+    private static long elidedStoreBytes;
 
     /** Aggregated attachment bytes of one render pass creation (pure math, unit-testable). */
     record PassTraffic(
@@ -461,6 +467,22 @@ final class MetalPerformanceProbe {
             final long depthBytes,
             final boolean depthCleared
     ) {
+        return encoderTraffic(colorBytes, colorCleared, null, null, depthBytes, depthCleared);
+    }
+
+    /**
+     * Encoder traffic with P1 attachment-action skips: a slot whose load or
+     * store was elided contributes nothing to that side. {@code null} skip
+     * arrays reproduce the plain model above.
+     */
+    static EncoderTraffic encoderTraffic(
+            final long[] colorBytes,
+            final boolean[] colorCleared,
+            final boolean[] colorLoadSkipped,
+            final boolean[] colorStoreSkipped,
+            final long depthBytes,
+            final boolean depthCleared
+    ) {
         long load = 0L;
         long store = 0L;
         for (int index = 0; index < colorBytes.length; index++) {
@@ -468,8 +490,13 @@ final class MetalPerformanceProbe {
             if (bytes <= 0L) {
                 continue;
             }
-            store += bytes;
-            if (!colorCleared[index]) {
+            if (colorStoreSkipped == null || index >= colorStoreSkipped.length
+                    || !colorStoreSkipped[index]) {
+                store += bytes;
+            }
+            if (!colorCleared[index]
+                    && (colorLoadSkipped == null || index >= colorLoadSkipped.length
+                    || !colorLoadSkipped[index])) {
                 load += bytes;
             }
         }
@@ -480,6 +507,23 @@ final class MetalPerformanceProbe {
             }
         }
         return new EncoderTraffic(load, store);
+    }
+
+    /**
+     * Folds the attachment bytes this window elided through the P1 masks into
+     * the probe, so the {@code perf bandwidth elided} line can show the
+     * saving next to the declared/encoder totals.
+     */
+    static void recordElidedAttachmentTraffic(final long loadBytes, final long storeBytes) {
+        if (!ENABLED) {
+            return;
+        }
+        if (loadBytes > 0L) {
+            elidedLoadBytes += loadBytes;
+        }
+        if (storeBytes > 0L) {
+            elidedStoreBytes += storeBytes;
+        }
     }
 
     /** Folds one finished native render encoder into the window. */
@@ -747,6 +791,12 @@ final class MetalPerformanceProbe {
                 windowFrames, toMib(encoderLoadBytes), toMib(encoderStoreBytes),
                 realRenderEncoders + clearRenderEncoders));
 
+        // P1: attachment bytes the graph did not load/store this window. Both
+        // sides come from the per-encoder extents the masks actually skipped.
+        MetalProbeReport.record(String.format(Locale.ROOT,
+                "perf bandwidth elided w=%d load=%dMB store=%dMB",
+                windowFrames, toMib(elidedLoadBytes), toMib(elidedStoreBytes)));
+
         List<Map.Entry<String, long[]>> ranked = new ArrayList<>(PASS_TRAFFIC.entrySet());
         ranked.sort((left, right) -> Long.compare(weight(right.getValue()), weight(left.getValue())));
         int emitted = 0;
@@ -835,6 +885,8 @@ final class MetalPerformanceProbe {
         blitEncoders = 0L;
         encoderLoadBytes = 0L;
         encoderStoreBytes = 0L;
+        elidedLoadBytes = 0L;
+        elidedStoreBytes = 0L;
         if (ENCODER_DECISION_COUNTS != null) {
             Arrays.fill(ENCODER_DECISION_COUNTS, 0L);
         }

@@ -18,6 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 final class MetalDebugSwitchesFlagTest {
     private static final String FLAG = "metallum.iris.test.enabledFlag";
+    private static final String DEFAULT_ON_FLAG = "metallum.iris.test.defaultOnFlag";
 
     @Test
     void enabledFlagAcceptsBareParameterAndExplicitTrueOnly() {
@@ -36,6 +37,34 @@ final class MetalDebugSwitchesFlagTest {
             assertFalse(MetalDebugSwitches.enabledFlag(FLAG), "only empty or true are on");
         } finally {
             System.clearProperty(FLAG);
+        }
+    }
+
+    /**
+     * The P1 attachment switches default to on: their absence must keep the
+     * optimization, {@code =off}/{@code =false} must disable it, and a bare
+     * {@code -Dname} stays "on" like the enable-style flags.
+     */
+    @Test
+    void defaultOnFlagKeepsTheOptimizationUnlessExplicitlyOff() {
+        System.clearProperty(DEFAULT_ON_FLAG);
+        try {
+            assertTrue(MetalDebugSwitches.defaultOnFlag(DEFAULT_ON_FLAG), "unset must be on");
+            System.setProperty(DEFAULT_ON_FLAG, "");
+            assertTrue(MetalDebugSwitches.defaultOnFlag(DEFAULT_ON_FLAG), "bare -Dflag stays on");
+            System.setProperty(DEFAULT_ON_FLAG, "true");
+            assertTrue(MetalDebugSwitches.defaultOnFlag(DEFAULT_ON_FLAG), "=true stays on");
+            System.setProperty(DEFAULT_ON_FLAG, "off");
+            assertFalse(MetalDebugSwitches.defaultOnFlag(DEFAULT_ON_FLAG), "=off must be off");
+            System.setProperty(DEFAULT_ON_FLAG, "OFF");
+            assertFalse(MetalDebugSwitches.defaultOnFlag(DEFAULT_ON_FLAG), "=OFF must be off");
+            System.setProperty(DEFAULT_ON_FLAG, "false");
+            assertFalse(MetalDebugSwitches.defaultOnFlag(DEFAULT_ON_FLAG), "=false must be off");
+            System.setProperty(DEFAULT_ON_FLAG, "1");
+            assertFalse(MetalDebugSwitches.defaultOnFlag(DEFAULT_ON_FLAG),
+                    "only empty or true are on (1 is not)");
+        } finally {
+            System.clearProperty(DEFAULT_ON_FLAG);
         }
     }
 }

@@ -94,6 +94,46 @@ public final class MTLCommandBuffer {
         return new MTLRenderCommandEncoder(encoder);
     }
 
+    /**
+     * Indexed encoder with per-slot attachment actions. A non-zero
+     * {@code loadDontCareMask}/{@code storeDontCareMask} entry selects
+     * {@code .dontCare} for that color attachment's load/store (the load only
+     * when the slot is not cleared); {@code null} arrays reproduce
+     * {@link #makeRenderCommandEncoderV2}. A native library predating the v3
+     * entry point silently falls back to v2, which is safe: the masks are an
+     * optimization.
+     */
+    public MTLRenderCommandEncoder makeRenderCommandEncoderV3(
+            final MemorySegment[] colorTextures,
+            final MemorySegment depthTexture,
+            final double viewportWidth,
+            final double viewportHeight,
+            final int[] clearColorEnabled,
+            final float[] clearColors,
+            final int clearDepthEnabled,
+            final double clearDepth,
+            final int[] loadDontCareMask,
+            final int[] storeDontCareMask
+    ) {
+        MemorySegment encoder = MetalNativeBridge.MTLCommandBuffer_makeRenderCommandEncoderV3(
+                handle(),
+                colorTextures,
+                depthTexture,
+                viewportWidth,
+                viewportHeight,
+                clearColorEnabled,
+                clearColors,
+                clearDepthEnabled,
+                clearDepth,
+                loadDontCareMask,
+                storeDontCareMask
+        );
+        if (MetalNativeBridge.isNullHandle(encoder)) {
+            throw new IllegalStateException("Failed to create action-masked MTLRenderCommandEncoder");
+        }
+        return new MTLRenderCommandEncoder(encoder);
+    }
+
     public void clearColorDepthTexturesRegion(
             final MemorySegment colorTexture,
             final float clearColorRed,

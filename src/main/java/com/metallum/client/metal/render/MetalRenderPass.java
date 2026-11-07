@@ -56,6 +56,14 @@ final class MetalRenderPass implements RenderPassBackend {
     private Vector4fc[] clearColors;
     private boolean clearDepthEnabled;
     private final double clearDepthValue;
+    /**
+     * P1 attachment-action masks (one entry per color slot, non-zero =
+     * {@code .dontCare}); {@code null} keeps the baseline actions. They travel
+     * with the pass until its encoder is opened, and an encoder opened with a
+     * different mask pair is never reused across passes.
+     */
+    private final int @Nullable [] loadDontCareMask;
+    private final int @Nullable [] storeDontCareMask;
     private final ScissorState scissorState = new ScissorState();
     private final GpuBufferSlice[] vertexBuffers = new GpuBufferSlice[MAX_VERTEX_BUFFERS];
     private final HashMap<String, GpuBufferSlice> uniforms = new HashMap<>();
@@ -90,7 +98,9 @@ final class MetalRenderPass implements RenderPassBackend {
             final RenderPass.RenderArea renderArea,
             @Nullable final Vector4fc[] clearColors,
             final boolean clearDepthEnabled,
-            final double clearDepthValue
+            final double clearDepthValue,
+            final int @Nullable [] loadDontCareMask,
+            final int @Nullable [] storeDontCareMask
     ) {
         this.device = device;
         this.commandEncoder = encoder;
@@ -101,6 +111,8 @@ final class MetalRenderPass implements RenderPassBackend {
         this.clearColors = clearColors == null ? null : clearColors.clone();
         this.clearDepthEnabled = clearDepthEnabled;
         this.clearDepthValue = clearDepthValue;
+        this.loadDontCareMask = loadDontCareMask == null ? null : loadDontCareMask.clone();
+        this.storeDontCareMask = storeDontCareMask == null ? null : storeDontCareMask.clone();
     }
 
     @Override
@@ -543,7 +555,9 @@ final class MetalRenderPass implements RenderPassBackend {
                 clearColorEnabled,
                 clearColorValues,
                 clearDepthNow,
-                clearDepthValue
+                clearDepthValue,
+                loadDontCareMask,
+                storeDontCareMask
         );
         clearColors = null;
         clearDepthEnabled = false;

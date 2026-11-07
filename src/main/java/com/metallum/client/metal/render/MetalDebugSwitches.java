@@ -256,6 +256,25 @@ public final class MetalDebugSwitches {
     /** Logs the sampler keys of the first non-terrain world pass once per process. */
     public static final boolean LOG_SAMPLERS = enabledFlag("metallum.iris.worldPass.logSamplers");
     /**
+     * P1 dead-store elimination for the post-processing tail. A composite-pass
+     * color write that is fully overwritten by the next writer before any read
+     * becomes {@code storeAction = .dontCare}, and that next writer's load
+     * becomes {@code .dontCare} in the same step (a store without the paired
+     * load would expose undefined contents). On by default;
+     * {@code -Dmetallum.iris.deadStores=off} (or {@code =false}) restores the
+     * baseline "always store" behavior and leaves every mask empty.
+     */
+    public static final boolean DEAD_STORES = defaultOnFlag("metallum.iris.deadStores");
+    /**
+     * P1 load elision for full-screen graph passes: a pass that overwrites a
+     * color attachment without sampling it, clearing it or blending against
+     * its previous pixels does not need to load it. On by default;
+     * {@code -Dmetallum.iris.loadElision=off} (or {@code =false}) restores the
+     * baseline "always load" behavior. Dead-store elimination requires this
+     * switch, because the two actions must change together.
+     */
+    public static final boolean LOAD_ELISION = defaultOnFlag("metallum.iris.loadElision");
+    /**
      * H1 diagnosis: per compiled shaderpack program, dumps every SAMPLED_IMAGE
      * resource's per-stage compact indices together with the
      * {@code [[texture(N)]]}/{@code [[sampler(N)]]} indices parsed from the
@@ -301,6 +320,7 @@ public final class MetalDebugSwitches {
             || !GLSLANG_BUILTIN_RENAME || PERF
             || !SHADOW_SEED_CLEAR || !DEPTH_CAPTURE_LAZY
             || !ATTACHMENT_VIEWS_FULL || !BLIT_BATCH
+            || !DEAD_STORES || !LOAD_ELISION
             || RENDER_SCALE != 1.0f || SHADOW_RESOLUTION != 0;
 
     /** One {@code stageStrip} entry: a pass name plus the target index to tile. */
@@ -336,6 +356,27 @@ public final class MetalDebugSwitches {
     static boolean enabledFlag(final String name) {
         String value = System.getProperty(name);
         return value != null && (value.isEmpty() || Boolean.parseBoolean(value));
+    }
+
+    /**
+     * Default-on kill switch: unset, a bare {@code -Dname} and {@code =true}
+     * keep the optimization; {@code =off} and {@code =false} disable it. Used
+     * by the P1 attachment switches, whose absence is the "on" state (unlike
+     * {@link #enabledFlag(String)}).
+     */
+    static boolean defaultOnFlag(final String name) {
+        String value = System.getProperty(name);
+        return value == null || value.isEmpty() || Boolean.parseBoolean(value);
+    }
+
+    /**
+     * Debug switches that rewrite graph pass output or read targets between
+     * passes. While any is active, P1 attachment elision stays off so the
+     * bisection baseline stays byte-identical to the unoptimized path.
+     */
+    static boolean attachmentElisionUnsafe() {
+        return SKIP_DEFERRED || SKIP_POST || !SKIP_PASS_NAMES.isEmpty() || !VIEW.isEmpty()
+                || !STAGE_STRIP.isEmpty() || ZERO_VL || ZERO_BLOOM;
     }
 
     /** {@code shadowSeed}: only {@code copy} selects the legacy blit seed; everything else clears both maps. */
@@ -464,14 +505,15 @@ public final class MetalDebugSwitches {
 
     static {
         if (PROBES_ACTIVE) {
-            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: build={} skipDeferred={} skipPost={} view={} viewGain={} skipPass={} noShadowMatrices={} zeroVl={} zeroBloom={} stageStrip={} noVanillaSky={} noVanillaClouds={} noCloudsHard={} magentaClear={} shadowPass={} noShadows={} shadowCulling={} shadowDepthFix={} blendOverrides={} sizeBuffer={} dumpBindings={} logUniforms={} flipTrace={} vertexEngineProjection={} glslangPrecision={} glslangBuiltinRename={} perf={} renderScale={} shadowResolution={} shadowSeed={} depthCapture={} attachmentViews={} blitBatch={}",
+            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: build={} skipDeferred={} skipPost={} view={} viewGain={} skipPass={} noShadowMatrices={} zeroVl={} zeroBloom={} stageStrip={} noVanillaSky={} noVanillaClouds={} noCloudsHard={} magentaClear={} shadowPass={} noShadows={} shadowCulling={} shadowDepthFix={} blendOverrides={} sizeBuffer={} dumpBindings={} logUniforms={} flipTrace={} vertexEngineProjection={} glslangPrecision={} glslangBuiltinRename={} perf={} renderScale={} shadowResolution={} shadowSeed={} depthCapture={} attachmentViews={} blitBatch={} deadStores={} loadElision={}",
                     BUILD_TAG, SKIP_DEFERRED, SKIP_POST, VIEW, VIEW_GAIN, SKIP_PASS, NO_SHADOW_MATRICES, ZERO_VL, ZERO_BLOOM,
                     System.getProperty("metallum.iris.debug.stageStrip", ""),
                     NO_VANILLA_SKY, NO_VANILLA_CLOUDS, NO_CLOUDS_HARD, MAGENTA_CLEAR,
                     SHADOW_PASS, NO_SHADOWS, SHADOW_CULLING, SHADOW_DEPTH_FIX, BLEND_OVERRIDES, SIZE_BUFFER,
                     DUMP_BINDINGS, LOG_UNIFORMS, FLIP_TRACE, VERTEX_ENGINE_PROJECTION, GLSLANG_PRECISION_PREAMBLE,
                     GLSLANG_BUILTIN_RENAME, PERF, RENDER_SCALE, SHADOW_RESOLUTION,
-                    SHADOW_SEED_MODE, DEPTH_CAPTURE_MODE, ATTACHMENT_VIEWS_MODE, BLIT_BATCH ? "on" : "off");
+                    SHADOW_SEED_MODE, DEPTH_CAPTURE_MODE, ATTACHMENT_VIEWS_MODE, BLIT_BATCH ? "on" : "off",
+                    DEAD_STORES ? "on" : "off", LOAD_ELISION ? "on" : "off");
         }
     }
 }

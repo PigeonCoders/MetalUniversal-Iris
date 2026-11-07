@@ -62,6 +62,14 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             "local_size_x\\s*=\\s*(\\d+).*?local_size_y\\s*=\\s*(\\d+).*?local_size_z\\s*=\\s*(\\d+)",
             Pattern.DOTALL
     );
+    /**
+     * Fragment {@code discard} removes pixels from a full-screen quad's
+     * coverage, so the pass cannot claim to have written every pixel; P1 keeps
+     * its load (and never treats it as a complete overwriter). BSL's
+     * composite/final programs contain no discard, so the common packs keep
+     * the optimization.
+     */
+    private static final Pattern DISCARD_STATEMENT = Pattern.compile("\\bdiscard\\b");
 
     /** Dedupes the one-line probe for legacy sampler targets a generation does not own. */
     private static final Set<String> REPORTED_MISSING_SAMPLER_TARGETS = new HashSet<>();
@@ -125,12 +133,40 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             int[] drawBuffers,
             BitSet readsFromAlt,
             BitSet stateAfter,
-            String uniformToken
+            String uniformToken,
+            int @Nullable [] loadDontCareMask,
+            int @Nullable [] storeDontCareMask
     ) {
         RasterPlan {
             drawBuffers = drawBuffers.clone();
             readsFromAlt = (BitSet) readsFromAlt.clone();
             stateAfter = (BitSet) stateAfter.clone();
+            if (loadDontCareMask != null) {
+                loadDontCareMask = loadDontCareMask.clone();
+            }
+            if (storeDontCareMask != null) {
+                storeDontCareMask = storeDontCareMask.clone();
+            }
+            if ((loadDontCareMask != null && loadDontCareMask.length != drawBuffers.length)
+                    || (storeDontCareMask != null && storeDontCareMask.length != drawBuffers.length)) {
+                throw new IllegalArgumentException(
+                        "Attachment masks must match the DRAWBUFFERS slot count"
+                );
+            }
+        }
+
+        /** Baseline plan: every attachment keeps the {@code .load}/{@code .store} actions. */
+        RasterPlan(
+                final Stage stage,
+                final int index,
+                final String name,
+                final IrisMetalGlslLinker.LinkedRasterProgram program,
+                final int[] drawBuffers,
+                final BitSet readsFromAlt,
+                final BitSet stateAfter,
+                final String uniformToken
+        ) {
+            this(stage, index, name, program, drawBuffers, readsFromAlt, stateAfter, uniformToken, null, null);
         }
 
         @Override
@@ -146,6 +182,27 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         @Override
         public BitSet stateAfter() {
             return (BitSet) stateAfter.clone();
+        }
+
+        @Override
+        public int @Nullable [] loadDontCareMask() {
+            return loadDontCareMask == null ? null : loadDontCareMask.clone();
+        }
+
+        @Override
+        public int @Nullable [] storeDontCareMask() {
+            return storeDontCareMask == null ? null : storeDontCareMask.clone();
+        }
+
+        /** Same plan with the P1 attachment-action masks attached. */
+        RasterPlan withAttachmentMasks(
+                final int @Nullable [] loadMask,
+                final int @Nullable [] storeMask
+        ) {
+            return new RasterPlan(
+                    stage, index, name, program, drawBuffers, readsFromAlt, stateAfter, uniformToken,
+                    loadMask, storeMask
+            );
         }
     }
 
@@ -323,7 +380,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                 );
                 rasterPlans.get(stage).add(new RasterPlan(
                         stage, index, source.getName(), linked, drawBuffers,
-                        transition.readsFromAlt(), transition.stateAfter(), token
+                        transition.readsFromAlt(), transition.stateAfter(), token, null, null
                 ));
             }
         }
@@ -382,7 +439,9 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                     drawBuffers,
                     transition.readsFromAlt(),
                     transition.stateAfter(),
-                    token
+                    token,
+                    null,
+                    null
             ));
         }
         shadowState = new BitSet();
@@ -398,7 +457,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             }
             finalPlan = new RasterPlan(
                     Stage.COMPOSITE, -1, source.getName(), linked, drawBuffers,
-                    current, current, token(Stage.COMPOSITE, -1, source.getName())
+                    current, current, token(Stage.COMPOSITE, -1, source.getName()), null, null
             );
         }
 
@@ -409,7 +468,177 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                 ));
             }
         }
+        applyAttachmentElision();
         rebuildOrderedOperations();
+    }
+
+    /**
+     * P1 attachment-action planning: computes the per-pass load/store
+     * {@code .dontCare} masks for the pure post-processing tail and replaces
+     * the composite raster plans (plus final) with masked copies before the
+     * ordered operation list is rebuilt. A no-op while both switches are off
+     * or a debug switch rewrites graph pass output.
+     *
+     * <p>Only the composite stage (and the final pass that runs inside
+     * {@code executeFinal}) is analyzed. {@code deferred} runs in
+     * {@code beginTranslucents}, <em>before</em> translucent terrain, hand,
+     * particle and weather draws, so every store issued before the composite
+     * stage is kept.</p>
+     */
+    private void applyAttachmentElision() {
+        if (MetalDebugSwitches.attachmentElisionUnsafe()) {
+            return;
+        }
+        boolean deadStores = MetalDebugSwitches.DEAD_STORES;
+        boolean loadElision = MetalDebugSwitches.LOAD_ELISION;
+        if (!deadStores && !loadElision) {
+            // HEAD behavior: no masks at all, so the encoder paths stay on v2.
+            return;
+        }
+        List<RasterPlan> rasters = rasterPlans.get(Stage.COMPOSITE);
+        List<ComputePlan> computes = computePlans.get(Stage.COMPOSITE);
+        List<IrisMetalAttachmentElision.Pass> tail = new ArrayList<>();
+        List<RasterPlan> tailRasters = new ArrayList<>();
+        // Composite-stage computes run before the raster at the same slot
+        // index (rebuildOrderedOperations sorts them the same way). Each
+        // compute is a full read barrier: it may bind any colortex as a
+        // sampler or storage image.
+        int nextCompute = 0;
+        int nextRaster = 0;
+        while (nextRaster < rasters.size() || nextCompute < computes.size()) {
+            boolean computeFirst = nextCompute < computes.size()
+                    && (nextRaster >= rasters.size()
+                    || computes.get(nextCompute).index() <= rasters.get(nextRaster).index());
+            if (computeFirst) {
+                ComputePlan compute = computes.get(nextCompute++);
+                tail.add(IrisMetalAttachmentElision.computeBarrier(
+                        compute.source().getName(), targetCount
+                ));
+                tailRasters.add(null);
+                continue;
+            }
+            RasterPlan raster = rasters.get(nextRaster++);
+            tail.add(rasterPass(raster, raster.drawBuffers()));
+            tailRasters.add(raster);
+        }
+        // Final compute programs run after the composite stage and before the
+        // final raster; they can sample any target.
+        for (ComputePlan compute : finalComputePlans) {
+            tail.add(IrisMetalAttachmentElision.computeBarrier(
+                    compute.source().getName(), targetCount
+            ));
+            tailRasters.add(null);
+        }
+        if (finalPlan != null) {
+            tail.add(rasterPass(finalPlan, new int[]{IrisMetalAttachmentElision.MAIN_TARGET}));
+            tailRasters.add(finalPlan);
+        }
+
+        IrisMetalAttachmentElision.@Nullable Masks[] masks = IrisMetalAttachmentElision.analyze(
+                tail, persistentColorTargets(), targetCount, deadStores, loadElision
+        );
+        for (int index = 0; index < tailRasters.size(); index++) {
+            RasterPlan planned = tailRasters.get(index);
+            IrisMetalAttachmentElision.Masks mask = masks[index];
+            if (planned == null || mask == null) {
+                continue;
+            }
+            int @Nullable [] loadMask = mask.loadDontCare();
+            int @Nullable [] storeMask = mask.storeDontCare();
+            if (IrisMetalAttachmentElision.isAllZero(loadMask)) {
+                loadMask = null;
+            }
+            if (IrisMetalAttachmentElision.isAllZero(storeMask)) {
+                storeMask = null;
+            }
+            if (loadMask == null && storeMask == null) {
+                continue;
+            }
+            RasterPlan masked = planned.withAttachmentMasks(loadMask, storeMask);
+            if (planned == finalPlan) {
+                finalPlan = masked;
+                continue;
+            }
+            for (int slot = 0; slot < rasters.size(); slot++) {
+                if (rasters.get(slot) == planned) {
+                    rasters.set(slot, masked);
+                    break;
+                }
+            }
+        }
+    }
+
+    /**
+     * Describes one graph raster pass for {@link IrisMetalAttachmentElision}.
+     * Graph passes are full-screen quads over a viewport covering the whole
+     * attachment, so {@code fullCoverage} is a structural property here.
+     *
+     * @param attachmentTargets physical destination per slot
+     *                          ({@code drawBuffers} for colortex passes,
+     *                          {@link IrisMetalAttachmentElision#MAIN_TARGET}
+     *                          for the final present pass)
+     */
+    private IrisMetalAttachmentElision.Pass rasterPass(
+            final RasterPlan plan,
+            final int[] attachmentTargets
+    ) {
+        BitSet sampled = new BitSet(targetCount);
+        for (IrisMetalGlslLinker.SamplerDecl sampler : plan.program().samplers()) {
+            // Declared samplers only (a superset of the compiled-active set);
+            // storage images are included too, since a storage image write is
+            // not provably a non-read.
+            int target = samplerTargetIndex(sampler.name());
+            if (target >= 0 && target < targetCount) {
+                sampled.set(target);
+            }
+        }
+        for (int target : plan.program().program().directives().getMipmappedBuffers()) {
+            // Mipmap generation reads the target's read side before the pass.
+            if (target >= 0 && target < targetCount) {
+                sampled.set(target);
+            }
+        }
+        boolean[] blendReadsDst = new boolean[attachmentTargets.length];
+        int[] logicalTargets = plan.drawBuffers();
+        for (var override : plan.program().program().directives().getBufferBlendOverrides()) {
+            if (!IrisMetalAttachmentElision.blendReadsDestination(override.blendMode())) {
+                continue;
+            }
+            for (int slot = 0; slot < logicalTargets.length; slot++) {
+                if (logicalTargets[slot] == override.index()) {
+                    blendReadsDst[slot] = true;
+                }
+            }
+        }
+        return new IrisMetalAttachmentElision.Pass(
+                plan.name(),
+                attachmentTargets,
+                sampled,
+                !DISCARD_STATEMENT.matcher(plan.program().fragmentGlsl()).find(),
+                new boolean[attachmentTargets.length],
+                blendReadsDst
+        );
+    }
+
+    /**
+     * Logical targets the pack declared {@code Clear=false}. Their contents
+     * survive into the next frame (history buffers), so no store of theirs is
+     * ever elided. A target without a settings entry is treated as persistent:
+     * the safe default.
+     */
+    private BitSet persistentColorTargets() {
+        BitSet persistent = new BitSet(targetCount);
+        Map<Integer, net.irisshaders.iris.shaderpack.properties.PackRenderTargetDirectives.RenderTargetSettings>
+                settings = programSet.getPackDirectives()
+                .getRenderTargetDirectives()
+                .getRenderTargetSettings();
+        for (int target = 0; target < targetCount; target++) {
+            var targetSettings = settings.get(target);
+            if (targetSettings == null || !targetSettings.shouldClear()) {
+                persistent.set(target);
+            }
+        }
+        return persistent;
     }
 
     private void rebuildOrderedOperations() {
@@ -1561,18 +1790,36 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                         () -> "Iris final: " + plan.name()
                 ).withColorAttachment(overrideColor, Optional.empty())
                         .withRenderArea(new RenderPass.RenderArea(0, 0, targets.width(), targets.height()));
+                // The override attachment is the engine's main/present target,
+                // so only its load can be elided; the store is the frame image.
+                // The mask is only valid while the render area fills that
+                // texture: a larger present target would leave the uncovered
+                // border undefined instead of keeping its previous pixels.
+                int[] finalLoadMask = plan.loadDontCareMask();
+                if (finalLoadMask != null
+                        && (overrideColor.getWidth(0) != targets.width()
+                        || overrideColor.getHeight(0) != targets.height())) {
+                    finalLoadMask = null;
+                }
                 descriptor = new IrisMetalRenderTargets.RenderPassDescriptorWithViews(
-                        direct, new MetalGpuTextureView[0]
+                        direct, new MetalGpuTextureView[0], new MetalGpuTextureView[0],
+                        finalLoadMask, null
                 );
             } else {
                 descriptor = targets.createWriteDescriptor(
                         "Iris " + plan.stage().name().toLowerCase() + ": " + plan.name(),
                         plan.drawBuffers(), null, false, null,
-                        readTargets.stream().mapToInt(Integer::intValue).toArray()
+                        readTargets.stream().mapToInt(Integer::intValue).toArray(),
+                        plan.loadDontCareMask(),
+                        plan.storeDontCareMask()
                 );
             }
             try {
-                MetalRenderPass pass = (MetalRenderPass) encoder.createRenderPass(descriptor.descriptor());
+                MetalRenderPass pass = (MetalRenderPass) encoder.createRenderPass(
+                        descriptor.descriptor(),
+                        descriptor.loadDontCareMask(),
+                        descriptor.storeDontCareMask()
+                );
                 pass.setCompiledPipeline(pipeline);
                 bindRaster(pass, pipeline, plan, resources, targets);
                 GpuBuffer indices = RenderSystem.getSequentialBuffer(PrimitiveTopology.QUADS).getBuffer(6);
@@ -2156,6 +2403,24 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
             }
         }
         return result;
+    }
+
+    /**
+     * Logical colortex target a declared sampler or storage image reads, using
+     * the same table the binding path uses (explicit {@code colortexN} plus
+     * Iris's legacy aliases). Storage images are named
+     * {@code colortexNimg}/{@code shadowcolorimg}; the main-table lookup maps
+     * the former to its colortex target so the P1 read set cannot miss an
+     * image read. Returns {@code -1} for anything outside the colortex table.
+     */
+    static int samplerTargetIndex(final String name) {
+        int target = IrisMetalRenderTargets.renderTargetIndex(name);
+        if (target < 0 && name.startsWith("colortex") && name.endsWith("img")) {
+            target = IrisMetalRenderTargets.renderTargetIndex(
+                    name.substring(0, name.length() - "img".length())
+            );
+        }
+        return target;
     }
 
     private static int parseSuffix(final String name, final String prefix) {

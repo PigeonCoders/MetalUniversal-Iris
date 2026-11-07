@@ -386,6 +386,25 @@ public final class MetalNativeBridge {
                             DOUBLE
                     )
             );
+            MTLCommandBufferMakeRenderCommandEncoderV3 = optionalDowncall(
+                    lookup,
+                    "metallum_MTLCommandBuffer_makeRenderCommandEncoder_v3",
+                    FunctionDescriptor.of(
+                            ValueLayout.ADDRESS,
+                            ValueLayout.ADDRESS,
+                            ValueLayout.ADDRESS,
+                            INT,
+                            ValueLayout.ADDRESS,
+                            DOUBLE,
+                            DOUBLE,
+                            ValueLayout.ADDRESS,
+                            ValueLayout.ADDRESS,
+                            INT,
+                            DOUBLE,
+                            ValueLayout.ADDRESS,
+                            ValueLayout.ADDRESS
+                    )
+            );
             MTLRenderCommandEncoderSetRenderPipelineState = downcall(lookup, "metallum_MTLRenderCommandEncoder_setRenderPipelineState", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
             MTLRenderCommandEncoderSetDepthStencilState = downcall(lookup, "metallum_MTLRenderCommandEncoder_setDepthStencilState", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
             MTLRenderCommandEncoderSetDepthBias = downcall(lookup, "metallum_MTLRenderCommandEncoder_setDepthBias", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, FLOAT, FLOAT, FLOAT));
@@ -880,6 +899,7 @@ public final class MetalNativeBridge {
     private static final MethodHandle MTLDeviceMakeDepthStencilState;
     private static final MethodHandle MTLCommandBufferMakeRenderCommandEncoder;
     private static final @Nullable MethodHandle MTLCommandBufferMakeRenderCommandEncoderV2;
+    private static final @Nullable MethodHandle MTLCommandBufferMakeRenderCommandEncoderV3;
     private static final MethodHandle MTLRenderCommandEncoderSetRenderPipelineState;
     private static final MethodHandle MTLRenderCommandEncoderSetDepthStencilState;
     private static final MethodHandle MTLRenderCommandEncoderSetDepthBias;
@@ -1611,6 +1631,92 @@ public final class MetalNativeBridge {
                 );
             } catch (Throwable throwable) {
                 throw bridgeFailure("metallum_MTLCommandBuffer_makeRenderCommandEncoder_v2", throwable);
+            }
+        }
+    }
+
+    public static MemorySegment MTLCommandBuffer_makeRenderCommandEncoderV3(
+            final MemorySegment commandBuffer,
+            final MemorySegment[] colorTextures,
+            final MemorySegment depthTexture,
+            final double viewportWidth,
+            final double viewportHeight,
+            final int[] clearColorEnabled,
+            final float[] clearColors,
+            final int clearDepthEnabled,
+            final double clearDepth,
+            final int @Nullable [] loadDontCareMask,
+            final int @Nullable [] storeDontCareMask
+    ) {
+        if (colorTextures == null || clearColorEnabled == null || clearColors == null
+                || clearColorEnabled.length != colorTextures.length
+                || clearColors.length != colorTextures.length * 4) {
+            throw new IllegalArgumentException("MRT texture, clear flag and clear color arrays must have matching lengths");
+        }
+        if ((loadDontCareMask != null && loadDontCareMask.length != colorTextures.length)
+                || (storeDontCareMask != null && storeDontCareMask.length != colorTextures.length)) {
+            throw new IllegalArgumentException("Attachment dontCare masks must match the color slot count");
+        }
+
+        if (MTLCommandBufferMakeRenderCommandEncoderV3 == null) {
+            // Older native libraries have no per-slot action entry point. The
+            // masks are an optimization, so dropping them preserves behavior.
+            return MTLCommandBuffer_makeRenderCommandEncoderV2(
+                    commandBuffer, colorTextures, depthTexture,
+                    viewportWidth, viewportHeight,
+                    clearColorEnabled, clearColors,
+                    clearDepthEnabled, clearDepth
+            );
+        }
+
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment textureArray = colorTextures.length == 0
+                    ? MemorySegment.NULL
+                    : arena.allocate(ValueLayout.ADDRESS, colorTextures.length);
+            MemorySegment clearFlagArray = colorTextures.length == 0
+                    ? MemorySegment.NULL
+                    : arena.allocate(INT, clearColorEnabled.length);
+            MemorySegment clearColorArray = colorTextures.length == 0
+                    ? MemorySegment.NULL
+                    : arena.allocate(FLOAT, clearColors.length);
+            MemorySegment loadFlagArray = loadDontCareMask == null
+                    ? MemorySegment.NULL
+                    : arena.allocate(INT, loadDontCareMask.length);
+            MemorySegment storeFlagArray = storeDontCareMask == null
+                    ? MemorySegment.NULL
+                    : arena.allocate(INT, storeDontCareMask.length);
+
+            for (int index = 0; index < colorTextures.length; index++) {
+                textureArray.setAtIndex(ValueLayout.ADDRESS, index, segment(colorTextures[index]));
+                clearFlagArray.setAtIndex(INT, index, clearColorEnabled[index]);
+                if (loadDontCareMask != null) {
+                    loadFlagArray.setAtIndex(INT, index, loadDontCareMask[index]);
+                }
+                if (storeDontCareMask != null) {
+                    storeFlagArray.setAtIndex(INT, index, storeDontCareMask[index]);
+                }
+            }
+            for (int index = 0; index < clearColors.length; index++) {
+                clearColorArray.setAtIndex(FLOAT, index, clearColors[index]);
+            }
+
+            try {
+                return (MemorySegment) MTLCommandBufferMakeRenderCommandEncoderV3.invokeExact(
+                        segment(commandBuffer),
+                        textureArray,
+                        colorTextures.length,
+                        segment(depthTexture),
+                        viewportWidth,
+                        viewportHeight,
+                        clearColorArray,
+                        clearFlagArray,
+                        clearDepthEnabled,
+                        clearDepth,
+                        loadFlagArray,
+                        storeFlagArray
+                );
+            } catch (Throwable throwable) {
+                throw bridgeFailure("metallum_MTLCommandBuffer_makeRenderCommandEncoder_v3", throwable);
             }
         }
     }

@@ -393,12 +393,33 @@ final class IrisMetalRenderTargets implements AutoCloseable {
             @Nullable final Double clearDepth,
             final int @Nullable [] readTargets
     ) {
+        return createWriteDescriptor(
+                label, drawBuffers, clearColors, withDepth, clearDepth, readTargets, null, null
+        );
+    }
+
+    RenderPassDescriptorWithViews createWriteDescriptor(
+            final String label,
+            final int[] drawBuffers,
+            @Nullable final Vector4fc[] clearColors,
+            final boolean withDepth,
+            @Nullable final Double clearDepth,
+            final int @Nullable [] readTargets,
+            final int @Nullable [] loadDontCareMask,
+            final int @Nullable [] storeDontCareMask
+    ) {
         ensureOpen();
         if (drawBuffers.length == 0) {
             throw new IllegalArgumentException("A pass must write at least one draw buffer");
         }
         if (clearColors != null && clearColors.length != drawBuffers.length) {
             throw new IllegalArgumentException("Clear color array must match draw buffer count");
+        }
+        if ((loadDontCareMask != null && loadDontCareMask.length != drawBuffers.length)
+                || (storeDontCareMask != null && storeDontCareMask.length != drawBuffers.length)) {
+            throw new IllegalArgumentException(
+                    "Attachment dontCare masks must match the draw buffer count"
+            );
         }
         if (readTargets != null) {
             colorTargets.checkNoFeedbackLoop(drawBuffers, readTargets);
@@ -459,7 +480,9 @@ final class IrisMetalRenderTargets implements AutoCloseable {
         descriptor.withRenderArea(new RenderPass.RenderArea(0, 0, targetWidth, targetHeight));
         // Closing the descriptor must only release the views this call created;
         // the generation-owned full-range views stay open.
-        return new RenderPassDescriptorWithViews(descriptor, views, owned.toArray());
+        return new RenderPassDescriptorWithViews(
+                descriptor, views, owned.toArray(), loadDontCareMask, storeDontCareMask
+        );
     }
 
     RenderPassDescriptor createTerrainWriteDescriptor(
@@ -669,14 +692,48 @@ final class IrisMetalRenderTargets implements AutoCloseable {
      * target are only listed in {@code views} and stay open. Callers that build
      * a descriptor from engine-provided views use the two-argument form, which
      * owns {@code views}.</p>
+     *
+     * <p>{@code loadDontCareMask}/{@code storeDontCareMask} carry the P1
+     * attachment-action decisions (one entry per color slot, non-zero =
+     * {@code .dontCare}); both are {@code null} for every pass that keeps the
+     * baseline actions.</p>
      */
     record RenderPassDescriptorWithViews(
             RenderPassDescriptor descriptor,
             MetalGpuTextureView[] views,
-            MetalGpuTextureView[] ownedViews
+            MetalGpuTextureView[] ownedViews,
+            int @Nullable [] loadDontCareMask,
+            int @Nullable [] storeDontCareMask
     ) implements AutoCloseable {
+        RenderPassDescriptorWithViews {
+            if (loadDontCareMask != null) {
+                loadDontCareMask = loadDontCareMask.clone();
+            }
+            if (storeDontCareMask != null) {
+                storeDontCareMask = storeDontCareMask.clone();
+            }
+        }
+
+        RenderPassDescriptorWithViews(
+                final RenderPassDescriptor descriptor,
+                final MetalGpuTextureView[] views,
+                final MetalGpuTextureView[] ownedViews
+        ) {
+            this(descriptor, views, ownedViews, null, null);
+        }
+
         RenderPassDescriptorWithViews(final RenderPassDescriptor descriptor, final MetalGpuTextureView[] views) {
-            this(descriptor, views, views);
+            this(descriptor, views, views, null, null);
+        }
+
+        @Override
+        public int @Nullable [] loadDontCareMask() {
+            return loadDontCareMask == null ? null : loadDontCareMask.clone();
+        }
+
+        @Override
+        public int @Nullable [] storeDontCareMask() {
+            return storeDontCareMask == null ? null : storeDontCareMask.clone();
         }
 
         @Override

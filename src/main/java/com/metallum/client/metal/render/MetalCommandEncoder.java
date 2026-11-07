@@ -22,6 +22,7 @@ import org.jspecify.annotations.Nullable;
 import java.lang.foreign.MemorySegment;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.Arrays;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
@@ -48,6 +49,15 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
     private MTLCommandEncoder currentEncoder;
     private MemorySegment[] renderColorAttachments = new MemorySegment[0];
     private MemorySegment renderDepthAttachment = MemorySegment.NULL;
+    /**
+     * Attachment-action masks the open render encoder was created with
+     * ({@code null} = baseline {@code .load}/{@code .store}). Reuse must
+     * compare them: an encoder opened with a {@code .dontCare} load never
+     * loaded the pixel data a later pass would request, and one opened with a
+     * {@code .dontCare} store would drop a later pass's store.
+     */
+    private int @Nullable [] renderLoadDontCare;
+    private int @Nullable [] renderStoreDontCare;
     /** Pending per-encoder attachment traffic (set on native render encoder creation). */
     private long encoderLoadBytes;
     private long encoderStoreBytes;
@@ -119,6 +129,8 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         }
         renderColorAttachments = new MemorySegment[0];
         renderDepthAttachment = MemorySegment.NULL;
+        renderLoadDontCare = null;
+        renderStoreDontCare = null;
     }
 
     /**
@@ -254,7 +266,9 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
             final int[] clearColorEnabled,
             final float[] clearColorValues,
             final boolean clearDepthEnabled,
-            final double clearDepthValue
+            final double clearDepthValue,
+            final int @Nullable [] loadDontCareMask,
+            final int @Nullable [] storeDontCareMask
     ) {
         if (colorTextureViews == null
                 || colorTextureViews.length > Math.min(
@@ -266,6 +280,8 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
                 || clearColorValues.length != colorTextureViews.length * 4) {
             throw new IllegalArgumentException("Invalid Metal MRT attachment arrays");
         }
+        int[] loadDontCare = normalizedMask(loadDontCareMask, colorTextureViews.length, "load");
+        int[] storeDontCare = normalizedMask(storeDontCareMask, colorTextureViews.length, "store");
 
         MemorySegment[] colorAttachments = new MemorySegment[colorTextureViews.length];
         for (int index = 0; index < colorTextureViews.length; index++) {
@@ -278,20 +294,22 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         boolean sameAttachments = openRenderEncoder
                 && sameAttachmentHandles(renderColorAttachments, colorAttachments)
                 && MetalPipelineSupport.sameHandle(renderDepthAttachment, depthAttachment);
+        boolean sameActions = Arrays.equals(loadDontCare, renderLoadDontCare)
+                && Arrays.equals(storeDontCare, renderStoreDontCare);
         boolean clearPending = clearDepthEnabled || hasClearColor(clearColorEnabled);
-        if (sameAttachments && !clearPending) {
+        if (sameAttachments && sameActions && !clearPending) {
             MetalPerformanceProbe.recordEncoderDecision(MetalPerformanceProbe.EncoderDecision.REUSE);
             return (MTLRenderCommandEncoder) currentEncoder;
         }
-        if (!sameAttachments && openRenderEncoder) {
-            // An attachment change tears down the open render encoder and
-            // starts a new one; count the transition, not the first encoder.
+        if ((!sameAttachments || !sameActions) && openRenderEncoder) {
+            // An attachment/action change tears down the open render encoder
+            // and starts a new one; count the transition, not the first encoder.
             MetalPerformanceProbe.recordEncoderSwitch();
         }
         if (MetalPerformanceProbe.ENABLED) {
             // Same inputs the branch above just tested, in the same order, so
             // the attribution can never disagree with the decision itself.
-            MetalPerformanceProbe.recordEncoderDecision(MetalPerformanceProbe.encoderDecision(
+            MetalPerformanceProbe.EncoderDecision decision = MetalPerformanceProbe.encoderDecision(
                     currentEncoder != null,
                     openRenderEncoder,
                     renderColorAttachments.length,
@@ -299,27 +317,80 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
                     sameAttachmentHandles(renderColorAttachments, colorAttachments),
                     MetalPipelineSupport.sameHandle(renderDepthAttachment, depthAttachment),
                     clearPending
-            ));
+            );
+            if (decision == MetalPerformanceProbe.EncoderDecision.REUSE && !sameActions) {
+                // Same attachments, different P1 attachment actions: the open
+                // encoder cannot be reused, and the existing bucket set has no
+                // dedicated token for it.
+                decision = MetalPerformanceProbe.EncoderDecision.OTHER;
+            }
+            MetalPerformanceProbe.recordEncoderDecision(decision);
         }
 
         endEncoder();
-        MTLRenderCommandEncoder encoder = commandBuffer().makeRenderCommandEncoderV2(
-                colorAttachments,
-                depthAttachment,
-                viewportWidth,
-                viewportHeight,
-                clearColorEnabled,
-                clearColorValues,
-                clearDepthEnabled ? 1 : 0,
-                clearDepthValue
-        );
+        MTLRenderCommandEncoder encoder = loadDontCare == null && storeDontCare == null
+                ? commandBuffer().makeRenderCommandEncoderV2(
+                        colorAttachments,
+                        depthAttachment,
+                        viewportWidth,
+                        viewportHeight,
+                        clearColorEnabled,
+                        clearColorValues,
+                        clearDepthEnabled ? 1 : 0,
+                        clearDepthValue
+                )
+                : commandBuffer().makeRenderCommandEncoderV3(
+                        colorAttachments,
+                        depthAttachment,
+                        viewportWidth,
+                        viewportHeight,
+                        clearColorEnabled,
+                        clearColorValues,
+                        clearDepthEnabled ? 1 : 0,
+                        clearDepthValue,
+                        loadDontCare,
+                        storeDontCare
+                );
         MetalPerformanceProbe.recordRenderEncoderCreated();
         encoder.waitForFence(fence, MTLRenderStages.VertexAndFragment);
         currentEncoder = encoder;
         renderColorAttachments = colorAttachments;
         renderDepthAttachment = depthAttachment;
-        accountEncoderTraffic(colorTextureViews, clearColorEnabled, depthTextureView, clearDepthEnabled);
+        renderLoadDontCare = loadDontCare;
+        renderStoreDontCare = storeDontCare;
+        accountEncoderTraffic(
+                colorTextureViews, clearColorEnabled, depthTextureView, clearDepthEnabled,
+                loadDontCare, storeDontCare
+        );
         return encoder;
+    }
+
+    /**
+     * Normalizes an attachment-action mask: {@code null} and all-zero arrays
+     * both mean "baseline actions" so the v2 path (and encoder reuse) is
+     * byte-identical when no elision was planned. A non-null mask must cover
+     * every color slot.
+     */
+    private static int @Nullable [] normalizedMask(
+            final int @Nullable [] mask,
+            final int slots,
+            final String action
+    ) {
+        if (mask == null) {
+            return null;
+        }
+        if (mask.length != slots) {
+            throw new IllegalArgumentException(
+                    "Attachment " + action + " dontCare mask has " + mask.length
+                            + " entries but the pass has " + slots + " color slots"
+            );
+        }
+        for (int value : mask) {
+            if (value != 0) {
+                return mask.clone();
+            }
+        }
+        return null;
     }
 
     /**
@@ -328,12 +399,18 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
      * level-0 extent of each attachment (Metal's load/store is per attachment,
      * not per render area), which is the same unit the per-pass declared model
      * charges for a full-screen pass.
+     *
+     * <p>Attachments whose P1 mask selects {@code .dontCare} are neither
+     * charged nor counted: the elided bytes go to the probe's
+     * {@code elided} line instead.</p>
      */
     private void accountEncoderTraffic(
             final MetalGpuTextureView[] colorViews,
             final int[] clearColorEnabled,
             final @Nullable MetalGpuTextureView depthView,
-            final boolean clearDepthEnabled
+            final boolean clearDepthEnabled,
+            final int @Nullable [] loadDontCare,
+            final int @Nullable [] storeDontCare
     ) {
         encoderTrafficPending = false;
         encoderLoadBytes = 0L;
@@ -343,21 +420,36 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         }
         long[] colorBytes = new long[colorViews.length];
         boolean[] colorCleared = new boolean[colorViews.length];
+        boolean[] loadSkipped = new boolean[colorViews.length];
+        boolean[] storeSkipped = new boolean[colorViews.length];
+        long elidedLoadBytes = 0L;
+        long elidedStoreBytes = 0L;
         for (int index = 0; index < colorViews.length; index++) {
             MetalGpuTextureView view = colorViews[index];
             if (view == null) {
                 continue;
             }
-            colorBytes[index] = attachmentBytes(view);
+            long bytes = attachmentBytes(view);
+            colorBytes[index] = bytes;
             colorCleared[index] = clearColorEnabled[index] != 0;
+            loadSkipped[index] = !colorCleared[index]
+                    && loadDontCare != null && loadDontCare[index] != 0;
+            storeSkipped[index] = storeDontCare != null && storeDontCare[index] != 0;
+            if (loadSkipped[index]) {
+                elidedLoadBytes += bytes;
+            }
+            if (storeSkipped[index]) {
+                elidedStoreBytes += bytes;
+            }
         }
         long depthBytes = depthView == null ? 0L : attachmentBytes(depthView);
         MetalPerformanceProbe.EncoderTraffic traffic = MetalPerformanceProbe.encoderTraffic(
-                colorBytes, colorCleared, depthBytes, clearDepthEnabled
+                colorBytes, colorCleared, loadSkipped, storeSkipped, depthBytes, clearDepthEnabled
         );
         encoderLoadBytes = traffic.loadBytes();
         encoderStoreBytes = traffic.storeBytes();
         encoderTrafficPending = true;
+        MetalPerformanceProbe.recordElidedAttachmentTraffic(elidedLoadBytes, elidedStoreBytes);
     }
 
     /** Level-0 extent of one attachment in bytes. */
@@ -408,8 +500,24 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
     }
 
     @Override
-    public @NonNull RenderPassBackend createRenderPass(RenderPassDescriptor descriptor) {
-        descriptor = IrisMetalWorldBridge.rewriteWorldDescriptor(this.device, descriptor);
+    public @NonNull RenderPassBackend createRenderPass(final @NonNull RenderPassDescriptor descriptor) {
+        return createRenderPass(descriptor, null, null);
+    }
+
+    /**
+     * Render-pass creation with P1 attachment-action masks. Only the graph's
+     * own full-screen passes supply them; every engine/world caller keeps the
+     * baseline {@code .load}/{@code .store} actions through the one-argument
+     * form above.
+     */
+    @NonNull RenderPassBackend createRenderPass(
+            final @NonNull RenderPassDescriptor renderPassDescriptor,
+            final int @Nullable [] loadDontCareMask,
+            final int @Nullable [] storeDontCareMask
+    ) {
+        RenderPassDescriptor descriptor = IrisMetalWorldBridge.rewriteWorldDescriptor(
+                this.device, renderPassDescriptor
+        );
         List<RenderPassDescriptor.Attachment<Optional<Vector4fc>>> colorAttachments = descriptor.colorAttachments();
         int maxColorAttachments = Math.min(
                 com.mojang.blaze3d.pipeline.ColorTargetState.MAX_COLOR_TARGETS,
@@ -544,7 +652,9 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
                 renderArea,
                 hasColorClear ? clearColors : null,
                 depthClear.isPresent(),
-                depthClear.orElse(0.0)
+                depthClear.orElse(0.0),
+                loadDontCareMask,
+                storeDontCareMask
         );
         recordPassTraffic(descriptor, colorTextureViews, clearColors, depthTexture, depthClear.isPresent(), extentTexture, renderArea);
         currentRenderPass = renderPass;
