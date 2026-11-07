@@ -80,6 +80,21 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         }
     }
 
+    /**
+     * Native-free instance for the submit/fence bookkeeping tests: the ring
+     * cursor, in-flight table and destruction queues are live, but no Metal
+     * handle is allocated and no device is attached. Only the paths under test
+     * (empty {@link #submit()}, {@link #awaitSubmitCompletion} ring math and
+     * {@link MetalFence}) are reachable — every native-touching path requires
+     * a command buffer or in-flight entry, which this instance can never have.
+     * Production always goes through {@link #MetalCommandEncoder(MetalDevice)}.
+     */
+    MetalCommandEncoder() {
+        this.device = null;
+        this.transientMemory = new MetalTransientMemory(null, this);
+        this.fence = MemorySegment.NULL;
+    }
+
     MTLCommandBuffer commandBuffer() {
         if (commandBuffer != null) {
             return commandBuffer;
@@ -118,6 +133,11 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         if (currentEncoder != null) {
             if (currentEncoder instanceof MTLRenderCommandEncoder renderEncoder) {
                 renderEncoder.updateFence(fence, MTLRenderStages.VertexAndFragment);
+                if (currentRenderPass != null) {
+                    // The render pass's cached bindings belonged to the
+                    // encoder that just ended; the next encoder starts empty.
+                    currentRenderPass.invalidateEncoderState();
+                }
             } else if (currentEncoder instanceof MTLBlitCommandEncoder blitEncoder) {
                 blitEncoder.updateFence(fence);
             } else if (currentEncoder instanceof MTLComputeCommandEncoder computeEncoder) {
@@ -220,23 +240,27 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
 
     @Override
     public void submit() {
-        if (commandBuffer == null) {
-            return;
+        // An empty submit still advances the submit cursor: fences taken by
+        // the engine (createFence()) are stamped with currentSubmitIndex, so
+        // skipping the advance would leave fence indices pointing at a submit
+        // number the ring never records, and awaitSubmitCompletion() would
+        // never see the matching in-flight entry (upstream Fix empty submit).
+        InFlight toClose = null;
+        if (commandBuffer != null) {
+            submitRenderPass();
+            endEncoder();
+
+            int slot = (int) (currentSubmitIndex % MAX_SUBMITS_IN_FLIGHT);
+            MemorySegment completedSemaphore = submitSemaphores[slot];
+            commandBuffer.commitWithSignal(completedSemaphore);
+
+            toClose = inFlight[slot];
+            inFlight[slot] = new InFlight(currentSubmitIndex, commandBuffer, completedSemaphore);
+            commandBuffer = null;
         }
-
-        submitRenderPass();
-        endEncoder();
-
-        int slot = (int) (currentSubmitIndex % MAX_SUBMITS_IN_FLIGHT);
-        MemorySegment completedSemaphore = submitSemaphores[slot];
-        commandBuffer.commitWithSignal(completedSemaphore);
-
-        InFlight toClose = inFlight[slot];
-        inFlight[slot] = new InFlight(currentSubmitIndex, commandBuffer, completedSemaphore);
-        commandBuffer = null;
         currentSubmitIndex++;
 
-        if (!awaitSubmitCompletion(currentSubmitIndex - MAX_SUBMITS_IN_FLIGHT, 5000L)) {
+        if (!awaitSubmitCompletion(currentSubmitIndex - MAX_SUBMITS_IN_FLIGHT, 5_000_000_000L)) {
             throw new IllegalStateException("5s timeout reached when waiting for Metal submit completion");
         }
 
@@ -1222,16 +1246,66 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         destroyQueue.add(destroyAction);
     }
 
-    boolean awaitSubmitCompletion(final long submitIndex, final long timeoutMs) {
+    boolean awaitSubmitCompletion(final long submitIndex, final long timeoutNs) {
+        // Rule order mirrors the engine's reference backend,
+        // GlCommandEncoder#awaitSubmit:
+        //   1. the index rolled out of the ring -> necessarily completed;
+        //   2. the index is the next (not yet recorded) submit -> polling
+        //      reports "not completed", a blocking wait is a usage error;
+        //   3. otherwise consult the ring slot.
+        if (submitIndexRolledOutOfRing(submitIndex)) {
+            return true;
+        }
         if (submitIndex == currentSubmitIndex) {
+            if (timeoutNs == 0L) {
+                return false;
+            }
             throw new IllegalStateException("Cannot wait on a fence for the current submit");
         }
         for (InFlight f : inFlight) {
             if (f != null && f.index == submitIndex) {
-                return MetalNativeBridge.metallum_semaphore_wait(f.completedSemaphore, Math.max(timeoutMs, 0L)) == 0;
+                if (timeoutNs == 0L) {
+                    // Polling path: never block the render thread. The
+                    // semaphore is signalled on GPU completion and the native
+                    // wait re-signals on success, so a 0 ms wait is a probe.
+                    return MetalNativeBridge.metallum_semaphore_wait(f.completedSemaphore, 0L) == 0;
+                }
+                return MetalNativeBridge.metallum_semaphore_wait(
+                        f.completedSemaphore, millisFromNanos(timeoutNs)
+                ) == 0;
             }
         }
+        // No in-flight record for this index (already recycled, or never
+        // recorded because the submit was empty): nothing left to wait for.
         return true;
+    }
+
+    /** Nanoseconds to milliseconds, rounded up so a nonzero wait never becomes a poll. */
+    static long millisFromNanos(final long timeoutNs) {
+        if (timeoutNs == Long.MAX_VALUE) {
+            return Long.MAX_VALUE;
+        }
+        // Division/modulo instead of (ns + 999_999) / 1_000_000: the latter
+        // overflows for timeouts close to Long.MAX_VALUE and would silently
+        // shrink an effectively infinite wait to 1 ms.
+        long millis = timeoutNs / 1_000_000L;
+        if (timeoutNs % 1_000_000L != 0L) {
+            millis++;
+        }
+        return Math.max(1L, millis);
+    }
+
+    /**
+     * Whether {@code submitIndex} is older than the ring can still hold, i.e.
+     * its slot (and every resource it referenced) is necessarily free.
+     */
+    boolean submitIndexRolledOutOfRing(final long submitIndex) {
+        return currentSubmitIndex > submitIndex + MAX_SUBMITS_IN_FLIGHT;
+    }
+
+    /** Submit cursor: the index the next {@link #createFence()} will report. */
+    long currentSubmitIndex() {
+        return currentSubmitIndex;
     }
 
     void close() {

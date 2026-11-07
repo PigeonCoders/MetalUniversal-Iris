@@ -70,7 +70,13 @@ final class MetalRenderPass implements RenderPassBackend {
     private final HashMap<Integer, GpuBufferSlice> storageBuffers = new HashMap<>();
     private final HashMap<String, TextureViewAndSampler> samplers = new HashMap<>();
     private final HashMap<String, GpuTextureView> storageImages = new HashMap<>();
-    private long dirtyDescriptorMask;
+    /**
+     * Draw state already pushed to the currently-open encoder. Invalidated
+     * whenever that encoder is replaced (see
+     * {@link MetalEncoderBindings#bindEncoder}), because a new Metal encoder
+     * retains nothing of the previous one's bindings.
+     */
+    private final MetalEncoderBindings bindings = new MetalEncoderBindings();
     @Nullable
     private MetalCompiledRenderPipeline compiledPipeline;
     /**
@@ -85,9 +91,6 @@ final class MetalRenderPass implements RenderPassBackend {
     private GpuBuffer indexBuffer;
     private MTLIndexType indexType = MTLIndexType.UInt16;
     private int pushedDebugGroups = 0;
-    private boolean scissorDirty = true;
-    private boolean vertexBuffersDirty = true;
-    private boolean pipelineDirty = true;
 
     MetalRenderPass(
             final MetalDevice device,
@@ -140,8 +143,8 @@ final class MetalRenderPass implements RenderPassBackend {
         validateAttachmentSignature(compiled, pipeline.getLocation().toString());
         if (this.compiledPipeline != compiled) {
             this.compiledPipeline = compiled;
-            vertexBuffersDirty = true;
-            pipelineDirty = true;
+            bindings.markVertexBuffersDirty();
+            bindings.markPipelineDirty();
         }
     }
 
@@ -172,8 +175,8 @@ final class MetalRenderPass implements RenderPassBackend {
     void setCompiledPipeline(final MetalCompiledRenderPipeline pipeline) {
         validateAttachmentSignature(pipeline, "Iris shaderpack pipeline");
         this.compiledPipeline = pipeline;
-        this.pipelineDirty = true;
-        this.vertexBuffersDirty = true;
+        this.bindings.markPipelineDirty();
+        this.bindings.markVertexBuffersDirty();
     }
 
     private void validateAttachmentSignature(
@@ -224,7 +227,7 @@ final class MetalRenderPass implements RenderPassBackend {
             for (MetalCompiledRenderPipeline.ResourceBinding resource : compiledPipeline.resources()) {
                 if (resource.kind() == MetalCompiledRenderPipeline.ResourceKind.STORAGE_BUFFER
                         && MetalCrossShaderCompiler.storageBufferLogicalBinding(resource.name()) == binding) {
-                    dirtyDescriptorMask |= 1L << resource.descriptorMaskIndex();
+                    bindings.markDescriptorDirty(resource.descriptorMaskIndex());
                 }
             }
         }
@@ -251,7 +254,7 @@ final class MetalRenderPass implements RenderPassBackend {
             return;
         }
         scissorState.enable(x, y, width, height);
-        scissorDirty = true;
+        bindings.markScissorDirty();
     }
 
     @Override
@@ -260,7 +263,7 @@ final class MetalRenderPass implements RenderPassBackend {
             return;
         }
         scissorState.disable();
-        scissorDirty = true;
+        bindings.markScissorDirty();
     }
 
     @Override
@@ -271,7 +274,7 @@ final class MetalRenderPass implements RenderPassBackend {
 
         if (!sameSlice(vertexBuffers[slot], vertexBuffer)) {
             vertexBuffers[slot] = vertexBuffer;
-            vertexBuffersDirty = true;
+            bindings.markVertexBuffersDirty();
         }
     }
 
@@ -411,7 +414,6 @@ final class MetalRenderPass implements RenderPassBackend {
     ) {
         MetalPerformanceProbe.recordDraw(draws.size());
         IndexType fallbackIndexType = defaultIndexType == null ? IndexType.SHORT : defaultIndexType;
-        MTLRenderCommandEncoder enc = renderEncoder();
 
         for (RenderPass.Draw<T> draw : draws) {
             MTLIndexType drawIndexType = MTLIndexType.from(draw.indexType() == null ? fallbackIndexType : draw.indexType());
@@ -424,7 +426,14 @@ final class MetalRenderPass implements RenderPassBackend {
                 draw.uniformUploaderConsumer().accept(uniformArgument, this::setUniform);
             }
 
-            if (scissorDirty || vertexBuffersDirty || dirtyDescriptorMask != 0L || pipelineDirty) {
+            // Resolve the encoder per draw, not once per batch: a uniform
+            // upload (or anything else the batch triggers) may end and
+            // re-create the render encoder mid-pass (attachment-action mask
+            // change, materialized pending clear, ...). The new encoder has
+            // none of the previous one's bindings, so the draw must observe
+            // it here and let bindDrawState re-push the full state.
+            MTLRenderCommandEncoder enc = renderEncoder();
+            if (bindings.needsDrawState()) {
                 bindDrawState(enc);
             }
             MetalGpuBuffer nativeIndexBuffer = (MetalGpuBuffer) indexBuffer;
@@ -559,9 +568,23 @@ final class MetalRenderPass implements RenderPassBackend {
                 loadDontCareMask,
                 storeDontCareMask
         );
+        // A fresh encoder keeps none of the state pushed to the previous one;
+        // if the native call had to replace it, invalidate the cached flags so
+        // the next draw re-pushes everything.
+        bindings.bindEncoder(encoder);
         clearColors = null;
         clearDepthEnabled = false;
         return encoder;
+    }
+
+    /**
+     * Invalidates every cached draw-state flag after the open encoder was
+     * ended or replaced. Called by {@link MetalCommandEncoder#endEncoder()}
+     * right after the encoder's {@code updateFence}, matching the upstream
+     * "fence update implies a new encoder" contract.
+     */
+    void invalidateEncoderState() {
+        bindings.invalidate();
     }
 
     GpuBufferSlice.MappedView allocateTransient(final long size, final long alignment, @GpuBuffer.Usage final int usage) {
@@ -683,7 +706,7 @@ final class MetalRenderPass implements RenderPassBackend {
             throw new IllegalStateException("Pipeline is missing");
         }
 
-        if (pipelineDirty) {
+        if (bindings.isPipelineDirty()) {
             MTLPixelFormat depthFormat = depthAttachmentFormat();
             MTLPixelFormat stencilFormat = stencilAttachmentFormat();
             boolean hasAttachment = depthFormat != MTLPixelFormat.Invalid
@@ -696,7 +719,7 @@ final class MetalRenderPass implements RenderPassBackend {
                 throw new IllegalStateException("Native pipeline is unavailable");
             }
             enc.setRenderPipelineState(pipelineHandle);
-            pipelineDirty = false;
+            bindings.clearPipelineDirty();
 
             MemorySegment depthState = compiledPipeline.getDepthStencilState();
             if (MetalNativeBridge.isNullHandle(depthState)) {
@@ -721,17 +744,17 @@ final class MetalRenderPass implements RenderPassBackend {
             enc.setCullMode(compiledPipeline.cullMode());
             enc.setTriangleFillMode(compiledPipeline.fillMode());
 
-            dirtyDescriptorMask |= compiledPipeline.allResourceMask();
+            bindings.markDescriptors(compiledPipeline.allResourceMask());
         }
 
-        if (scissorDirty) {
+        if (bindings.isScissorDirty()) {
             pushEffectiveScissor(enc);
-            scissorDirty = false;
+            bindings.clearScissorDirty();
         }
 
-        if (vertexBuffersDirty) {
+        if (bindings.isVertexBuffersDirty()) {
             pushVertexBuffers(enc);
-            vertexBuffersDirty = false;
+            bindings.clearVertexBuffersDirty();
         }
 
         // Per-draw core transforms must be materialized after the engine wrote
@@ -743,15 +766,15 @@ final class MetalRenderPass implements RenderPassBackend {
             markDescriptorDirty(IrisMetalGlslLinker.UNIFORM_BLOCK_NAME);
         }
 
-        if (dirtyDescriptorMask != 0) {
+        if (bindings.dirtyDescriptorMask() != 0) {
             for (MetalCompiledRenderPipeline.ResourceBinding binding : compiledPipeline.resources()) {
-                if ((dirtyDescriptorMask & (1L << binding.descriptorMaskIndex())) != 0L) {
+                if ((bindings.dirtyDescriptorMask() & (1L << binding.descriptorMaskIndex())) != 0L) {
                     pushDescriptor(enc, binding);
                 }
             }
         }
 
-        dirtyDescriptorMask = 0L;
+        bindings.clearDescriptorMask();
     }
 
     private MTLPrimitiveType primitiveTopology() {
@@ -813,7 +836,7 @@ final class MetalRenderPass implements RenderPassBackend {
 
     private void markDescriptorDirty(final MetalCompiledRenderPipeline.@Nullable ResourceBinding binding) {
         if (binding != null) {
-            dirtyDescriptorMask |= 1L << binding.descriptorMaskIndex();
+            bindings.markDescriptorDirty(binding.descriptorMaskIndex());
         }
     }
 
