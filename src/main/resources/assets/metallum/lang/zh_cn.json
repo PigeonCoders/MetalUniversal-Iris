@@ -12,6 +12,7 @@
   "metallum.fx.options.group": "MetalFX 超分",
   "metallum.fx.options.advanced_group": "高级",
   "metallum.fx.spatial.off": "关闭",
+  "metallum.fx.spatial.high": "高画质 (85%)",
   "metallum.fx.spatial.quality": "质量 (77%)",
   "metallum.fx.spatial.balanced": "平衡 (67%)",
   "metallum.fx.spatial.performance": "性能 (56%)",

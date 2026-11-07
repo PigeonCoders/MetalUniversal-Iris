@@ -150,6 +150,7 @@ public final class MetalFxOptionsScreen extends Screen {
     private static Component spatialModeLabel(MetalFxConfig.SpatialMode mode) {
         return switch (mode) {
             case OFF -> Component.translatable("metallum.fx.spatial.off");
+            case HIGH -> Component.translatable("metallum.fx.spatial.high");
             case QUALITY -> Component.translatable("metallum.fx.spatial.quality");
             case BALANCED -> Component.translatable("metallum.fx.spatial.balanced");
             case PERFORMANCE -> Component.translatable("metallum.fx.spatial.performance");

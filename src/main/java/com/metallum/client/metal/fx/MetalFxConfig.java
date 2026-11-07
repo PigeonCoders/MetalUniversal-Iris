@@ -33,6 +33,7 @@ public final class MetalFxConfig {
      * Spatial upscaling mode. Maps 1:1 to the on-screen cycling control:
      * <ul>
      *   <li>{@link #OFF} — render at native drawable resolution, no MetalFX</li>
+     *   <li>{@link #HIGH} — render at 85% then upscale (nearly native, small win)</li>
      *   <li>{@link #QUALITY} — render at 77% then upscale (sharpest, most cost)</li>
      *   <li>{@link #BALANCED} — render at 67% then upscale (default DLSS-style)</li>
      *   <li>{@link #PERFORMANCE} — render at 56% then upscale (max FPS)</li>
@@ -43,6 +44,13 @@ public final class MetalFxConfig {
      */
     public enum SpatialMode {
         OFF(1.0f),
+        /**
+         * 85%: the sharpest preset MetalFX offers here. Users who found
+         * QUALITY too soft get a noticeably crisper image for roughly 2ms more
+         * GPU time (0.85^2 = 0.72 of the pixel cost), and it stays well above
+         * the point where temporal upscaling would start to pay off.
+         */
+        HIGH(0.85f),
         QUALITY(0.77f),
         BALANCED(0.67f),
         PERFORMANCE(0.56f),

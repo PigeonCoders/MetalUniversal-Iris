@@ -12,6 +12,7 @@
   "metallum.fx.options.group": "MetalFX Upscaling",
   "metallum.fx.options.advanced_group": "Advanced",
   "metallum.fx.spatial.off": "Off",
+  "metallum.fx.spatial.high": "High (85%)",
   "metallum.fx.spatial.quality": "Quality (77%)",
   "metallum.fx.spatial.balanced": "Balanced (67%)",
   "metallum.fx.spatial.performance": "Performance (56%)",

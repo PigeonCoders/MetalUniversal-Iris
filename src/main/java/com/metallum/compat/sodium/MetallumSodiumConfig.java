@@ -146,6 +146,7 @@ public final class MetallumSodiumConfig implements ConfigEntryPoint {
     private static Component spatialModeLabel(MetalFxConfig.SpatialMode mode) {
         return Component.translatable(switch (mode) {
             case OFF -> "metallum.fx.spatial.off";
+            case HIGH -> "metallum.fx.spatial.high";
             case QUALITY -> "metallum.fx.spatial.quality";
             case BALANCED -> "metallum.fx.spatial.balanced";
             case PERFORMANCE -> "metallum.fx.spatial.performance";
