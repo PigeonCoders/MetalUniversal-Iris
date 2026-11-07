@@ -605,8 +605,9 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
         this.receipts.recordEvent("depthtex1.capture");
         if (usesVanillaSceneDepth()) {
             // Vanilla depth is the authoritative scene depth: taken-over draws
-            // test/write it, so depthtex0 and depthtex1 are derived from it
-            // (terrain + entities, before translucent water).
+            // test/write it, so depthtex0 is that texture itself (alias) and
+            // depthtex1 is derived from it (terrain + entities, before
+            // translucent water).
             RenderTarget target = Minecraft.getInstance().gameRenderer.mainRenderTarget();
             GpuTexture depth = target.getDepthTexture();
             if (depth == null) {
@@ -738,9 +739,10 @@ public final class MetalWorldRenderingPipeline extends VanillaRenderingPipeline 
             throw new IllegalStateException("Iris final boundary has no main target textures");
         }
         this.receipts.recordEvent("depthtex0.capture");
-        // M1: captureFinalDepth still folds the vanilla depth back into
-        // depthtex0 because hand/particles/weather draw into the vanilla depth
-        // until M2/M3 wire them up; their depth must not be lost.
+        // With the depthtex0 alias the engine depth IS depthtex0, so this call
+        // is a no-op; without the alias it folds the final vanilla depth
+        // (terrain + entities + water + hand/particles/weather) back into the
+        // Iris copy, exactly as before.
         this.executionGraph.captureFinalDepth(this.resources(), depth);
         this.receipts.recordEvent("composite");
         if (!MetalDebugSwitches.SKIP_POST) {

@@ -203,7 +203,7 @@ public final class IrisMetalTerrainBridge {
         }
         IrisMetalRenderTargets renderTargets = context.pipeline().resources().renderTargets();
         GpuTextureView depthView = switch (name) {
-            case "depthtex0" -> renderTargets.mainDepthView();
+            case "depthtex0" -> renderTargets.depthtex0View();
             case "depthtex1" -> renderTargets.noTranslucentsDepthView();
             case "depthtex2" -> renderTargets.noHandDepthView();
             default -> null;

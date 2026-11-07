@@ -3,6 +3,7 @@ package com.metallum.client.metal.render;
 import com.metallum.Metallum;
 import com.metallum.client.metal.render.mtl.MTLSamplerMipFilter;
 import com.mojang.blaze3d.GpuFormat;
+import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.systems.RenderPass;
 import com.mojang.blaze3d.systems.RenderPassDescriptor;
 import com.mojang.blaze3d.textures.AddressMode;
@@ -15,6 +16,7 @@ import net.fabricmc.api.Environment;
 import net.irisshaders.iris.shaderpack.properties.PackDirectives;
 import net.irisshaders.iris.shaderpack.properties.PackRenderTargetDirectives;
 import net.irisshaders.iris.shaderpack.properties.PackRenderTargetDirectives.RenderTargetSettings;
+import net.minecraft.client.Minecraft;
 import org.joml.Vector4f;
 import org.joml.Vector4fc;
 import org.jspecify.annotations.Nullable;
@@ -57,6 +59,15 @@ final class IrisMetalRenderTargets implements AutoCloseable {
     private int width;
     private int height;
     private boolean fullClearRequired = true;
+    private boolean depthAliasReported;
+    /**
+     * Set once a world-draw program declares {@code depthtex0}: the shader
+     * would sample the main depth while the same texture is that pass's
+     * depth attachment, which is undefined on a tile-based GPU. The alias
+     * is disabled for the rest of the generation and every consumer keeps
+     * reading the boundary snapshot instead.
+     */
+    private boolean depthAliasBlocked;
     private boolean closed;
 
     IrisMetalRenderTargets(
@@ -224,6 +235,125 @@ final class IrisMetalRenderTargets implements AutoCloseable {
         }
     }
 
+    /**
+     * Why {@code depthtex0} cannot alias the vanilla main depth, or {@code null}
+     * when every requirement holds. Pure so the gate is unit-testable without a
+     * GPU; {@link #aliasedDepthTarget()} supplies the live texture's format,
+     * usage and extent.
+     *
+     * <p>The checks are the five necessary conditions from the port plan:</p>
+     * <ol>
+     *   <li>the legacy {@code -Dmetallum.iris.worldPass.depthVanilla=false}
+     *       path keeps its own behavior and never aliases;</li>
+     *   <li>the generation (and the engine depth texture) must still be live;</li>
+     *   <li>the main depth format must be the D32_FLOAT depthtex0 format packs
+     *       are promised;</li>
+     *   <li>its usage must include {@link GpuTexture#USAGE_TEXTURE_BINDING},
+     *       the Metal ShaderRead requirement (the vanilla
+     *       {@code RenderTarget}/{@code MainTarget} buffers are created with
+     *       usage 15, which already contains that bit);</li>
+     *   <li>its extent must equal the Iris base extent.</li>
+     * </ol>
+     *
+     * @return {@code null} when the alias may be used, otherwise a space-free
+     *         probe reason
+     */
+    static @Nullable String depthAliasBlocker(
+            final GpuFormat format,
+            final int usage,
+            final int mainWidth,
+            final int mainHeight,
+            final int targetWidth,
+            final int targetHeight,
+            final boolean legacyDepthPath,
+            final boolean generationValid
+    ) {
+        if (legacyDepthPath) {
+            return "legacy-depth";
+        }
+        if (!generationValid) {
+            return "generation";
+        }
+        if (format != GpuFormat.D32_FLOAT) {
+            return "format=" + format;
+        }
+        if ((usage & GpuTexture.USAGE_TEXTURE_BINDING) == 0) {
+            return "usage=0x" + Integer.toHexString(usage);
+        }
+        if (mainWidth != targetWidth || mainHeight != targetHeight) {
+            return "extent=" + mainWidth + "x" + mainHeight + "!=" + targetWidth + "x" + targetHeight;
+        }
+        return null;
+    }
+
+    /**
+     * Resolves the live vanilla main depth target when {@code depthtex0} may
+     * alias it, else {@code null}.
+     *
+     * <p>Upstream Iris on GL binds {@code RenderTargets.getDepthTexture()} -
+     * the vanilla main depth itself - as depthtex0; only the
+     * noTranslucents/noHand variants pay for a copy. This port historically
+     * created an independent D32 texture and copied the full frame into it at
+     * every boundary (about 44MB/frame at 1080p with BSL). Returning the
+     * vanilla texture here restores upstream behavior and removes that copy.</p>
+     *
+     * <p><b>Semantic note:</b> upstream's depthtex0 is the <em>live</em> main
+     * depth, so composite/final programs read the final scene depth including
+     * translucents, hand and particles. The old copy was a snapshot taken when
+     * terrain ended; the two contents legitimately differ. Aligning with
+     * upstream therefore changes the values depthtex0 carries, but that is a
+     * return to upstream semantics, not a new deviation.
+     * {@code -Dmetallum.iris.depthAlias=off} restores the copy for A/B.</p>
+     *
+     * <p>The target is re-resolved on every call and never cached: the engine
+     * recreates its depth texture on resize and Iris creates a new generation
+     * on world/pack changes, so a cached handle could already be closed. The
+     * one line of probe state is a {@code boolean}, not a handle.</p>
+     */
+    private @Nullable RenderTarget aliasedDepthTarget() {
+        ensureOpen();
+        if (!MetalDebugSwitches.DEPTH_ALIAS) {
+            reportDepthAlias("switch");
+            return null;
+        }
+        if (depthAliasBlocked) {
+            reportDepthAlias("world-samples-depthtex0");
+            return null;
+        }
+        Minecraft minecraft = Minecraft.getInstance();
+        RenderTarget target = minecraft == null || minecraft.gameRenderer == null
+                ? null
+                : minecraft.gameRenderer.mainRenderTarget();
+        GpuTexture depth = target == null ? null : target.getDepthTexture();
+        GpuTextureView depthView = target == null ? null : target.getDepthTextureView();
+        if (depth == null || depthView == null || depthView.isClosed()) {
+            reportDepthAlias("no-main-target");
+            return null;
+        }
+        String blocker = depthAliasBlocker(
+                depth.getFormat(),
+                depth.usage(),
+                depth.getWidth(0),
+                depth.getHeight(0),
+                width,
+                height,
+                !MetalDebugSwitches.WORLD_PASS_DEPTH_VANILLA,
+                !closed && !depth.isClosed()
+        );
+        reportDepthAlias(blocker);
+        return blocker == null ? target : null;
+    }
+
+    /** Records the alias decision once per generation (a boolean, never a handle). */
+    private void reportDepthAlias(final @Nullable String blocker) {
+        if (depthAliasReported) {
+            return;
+        }
+        depthAliasReported = true;
+        MetalProbeReport.record("perf depth alias=" + (blocker == null ? "on" : "off")
+                + " reason=" + (blocker == null ? "ok" : blocker));
+    }
+
     private void createDepthTextures(final int newWidth, final int newHeight) {
         if (newWidth <= 0 || newHeight <= 0) {
             throw new IllegalArgumentException("Target extent must be positive: " + newWidth + "x" + newHeight);
@@ -267,6 +397,47 @@ final class IrisMetalRenderTargets implements AutoCloseable {
     MetalGpuTextureView mainDepthView() {
         ensureOpen();
         return mainDepthView;
+    }
+
+    /**
+     * The view packs sample as {@code depthtex0}: the vanilla main depth when
+     * the zero-copy alias applies (see {@link #aliasedDepthTarget()}), else the
+     * generation-owned Iris copy. Resolution happens per call, after every
+     * resize/generation change.
+     *
+     * <p>Attachment paths that must write the Iris depth texture keep using
+     * {@link #mainDepthView()}; this method is for sampling and for deciding
+     * whether a boundary copy can be skipped.</p>
+     */
+    GpuTextureView depthtex0View() {
+        ensureOpen();
+        RenderTarget alias = aliasedDepthTarget();
+        if (alias != null) {
+            GpuTextureView view = alias.getDepthTextureView();
+            if (view != null && !view.isClosed() && view.texture() == alias.getDepthTexture()) {
+                return view;
+            }
+        }
+        return mainDepthView();
+    }
+
+    /**
+     * Disables the depthtex0 alias for the rest of this generation because a
+     * world-draw program declares {@code depthtex0}. Sampling the main depth
+     * texture inside the very pass that binds it as its depth attachment is
+     * undefined on Apple's tile-based GPUs, so those packs keep the boundary
+     * snapshot (the pre-alias behavior); packs whose world programs never read
+     * {@code depthtex0} keep the zero-copy alias.
+     *
+     * <p>Called before the frame's first {@code captureMainDepth}, so the
+     * snapshot still exists for every consumer.</p>
+     */
+    void requireDepthSnapshot(final String reason) {
+        if (depthAliasBlocked) {
+            return;
+        }
+        depthAliasBlocked = true;
+        reportDepthAlias("world-" + reason);
     }
 
     MetalGpuTextureView noTranslucentsDepthView() {
@@ -341,9 +512,23 @@ final class IrisMetalRenderTargets implements AutoCloseable {
         encoder.copyTextureToTexture(sourceDepth, noTranslucentsDepth, 0, 0, 0, 0, 0, width, height, "depth.depthtex1");
     }
 
+    /**
+     * Copies the scene depth into the Iris depthtex0 texture. When the vanilla
+     * main depth is already bound as depthtex0 ({@link #aliasedDepthTarget()}),
+     * the copy has no reader and is skipped - that is the per-frame 44MB
+     * {@code depth.depthtex0} traffic this switch removes. The extension check
+     * still runs so a genuine extent mismatch keeps failing loudly; when the
+     * alias is unavailable this method is byte-for-byte the old copy.
+     */
     void captureMainDepth(final MetalCommandEncoder encoder, final GpuTexture sourceDepth) {
         ensureOpen();
         checkDepthExtent(sourceDepth);
+        RenderTarget alias = aliasedDepthTarget();
+        if (alias != null && alias.getDepthTexture() == sourceDepth) {
+            // depthtex0 resolves to this exact texture; copying it onto itself
+            // (into the unused Iris texture) would only burn bandwidth.
+            return;
+        }
         encoder.copyTextureToTexture(sourceDepth, mainDepth, 0, 0, 0, 0, 0, width, height, "depth.depthtex0");
     }
 

@@ -1050,8 +1050,12 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
     void captureNoTranslucentsDepth(final IrisMetalWorldResources resources, final GpuTexture sceneDepth) {
         IrisMetalRenderTargets targets = resources.renderTargets();
         MetalCommandEncoder encoder = activeEncoder();
+        // With the depthtex0 alias the main-depth copy is skipped, so derive
+        // depthtex1 from the authoritative scene depth instead of reading the
+        // (now unused) Iris mainDepth texture. Without the alias both sources
+        // contain the same bytes, so this is byte-identical to the old path.
         targets.captureMainDepth(encoder, sceneDepth);
-        targets.captureNoTranslucentsDepth(encoder, targets.mainDepthTexture());
+        targets.captureNoTranslucentsDepth(encoder, sceneDepth);
     }
 
     /**
@@ -1073,8 +1077,10 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
     void captureNoHandDepth(final IrisMetalWorldResources resources, final GpuTexture sceneDepth) {
         IrisMetalRenderTargets targets = resources.renderTargets();
         MetalCommandEncoder encoder = activeEncoder();
+        // Same reasoning as captureNoTranslucentsDepth: source depthtex2 from
+        // the live scene depth so the skipped main-depth copy is harmless.
         targets.captureMainDepth(encoder, sceneDepth);
-        targets.captureNoHandDepth(encoder, targets.mainDepthTexture());
+        targets.captureNoHandDepth(encoder, sceneDepth);
     }
 
     /**
@@ -2160,7 +2166,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
         } else if (name.equals("noisetex")) {
             standard = resources.noiseTexture().binding();
         } else if (name.equals("depthtex0")) {
-            standard = new MetalRenderPass.TextureViewAndSampler(targets.mainDepthView(), targets.depthSampler());
+            standard = new MetalRenderPass.TextureViewAndSampler(targets.depthtex0View(), targets.depthSampler());
         } else if (name.equals("depthtex1")) {
             standard = new MetalRenderPass.TextureViewAndSampler(targets.noTranslucentsDepthView(), targets.depthSampler());
         } else if (name.equals("depthtex2")) {

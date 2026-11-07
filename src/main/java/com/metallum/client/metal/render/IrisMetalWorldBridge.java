@@ -233,7 +233,10 @@ public final class IrisMetalWorldBridge {
      * copies the vanilla main depth (which by then contains the terrain) into
      * the Iris depthtex0 texture, but only when that pass's program actually
      * declares {@code depthtex0} ({@code -Dmetallum.iris.debug.depthCapture=eager}
-     * restores the unconditional capture).
+     * restores the unconditional capture). With the default {@code
+     * -Dmetallum.iris.depthAlias=on} the copy is skipped because depthtex0
+     * resolves to the vanilla main depth itself; the call remains as the
+     * single place that decides whether the copy is needed.
      *
      * <p>By default the rewritten pass keeps the <em>vanilla</em> depth
      * attachment: taken-over draws must test/write the same depth buffer the
@@ -287,12 +290,18 @@ public final class IrisMetalWorldBridge {
         }
         IrisMetalRenderTargets renderTargets = pipeline.resources().renderTargets();
         GpuTexture mainSceneDepth = vanillaMainDepthTexture();
+        boolean declaresDepthtex0 = declaresDepthtex0(program.samplers());
+        if (declaresDepthtex0) {
+            // A world pass that samples depthtex0 cannot use the zero-copy
+            // alias: it would read the depth texture it is currently writing.
+            renderTargets.requireDepthSnapshot("draw");
+        }
         if (shouldCaptureMainDepth(
                 MetalDebugSwitches.DEPTH_CAPTURE_LAZY,
                 mainDepthCapturedThisFrame,
                 isSkyKey(key),
                 passTargetsTexture(descriptor, mainSceneDepth),
-                () -> declaresDepthtex0(program.samplers())
+                () -> declaresDepthtex0
         )) {
             // Only seed depthtex0 from a pass that actually targets the vanilla
             // main scene depth, and never from a sky pass: the sky is the first
@@ -760,7 +769,7 @@ public final class IrisMetalWorldBridge {
         }
         IrisMetalRenderTargets renderTargets = context.pipeline().resources().renderTargets();
         GpuTextureView depthView = switch (name) {
-            case "depthtex0" -> renderTargets.mainDepthView();
+            case "depthtex0" -> renderTargets.depthtex0View();
             case "depthtex1" -> renderTargets.noTranslucentsDepthView();
             case "depthtex2" -> renderTargets.noHandDepthView();
             default -> null;

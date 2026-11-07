@@ -15,7 +15,8 @@ import java.util.Set;
  * switches keep their own parsing. A few switches select the optimized default
  * and document the legacy value that restores the old behavior
  * ({@code shadowSeed=copy}, {@code depthCapture=eager},
- * {@code attachmentViews=subresource}, {@code blitBatch=off}).
+ * {@code depthAlias=off}, {@code attachmentViews=subresource},
+ * {@code blitBatch=off}).
  */
 public final class MetalDebugSwitches {
     /** Identifies this probe build in device logs. */
@@ -225,13 +226,27 @@ public final class MetalDebugSwitches {
      * copies the vanilla main depth into Iris depthtex0 only when the program
      * about to be encoded actually declares {@code depthtex0};
      * {@code -Dmetallum.iris.debug.depthCapture=eager} restores the previous
-     * unconditional once-per-frame capture.
+     * unconditional once-per-frame capture. With the default
+     * {@link #DEPTH_ALIAS} the seed copy itself is skipped (depthtex0 is the
+     * vanilla main depth); this switch then only controls the legacy
+     * {@code depthAlias=off} path's call pattern.
      */
     public static final boolean DEPTH_CAPTURE_LAZY = depthCaptureLazy(
             System.getProperty("metallum.iris.debug.depthCapture", "lazy")
     );
     /** Effective {@code depthCapture} mode, for the switch log / probe report. */
     public static final String DEPTH_CAPTURE_MODE = DEPTH_CAPTURE_LAZY ? "lazy" : "eager";
+    /**
+     * {@code depthtex0} zero-copy alias. On by default: packs sample the
+     * vanilla main depth texture directly instead of a per-frame full-screen
+     * copy (44MB/frame at 1080p with BSL), matching upstream Iris's GL
+     * behavior where {@code RenderTargets.getDepthTexture()} <em>is</em>
+     * depthtex0. {@code -Dmetallum.iris.depthAlias=off} (or {@code =false})
+     * restores the copy for A/B comparison and legacy rollback.
+     */
+    public static final boolean DEPTH_ALIAS = defaultOnFlag("metallum.iris.depthAlias");
+    /** Effective {@code depthAlias} mode, for the switch log / probe report. */
+    public static final String DEPTH_ALIAS_MODE = DEPTH_ALIAS ? "on" : "off";
     /**
      * Render-attachment views use the whole texture ({@code full}, default)
      * instead of a level-0-only subresource view. A full view makes
@@ -318,7 +333,7 @@ public final class MetalDebugSwitches {
             || !SIZE_BUFFER || DUMP_BINDINGS || LOG_UNIFORMS || FLIP_TRACE
             || !VERTEX_ENGINE_PROJECTION || !GLSLANG_PRECISION_PREAMBLE
             || !GLSLANG_BUILTIN_RENAME || PERF
-            || !SHADOW_SEED_CLEAR || !DEPTH_CAPTURE_LAZY
+            || !SHADOW_SEED_CLEAR || !DEPTH_CAPTURE_LAZY || !DEPTH_ALIAS
             || !ATTACHMENT_VIEWS_FULL || !BLIT_BATCH
             || !DEAD_STORES || !LOAD_ELISION
             || RENDER_SCALE != 1.0f || SHADOW_RESOLUTION != 0;
@@ -505,14 +520,14 @@ public final class MetalDebugSwitches {
 
     static {
         if (PROBES_ACTIVE) {
-            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: build={} skipDeferred={} skipPost={} view={} viewGain={} skipPass={} noShadowMatrices={} zeroVl={} zeroBloom={} stageStrip={} noVanillaSky={} noVanillaClouds={} noCloudsHard={} magentaClear={} shadowPass={} noShadows={} shadowCulling={} shadowDepthFix={} blendOverrides={} sizeBuffer={} dumpBindings={} logUniforms={} flipTrace={} vertexEngineProjection={} glslangPrecision={} glslangBuiltinRename={} perf={} renderScale={} shadowResolution={} shadowSeed={} depthCapture={} attachmentViews={} blitBatch={} deadStores={} loadElision={}",
+            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: build={} skipDeferred={} skipPost={} view={} viewGain={} skipPass={} noShadowMatrices={} zeroVl={} zeroBloom={} stageStrip={} noVanillaSky={} noVanillaClouds={} noCloudsHard={} magentaClear={} shadowPass={} noShadows={} shadowCulling={} shadowDepthFix={} blendOverrides={} sizeBuffer={} dumpBindings={} logUniforms={} flipTrace={} vertexEngineProjection={} glslangPrecision={} glslangBuiltinRename={} perf={} renderScale={} shadowResolution={} shadowSeed={} depthCapture={} depthAlias={} attachmentViews={} blitBatch={} deadStores={} loadElision={}",
                     BUILD_TAG, SKIP_DEFERRED, SKIP_POST, VIEW, VIEW_GAIN, SKIP_PASS, NO_SHADOW_MATRICES, ZERO_VL, ZERO_BLOOM,
                     System.getProperty("metallum.iris.debug.stageStrip", ""),
                     NO_VANILLA_SKY, NO_VANILLA_CLOUDS, NO_CLOUDS_HARD, MAGENTA_CLEAR,
                     SHADOW_PASS, NO_SHADOWS, SHADOW_CULLING, SHADOW_DEPTH_FIX, BLEND_OVERRIDES, SIZE_BUFFER,
                     DUMP_BINDINGS, LOG_UNIFORMS, FLIP_TRACE, VERTEX_ENGINE_PROJECTION, GLSLANG_PRECISION_PREAMBLE,
                     GLSLANG_BUILTIN_RENAME, PERF, RENDER_SCALE, SHADOW_RESOLUTION,
-                    SHADOW_SEED_MODE, DEPTH_CAPTURE_MODE, ATTACHMENT_VIEWS_MODE, BLIT_BATCH ? "on" : "off",
+                    SHADOW_SEED_MODE, DEPTH_CAPTURE_MODE, DEPTH_ALIAS_MODE, ATTACHMENT_VIEWS_MODE, BLIT_BATCH ? "on" : "off",
                     DEAD_STORES ? "on" : "off", LOAD_ELISION ? "on" : "off");
         }
     }

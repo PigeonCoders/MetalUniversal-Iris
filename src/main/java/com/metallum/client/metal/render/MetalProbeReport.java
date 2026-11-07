@@ -114,6 +114,7 @@ public final class MetalProbeReport {
         content.append("  frameHistory=").append(MetalDebugSwitches.FRAME_HISTORY).append(System.lineSeparator());
         content.append("  shadowSeed=").append(MetalDebugSwitches.SHADOW_SEED_MODE).append(System.lineSeparator());
         content.append("  depthCapture=").append(MetalDebugSwitches.DEPTH_CAPTURE_MODE).append(System.lineSeparator());
+        content.append("  depthAlias=").append(MetalDebugSwitches.DEPTH_ALIAS_MODE).append(System.lineSeparator());
         content.append("  attachmentViews=").append(MetalDebugSwitches.ATTACHMENT_VIEWS_MODE).append(System.lineSeparator());
         content.append("  blitBatch=").append(MetalDebugSwitches.BLIT_BATCH ? "on" : "off").append(System.lineSeparator());
         content.append("  deadStores=").append(MetalDebugSwitches.DEAD_STORES ? "on" : "off").append(System.lineSeparator());
@@ -178,6 +179,7 @@ public final class MetalProbeReport {
         addIf(active, "frameHistory=off", !MetalDebugSwitches.FRAME_HISTORY);
         addIf(active, "shadowSeed=copy", !MetalDebugSwitches.SHADOW_SEED_CLEAR);
         addIf(active, "depthCapture=eager", !MetalDebugSwitches.DEPTH_CAPTURE_LAZY);
+        addIf(active, "depthAlias=off", !MetalDebugSwitches.DEPTH_ALIAS);
         addIf(active, "attachmentViews=subresource", !MetalDebugSwitches.ATTACHMENT_VIEWS_FULL);
         addIf(active, "blitBatch=off", !MetalDebugSwitches.BLIT_BATCH);
         addIf(active, "deadStores=off", !MetalDebugSwitches.DEAD_STORES);
