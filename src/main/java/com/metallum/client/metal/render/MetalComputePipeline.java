@@ -1,5 +1,7 @@
 package com.metallum.client.metal.render;
 
+import com.metallum.client.metal.render.bridge.GlslangBridge;
+
 import com.metallum.client.metal.render.MetalProbeReport;
 
 import com.metallum.Metallum;
@@ -10,7 +12,6 @@ import net.fabricmc.api.Environment;
 import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
-import org.lwjgl.util.shaderc.Shaderc;
 import org.lwjgl.util.spvc.Spv;
 import org.lwjgl.util.spvc.Spvc;
 
@@ -19,6 +20,7 @@ import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.nio.ByteOrder;
 
 /**
  * Mod-private compute pipeline for the Iris backend. Vanilla Blaze3D 26.2 has
@@ -126,54 +128,42 @@ final class MetalComputePipeline implements AutoCloseable {
         );
     }
 
+    /**
+     * Compiles the compute source with the same bundled glslang the raster path
+     * uses.
+     *
+     * <p>This used to go through LWJGL's shaderc. Two glslang builds in one
+     * process is one too many: on iPadOS the shaderc build aborts the process
+     * (SIGSEGV inside {@code TParseContext::lValueErrorCheck}) while merely
+     * <em>reporting</em> a shader error that the bundled build reports cleanly,
+     * and the launcher additionally monkey-patches shaderc's native bindings.
+     * Routing compute through {@link GlslangBridge} removes both variables and
+     * leaves a single GLSL compiler in the process.</p>
+     */
     private static ByteBuffer compileGlslToSpirv(final String label, final String glslSource) {
         if (enabled("metallum.iris.glslangTrace") || enabled("metallum.perf")) {
             String line = "[glslang] compute label=" + label
                     + " sourceChars=" + glslSource.length()
                     + " thread=" + Thread.currentThread().getName();
             Metallum.LOGGER.warn(line);
-            // The probe file is the only channel that survives a native abort
-            // on the iPad launcher; keep the last compiles there too.
             MetalProbeReport.record(line);
             System.err.println(line);
             System.err.flush();
         }
-        long compiler = Shaderc.shaderc_compiler_initialize();
-        long options = Shaderc.shaderc_compile_options_initialize();
-        if (compiler == 0L || options == 0L) {
-            throw new IllegalStateException("Failed to initialize shaderc for compute compilation");
-        }
+        final int[] words;
         try {
-            Shaderc.shaderc_compile_options_set_target_env(
-                    options, Shaderc.shaderc_target_env_vulkan, Shaderc.shaderc_env_version_vulkan_1_2
+            words = GlslangBridge.compileGlslToSpv(GlslangBridge.Stage.COMPUTE, glslSource, null);
+        } catch (GlslangBridge.ShaderCompileException e) {
+            throw new IllegalStateException(
+                    "Failed to compile compute shader " + label + ": " + e.getMessage(), e
             );
-            long result = Shaderc.shaderc_compile_into_spv(
-                    compiler, glslSource, Shaderc.shaderc_glsl_compute_shader, label, "main", options
-            );
-            try {
-                int status = Shaderc.shaderc_result_get_compilation_status(result);
-                if (status != Shaderc.shaderc_compilation_status_success) {
-                    String message = Shaderc.shaderc_result_get_error_message(result);
-                    throw new IllegalStateException(
-                            "Failed to compile compute shader " + label + ": " + message
-                    );
-                }
-                ByteBuffer bytes = Shaderc.shaderc_result_get_bytes(result);
-                if (bytes == null || bytes.remaining() < 20) {
-                    throw new IllegalStateException("shaderc produced empty SPIR-V for " + label);
-                }
-                // Copy out so the shaderc result can be released eagerly.
-                ByteBuffer copy = ByteBuffer.allocateDirect(bytes.remaining()).order(bytes.order());
-                copy.put(bytes.duplicate());
-                copy.flip();
-                return copy;
-            } finally {
-                Shaderc.shaderc_result_release(result);
-            }
-        } finally {
-            Shaderc.shaderc_compile_options_release(options);
-            Shaderc.shaderc_compiler_release(compiler);
         }
+        ByteBuffer buffer = ByteBuffer.allocateDirect(words.length * Integer.BYTES)
+                .order(ByteOrder.LITTLE_ENDIAN);
+        buffer.asIntBuffer().put(words);
+        buffer.position(0);
+        buffer.limit(words.length * Integer.BYTES);
+        return buffer;
     }
 
     private static MslKernel spirvToMslKernel(final String label, final ByteBuffer spirvBytes) {

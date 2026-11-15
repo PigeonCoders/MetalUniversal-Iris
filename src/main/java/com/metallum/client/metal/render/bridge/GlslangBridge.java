@@ -74,6 +74,7 @@ public final class GlslangBridge {
     private static final int GLSLANG_STAGE_TESSEVALUATION = 2;
     private static final int GLSLANG_STAGE_GEOMETRY = 3;
     private static final int GLSLANG_STAGE_FRAGMENT = 4;
+    private static final int GLSLANG_STAGE_COMPUTE = 5;
 
     // glslang_source_t
     private static final int GLSLANG_SOURCE_GLSL = 1;
@@ -311,7 +312,8 @@ public final class GlslangBridge {
         TESS_CONTROL(GLSLANG_STAGE_TESSCONTROL),
         TESS_EVALUATION(GLSLANG_STAGE_TESSEVALUATION),
         GEOMETRY(GLSLANG_STAGE_GEOMETRY),
-        FRAGMENT(GLSLANG_STAGE_FRAGMENT);
+        FRAGMENT(GLSLANG_STAGE_FRAGMENT),
+        COMPUTE(GLSLANG_STAGE_COMPUTE);
 
         final int glslangStage;
 
