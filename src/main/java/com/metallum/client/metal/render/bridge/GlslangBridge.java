@@ -1,5 +1,9 @@
 package com.metallum.client.metal.render.bridge;
 
+import com.metallum.client.metal.render.MetalProbeReport;
+
+import com.metallum.Metallum;
+
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 
@@ -396,11 +400,18 @@ public final class GlslangBridge {
         final String fullSource = GlslangSourcePrep.buildFullSource(source, defines);
 
         if (traceCompiles()) {
-            // Written before the native call: glslang can abort the process, and
-            // the last line then names the shader that took it down.
-            System.err.println("[glslang] raster stage=" + stage
+            // Logged before the native call: glslang can abort the process, and
+            // the last line then names the shader that took it down. Both sinks
+            // are used because the iOS launcher captures the logger into
+            // latest.log but not necessarily System.err.
+            String line = "[glslang] raster stage=" + stage
                     + " sourceChars=" + fullSource.length()
-                    + " thread=" + Thread.currentThread().getName());
+                    + " thread=" + Thread.currentThread().getName();
+            Metallum.LOGGER.warn(line);
+            // The probe file is the only channel that survives a native abort
+            // on the iPad launcher; keep the last compiles there too.
+            MetalProbeReport.record(line);
+            System.err.println(line);
             System.err.flush();
         }
 

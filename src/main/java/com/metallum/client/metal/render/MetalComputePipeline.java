@@ -1,5 +1,9 @@
 package com.metallum.client.metal.render;
 
+import com.metallum.client.metal.render.MetalProbeReport;
+
+import com.metallum.Metallum;
+
 import com.metallum.client.metal.render.bridge.MetalNativeBridge;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
@@ -124,9 +128,14 @@ final class MetalComputePipeline implements AutoCloseable {
 
     private static ByteBuffer compileGlslToSpirv(final String label, final String glslSource) {
         if (enabled("metallum.iris.glslangTrace") || enabled("metallum.perf")) {
-            System.err.println("[glslang] compute label=" + label
+            String line = "[glslang] compute label=" + label
                     + " sourceChars=" + glslSource.length()
-                    + " thread=" + Thread.currentThread().getName());
+                    + " thread=" + Thread.currentThread().getName();
+            Metallum.LOGGER.warn(line);
+            // The probe file is the only channel that survives a native abort
+            // on the iPad launcher; keep the last compiles there too.
+            MetalProbeReport.record(line);
+            System.err.println(line);
             System.err.flush();
         }
         long compiler = Shaderc.shaderc_compiler_initialize();
