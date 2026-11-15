@@ -123,6 +123,12 @@ final class MetalComputePipeline implements AutoCloseable {
     }
 
     private static ByteBuffer compileGlslToSpirv(final String label, final String glslSource) {
+        if (enabled("metallum.iris.glslangTrace") || enabled("metallum.perf")) {
+            System.err.println("[glslang] compute label=" + label
+                    + " sourceChars=" + glslSource.length()
+                    + " thread=" + Thread.currentThread().getName());
+            System.err.flush();
+        }
         long compiler = Shaderc.shaderc_compiler_initialize();
         long options = Shaderc.shaderc_compile_options_initialize();
         if (compiler == 0L || options == 0L) {
@@ -297,5 +303,13 @@ final class MetalComputePipeline implements AutoCloseable {
             int localSizeY,
             int localSizeZ
     ) {
+    }
+
+    private static boolean enabled(final String property) {
+        String value = System.getProperty(property);
+        if (value == null) {
+            return false;
+        }
+        return !"off".equalsIgnoreCase(value.trim()) && !"false".equalsIgnoreCase(value.trim());
     }
 }

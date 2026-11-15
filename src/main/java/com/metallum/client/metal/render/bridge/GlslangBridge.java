@@ -395,6 +395,15 @@ public final class GlslangBridge {
         // compatibility preamble before the source would otherwise violate that.
         final String fullSource = GlslangSourcePrep.buildFullSource(source, defines);
 
+        if (traceCompiles()) {
+            // Written before the native call: glslang can abort the process, and
+            // the last line then names the shader that took it down.
+            System.err.println("[glslang] raster stage=" + stage
+                    + " sourceChars=" + fullSource.length()
+                    + " thread=" + Thread.currentThread().getName());
+            System.err.flush();
+        }
+
         synchronized (COMPILE_LOCK) {
             INCLUDE_RESOLVER.set(includeResolver);
             if (includeResolver != null) {
@@ -716,5 +725,23 @@ public final class GlslangBridge {
 
     private static MethodHandle downcall(SymbolLookup lookup, String symbol, FunctionDescriptor descriptor) {
         return LINKER.downcallHandle(lookup.findOrThrow(symbol), descriptor, Linker.Option.critical(false));
+    }
+
+    /**
+     * Compile tracing, on when either {@code -Dmetallum.iris.glslangTrace} is
+     * present or any probe switch is active ({@code -Dmetallum.perf}). Written
+     * to stderr rather than the logger because glslang aborts the whole process
+     * on some inputs, and stderr is flushed synchronously by the launcher.
+     */
+    private static boolean traceCompiles() {
+        return enabled("metallum.iris.glslangTrace") || enabled("metallum.perf");
+    }
+
+    private static boolean enabled(final String property) {
+        String value = System.getProperty(property);
+        if (value == null) {
+            return false;
+        }
+        return !"off".equalsIgnoreCase(value.trim()) && !"false".equalsIgnoreCase(value.trim());
     }
 }
