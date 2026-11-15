@@ -1,6 +1,8 @@
 package com.metallum.client.metal.render;
 
 import com.metallum.Metallum;
+import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.systems.GpuDevice;
 import org.jspecify.annotations.Nullable;
 
 import java.util.ArrayList;
@@ -529,6 +531,46 @@ public final class MetalDebugSwitches {
                     GLSLANG_BUILTIN_RENAME, PERF, RENDER_SCALE, SHADOW_RESOLUTION,
                     SHADOW_SEED_MODE, DEPTH_CAPTURE_MODE, DEPTH_ALIAS_MODE, ATTACHMENT_VIEWS_MODE, BLIT_BATCH ? "on" : "off",
                     DEAD_STORES ? "on" : "off", LOAD_ELISION ? "on" : "off");
+        }
+        warnIfBackendIsNotMetal();
+    }
+
+    /**
+     * Reports the backend the game actually created, and screams when it is not
+     * Metal.
+     *
+     * <p>Minecraft treats an unexpected shutdown as "the selected backend is
+     * unstable": on the next launch it rewrites {@code preferredGraphicsBackend}
+     * to {@code OPENGL} (when it was {@code DEFAULT}) and saves options.txt.
+     * The game then boots the MobileGlues GL path, where Iris compiles real GL
+     * shaders and can take the driver down inside MobileGlues' glslang — a
+     * SIGSEGV that looks like a Metal renderer bug but has nothing to do with
+     * this backend. The startup warning in the mixin config plugin reads
+     * options.txt before Minecraft applies that rewrite, so it cannot catch
+     * this case; the live device can.</p>
+     *
+     * <p>Diagnostic only: the backend selection itself is never touched.</p>
+     */
+    private static void warnIfBackendIsNotMetal() {
+        try {
+            GpuDevice device = RenderSystem.getDevice();
+            if (device == null || device.getDeviceInfo() == null) {
+                return;
+            }
+            String backend = device.getDeviceInfo().backendName();
+            if ("Metal".equals(backend)) {
+                return;
+            }
+            Metallum.LOGGER.error(
+                    "[metallum-iris] GPU backend is '{}', NOT Metal: Iris shaderpacks only run on the Metal backend. "
+                            + "This usually means the previous launch ended unexpectedly, so Minecraft forced "
+                            + "preferredGraphicsBackend to \"opengl\" in options.txt. Set it back to "
+                            + "preferredGraphicsBackend:\"default\" and relaunch, otherwise the game runs the "
+                            + "MobileGlues GL path where shader compilation happens in the driver, not here.",
+                    backend
+            );
+        } catch (Throwable ignored) {
+            // Device not initialised yet (or an exotic backend): nothing to say.
         }
     }
 }
