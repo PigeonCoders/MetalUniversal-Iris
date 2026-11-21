@@ -25,11 +25,11 @@ import net.fabricmc.api.Environment;
 import net.minecraft.client.renderer.ShaderDefines;
 import net.minecraft.resources.Identifier;
 import org.jspecify.annotations.NonNull;
+import org.lwjgl.system.MemoryUtil;
 import org.jspecify.annotations.Nullable;
 
 import java.lang.foreign.MemorySegment;
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.util.*;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
@@ -556,12 +556,19 @@ final class MetalDevice implements GpuDeviceBackend {
         } catch (GlslangBridge.ShaderCompileException e) {
             throw new ShaderCompileException(name + ": " + e.getMessage());
         }
-        ByteBuffer spirv = ByteBuffer.allocateDirect(words.length * Integer.BYTES)
-                .order(ByteOrder.LITTLE_ENDIAN);
-        spirv.asIntBuffer().put(words);
-        spirv.position(0);
-        spirv.limit(words.length * Integer.BYTES);
-        return IntermediaryShaderModule.createFromSpirv(name, spirv);
+        // Must be a native allocation: IntermediaryShaderModule.close() calls
+        // MemoryUtil.memFree on it. Handing it a JVM-direct buffer frees a
+        // pointer malloc never handed out and corrupts the C heap -- which
+        // surfaced as a HotSpot "invalid dependency type" internal error when
+        // the pipeline was destroyed on dimension change.
+        ByteBuffer spirv = MemoryUtil.memCalloc(words.length * Integer.BYTES);
+        try {
+            spirv.asIntBuffer().put(words);
+            return IntermediaryShaderModule.createFromSpirv(name, spirv);
+        } catch (ShaderCompileException | RuntimeException e) {
+            MemoryUtil.memFree(spirv);
+            throw e;
+        }
     }
 
     static GlslangBridge.Stage stageFor(final ShaderType type) {
