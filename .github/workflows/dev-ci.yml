@@ -36,6 +36,17 @@ jobs:
           distribution: 'microsoft'
       - name: make gradle wrapper executable
         run: chmod +x ./gradlew
+      - name: select latest Xcode
+        run: |
+          echo "xcode-select current path: $(xcode-select -p)"
+          LATEST_XCODE=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "${LATEST_XCODE}" ]; then
+            echo "Selecting latest Xcode: ${LATEST_XCODE}"
+            sudo xcode-select -s "${LATEST_XCODE}"
+          fi
+          echo "xcode-select new path: $(xcode-select -p)"
+          echo "swiftc version: $(xcrun -f swiftc)"
+          echo "SDK path: $(xcrun --show-sdk-path)"
       - name: verify cmake
         run: |
           if ! command -v cmake >/dev/null 2>&1; then
