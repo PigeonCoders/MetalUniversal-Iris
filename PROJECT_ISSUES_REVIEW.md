@@ -169,7 +169,7 @@ SHA-256 e80d30e83f2c7f17647c55b56655bcd8edcce9a9c0cb4de153a1572b23d14b74
 
 ### ISSUE-009（中低）根目录历史任务书 —— ✅ 成立
 
-`spec.md`、`tasks.md`、`checklist.md` 均为 8 月 MetalFX 三缺陷的任务书，行号与分支名已失效。其中三个缺陷在当前 HEAD 确已修复（`MetalSurface.java:194` 的 3x 钳制、`MetalFxPipeline` 的 `isNullHandle` 检查、Swift 零尺寸 guard）。
+`spec.md`、`tasks.md` 均为 8 月 MetalFX 三缺陷的任务书，行号与分支名已失效；`checklist.md` 已重命名为 `PERFORMANCE.md`（改作性能优化记录，见该文件）。其中三个缺陷在当前 HEAD 确已修复（`MetalSurface.java:194` 的 3x 钳制、`MetalFxPipeline` 的 `isNullHandle` 检查、Swift 零尺寸 guard）。
 
 **待整理**：移入 `docs/history/` 或改名为带日期的归档文件，并在文件头标注 `COMPLETED`。
 
@@ -247,7 +247,7 @@ build.yml publish                                : project: w79ASAJD（上游 Mo
 | ISSUE-004 | 删除 `MetalEntityMotion*` 四类死代码 / 保留并标注 `NOT WIRED`（倾向后者） |
 | ISSUE-007 | Linux 测试门控（配 `-Dmetallum.tests.requireNative=true`）/ 维持现状 |
 | ISSUE-008 | CI 增加 fixture 校验步骤 / 维持静默 skip |
-| ISSUE-009 | 归档 `spec.md`/`tasks.md`/`checklist.md` 到 `docs/history/` |
+| ISSUE-009 | 归档 `spec.md`/`tasks.md` 到 `docs/history/`（`checklist.md` 已改为 `PERFORMANCE.md`） |
 | ISSUE-012 | 打 `1.1.10` tag（需先定 publish 目标）/ 改用 GitHub Release only / 接 Modrinth 项目 id + token |
 
 ---
