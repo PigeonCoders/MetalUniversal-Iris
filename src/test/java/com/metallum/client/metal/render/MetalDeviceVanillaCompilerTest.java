@@ -27,13 +27,13 @@ class MetalDeviceVanillaCompilerTest {
     }
 
     @Test
-    void vanillaGlslangDefaultsOnAndAcceptsOnlyExplicitOff() {
-        assertTrue(MetalDevice.vanillaGlslang(null), "absent property keeps the bundled compiler");
-        assertTrue(MetalDevice.vanillaGlslang(""));
-        assertTrue(MetalDevice.vanillaGlslang("on"));
-        assertTrue(MetalDevice.vanillaGlslang(" ON "));
-        assertFalse(MetalDevice.vanillaGlslang("off"), "explicit opt-out restores shaderc");
+    void vanillaGlslangDefaultsOffAndAcceptsExplicitOn() {
+        assertFalse(MetalDevice.vanillaGlslang(null), "absent property keeps MC's compiler");
+        assertFalse(MetalDevice.vanillaGlslang(""));
+        assertFalse(MetalDevice.vanillaGlslang("off"));
         assertFalse(MetalDevice.vanillaGlslang("false"));
         assertFalse(MetalDevice.vanillaGlslang("OFF"));
+        assertTrue(MetalDevice.vanillaGlslang("on"), "explicit opt-in uses the bundled compiler");
+        assertTrue(MetalDevice.vanillaGlslang(" ON "));
     }
 }

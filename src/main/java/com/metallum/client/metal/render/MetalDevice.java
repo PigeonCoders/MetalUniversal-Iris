@@ -51,11 +51,13 @@ final class MetalDevice implements GpuDeviceBackend {
     /**
      * Compile vanilla/core shaders with the bundled glslang instead of MC's
      * {@code GlslCompiler} (which is the only remaining LWJGL shaderc caller
-     * in this process). {@code -Dmetallum.iris.vanillaGlslang=off} restores
-     * the shaderc path for A/B.
+     * in this process). Opt in with
+     * {@code -Dmetallum.iris.vanillaGlslang=on}; it stays off by default
+     * because the bundled glslang does not yet emit the varying locations
+     * MC's {@code IntermediaryShaderModule} reflection requires.
      */
     private static final boolean VANILLA_GLSLANG = vanillaGlslang(
-            System.getProperty("metallum.iris.vanillaGlslang", "on")
+            System.getProperty("metallum.iris.vanillaGlslang", "off")
     );
     private final MemorySegment metalDeviceHandle;
     private final MemorySegment metalLayer;
@@ -68,6 +70,8 @@ final class MetalDevice implements GpuDeviceBackend {
     public final MTLCommandQueue commandQueue;
     private final Map<RenderPipeline, MetalCompiledRenderPipeline> compiledPipelines = new IdentityHashMap<>();
     private final Map<ShaderCompilationKey, IntermediaryShaderModule> shaderCache = new HashMap<>();
+    private static final java.util.concurrent.atomic.AtomicBoolean WARNED_GLSLANG_FALLBACK =
+            new java.util.concurrent.atomic.AtomicBoolean();
     private final Map<MslFunctionKey, MemorySegment> functionCache = new HashMap<>();
     private static final int MAX_POOLED_BUFFER_BUCKETS = 32;
     private static final int MAX_POOLED_BUFFERS_PER_SIZE = 8;
@@ -513,10 +517,39 @@ final class MetalDevice implements GpuDeviceBackend {
             final ShaderType type
     ) throws ShaderCompileException {
         if (!VANILLA_GLSLANG) {
-            try (GlslCompiler glslCompiler = new GlslCompiler()) {
-                return glslCompiler.createIntermediary(name, sourceWithDefines, type);
-            }
+            return compileWithShaderc(name, sourceWithDefines, type);
         }
+        try {
+            return compileWithGlslang(name, sourceWithDefines, type);
+        } catch (ShaderCompileException e) {
+            // The bundled glslang does not yet reproduce every decoration MC's
+            // reflection insists on (varying locations in particular). Falling
+            // back keeps the launcher working instead of failing to start; the
+            // shaderc path is then only used for the shaders this missed.
+            if (!WARNED_GLSLANG_FALLBACK.compareAndSet(false, true)) {
+                Metallum.LOGGER.warn("[metallum-iris] bundled glslang could not reproduce "
+                        + "{} ({}); falling back to MC's compiler for the rest of this session",
+                        name, e.getMessage());
+            }
+            return compileWithShaderc(name, sourceWithDefines, type);
+        }
+    }
+
+    private static IntermediaryShaderModule compileWithShaderc(
+            final String name,
+            final String sourceWithDefines,
+            final ShaderType type
+    ) throws ShaderCompileException {
+        try (GlslCompiler glslCompiler = new GlslCompiler()) {
+            return glslCompiler.createIntermediary(name, sourceWithDefines, type);
+        }
+    }
+
+    private static IntermediaryShaderModule compileWithGlslang(
+            final String name,
+            final String sourceWithDefines,
+            final ShaderType type
+    ) throws ShaderCompileException {
         String withGlobalDefines = GlslPreprocessor.injectDefines(sourceWithDefines, GLOBAL_SHADER_DEFINES);
         GlslangBridge.Stage stage = stageFor(type);
         final int[] words;
@@ -545,7 +578,7 @@ final class MetalDevice implements GpuDeviceBackend {
 
     static boolean vanillaGlslang(final @Nullable String raw) {
         String value = raw == null ? "" : raw.trim();
-        return !"off".equalsIgnoreCase(value) && !"false".equalsIgnoreCase(value);
+        return "on".equalsIgnoreCase(value) || "true".equalsIgnoreCase(value);
     }
 
     private static String prepareShaderSource(final String source, final ShaderDefines defines) {
