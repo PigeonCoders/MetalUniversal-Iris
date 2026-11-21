@@ -52,12 +52,10 @@ final class MetalDevice implements GpuDeviceBackend {
      * Compile vanilla/core shaders with the bundled glslang instead of MC's
      * {@code GlslCompiler} (which is the only remaining LWJGL shaderc caller
      * in this process). Opt in with
-     * {@code -Dmetallum.iris.vanillaGlslang=on}; it stays off by default
-     * because the bundled glslang does not yet emit the varying locations
-     * MC's {@code IntermediaryShaderModule} reflection requires.
+     * {@code -Dmetallum.iris.vanillaGlslang=off} for A/B.
      */
     private static final boolean VANILLA_GLSLANG = vanillaGlslang(
-            System.getProperty("metallum.iris.vanillaGlslang", "off")
+            System.getProperty("metallum.iris.vanillaGlslang", "on")
     );
     private final MemorySegment metalDeviceHandle;
     private final MemorySegment metalLayer;
@@ -578,7 +576,7 @@ final class MetalDevice implements GpuDeviceBackend {
 
     static boolean vanillaGlslang(final @Nullable String raw) {
         String value = raw == null ? "" : raw.trim();
-        return "on".equalsIgnoreCase(value) || "true".equalsIgnoreCase(value);
+        return !"off".equalsIgnoreCase(value) && !"false".equalsIgnoreCase(value);
     }
 
     private static String prepareShaderSource(final String source, final ShaderDefines defines) {

@@ -202,6 +202,10 @@ public final class GlslangBridge {
     private static final MethodHandle glslangProgramDelete;
     private static final MethodHandle glslangProgramAddShader;
     private static final MethodHandle glslangProgramLink;
+    private static final MethodHandle glslangProgramMapIo;
+    /** Compiles whose IO mapping step bailed; surfaced through {@link #mapIoFailureCount()}. */
+    private static final java.util.concurrent.atomic.AtomicInteger mapIoFailures =
+            new java.util.concurrent.atomic.AtomicInteger();
     private static final MethodHandle glslangProgramSpvGenerate;
     private static final MethodHandle glslangProgramSpvGetSize;
     private static final MethodHandle glslangProgramSpvGet;
@@ -274,6 +278,7 @@ public final class GlslangBridge {
             glslangProgramDelete = downcall(lookup, "glslang_program_delete", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
             glslangProgramAddShader = downcall(lookup, "glslang_program_add_shader", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
             glslangProgramLink = downcall(lookup, "glslang_program_link", FunctionDescriptor.of(INT, ValueLayout.ADDRESS, INT));
+            glslangProgramMapIo = downcall(lookup, "glslang_program_map_io", FunctionDescriptor.of(INT, ValueLayout.ADDRESS));
             glslangProgramSpvGenerate = downcall(lookup, "glslang_program_SPIRV_generate", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, INT));
             glslangProgramSpvGetSize = downcall(lookup, "glslang_program_SPIRV_get_size", FunctionDescriptor.of(LONG, ValueLayout.ADDRESS));
             glslangProgramSpvGet = downcall(lookup, "glslang_program_SPIRV_get", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -342,6 +347,11 @@ public final class GlslangBridge {
      *                                SPIR-V generation fails, or if the result
      *                                is not a valid SPIR-V binary.
      */
+    /** Number of compiles where {@code glslang_program_map_io} declined (diagnostics only). */
+    static int mapIoFailureCount() {
+        return mapIoFailures.get();
+    }
+
     public static int[] compileGlslToSpv(Stage stage, String source, String defines) throws ShaderCompileException {
         return compileGlslToSpv(stage, source, defines, null);
     }
@@ -475,6 +485,20 @@ public final class GlslangBridge {
                     int linked = (int) glslangProgramLink.invokeExact(program, LINK_MESSAGES);
                     if (linked == 0) {
                         throw new ShaderCompileException("glslang linking failed", readProgramLog(program));
+                    }
+
+                    // IO mapper: writes layoutLocation on varyings and resolves
+                    // auto-mapped bindings into the intermediate. link() alone
+                    // never runs it -- shaderc does (`program.link(...) &&
+                    // program.mapIO()`), and without it AUTO_MAP_LOCATIONS only
+                    // silences the front-end check while emitting no
+                    // OpDecorate Location at all.
+                    int mapped = (int) glslangProgramMapIo.invokeExact(program);
+                    if (mapped == 0) {
+                        // Non-fatal: the mapper leaves the intermediate untouched
+                        // when it bails, so generation still produces exactly what
+                        // link() left behind -- the previous behaviour.
+                        mapIoFailures.incrementAndGet();
                     }
 
                     glslangProgramSpvGenerate.invokeExact(program, glslangStage);
