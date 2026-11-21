@@ -1,6 +1,7 @@
 package com.metallum.client.metal.render;
 
 import com.metallum.Metallum;
+import com.metallum.client.metal.render.bridge.GlslangBridge;
 import com.metallum.client.metal.render.bridge.MetalNativeBridge;
 import com.metallum.client.metal.render.mtl.MTLCommandQueue;
 import com.metallum.client.metal.fx.MetalFxConfig;
@@ -28,6 +29,7 @@ import org.jspecify.annotations.Nullable;
 
 import java.lang.foreign.MemorySegment;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.*;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
@@ -36,6 +38,25 @@ import java.util.regex.Pattern;
 final class MetalDevice implements GpuDeviceBackend {
     private static final Pattern BLOCK_COMMENTS = Pattern.compile("(?s)/\\*.*?\\*/");
     private static final Pattern LINE_COMMENTS = Pattern.compile("(?m)//[^\\n]*");
+    /**
+     * Vulkan aliases MC's {@code GlslCompiler} injects before compiling. Kept
+     * identical here so switching the compiler does not change what the
+     * sources see.
+     */
+    private static final ShaderDefines GLOBAL_SHADER_DEFINES = ShaderDefines.builder()
+            .define("gl_VertexID", "gl_VertexIndex")
+            .define("gl_InstanceID", "gl_InstanceIndex")
+            .build();
+
+    /**
+     * Compile vanilla/core shaders with the bundled glslang instead of MC's
+     * {@code GlslCompiler} (which is the only remaining LWJGL shaderc caller
+     * in this process). {@code -Dmetallum.iris.vanillaGlslang=off} restores
+     * the shaderc path for A/B.
+     */
+    private static final boolean VANILLA_GLSLANG = vanillaGlslang(
+            System.getProperty("metallum.iris.vanillaGlslang", "on")
+    );
     private final MemorySegment metalDeviceHandle;
     private final MemorySegment metalLayer;
     private final MemorySegment cocoaView;
@@ -470,12 +491,61 @@ final class MetalDevice implements GpuDeviceBackend {
                 return IntermediaryShaderModule.INVALID;
             }
             String sourceWithDefines = prepareShaderSource(source, k.defines());
-            try (GlslCompiler glslCompiler = new GlslCompiler()) {
-                return glslCompiler.createIntermediary(k.id().toDebugFileName(), sourceWithDefines, k.type());
+            try {
+                return compileIntermediary(k.id().toDebugFileName(), sourceWithDefines, k.type());
             } catch (ShaderCompileException e) {
                 throw new IllegalStateException("Failed to compile shader " + k.id(), e);
             }
         });
+    }
+
+    /**
+     * GLSL -> SPIR-V -> {@link IntermediaryShaderModule}, the same two steps
+     * {@code GlslCompiler.createIntermediary} performs, but with the bundled
+     * glslang. Keeps exactly one GLSL compiler in the process: this was the
+     * last path that pulled in LWJGL's shaderc, whose iOS build aborts inside
+     * {@code glslang::TParseContext::lValueErrorCheck} while reporting a
+     * normal shader error.
+     */
+    private static IntermediaryShaderModule compileIntermediary(
+            final String name,
+            final String sourceWithDefines,
+            final ShaderType type
+    ) throws ShaderCompileException {
+        if (!VANILLA_GLSLANG) {
+            try (GlslCompiler glslCompiler = new GlslCompiler()) {
+                return glslCompiler.createIntermediary(name, sourceWithDefines, type);
+            }
+        }
+        String withGlobalDefines = GlslPreprocessor.injectDefines(sourceWithDefines, GLOBAL_SHADER_DEFINES);
+        GlslangBridge.Stage stage = stageFor(type);
+        final int[] words;
+        try {
+            words = GlslangBridge.compileGlslToSpv(stage, withGlobalDefines, null);
+        } catch (GlslangBridge.ShaderCompileException e) {
+            throw new ShaderCompileException(name + ": " + e.getMessage());
+        }
+        ByteBuffer spirv = ByteBuffer.allocateDirect(words.length * Integer.BYTES)
+                .order(ByteOrder.LITTLE_ENDIAN);
+        spirv.asIntBuffer().put(words);
+        spirv.position(0);
+        spirv.limit(words.length * Integer.BYTES);
+        return IntermediaryShaderModule.createFromSpirv(name, spirv);
+    }
+
+    static GlslangBridge.Stage stageFor(final ShaderType type) {
+        if (type == ShaderType.VERTEX) {
+            return GlslangBridge.Stage.VERTEX;
+        }
+        if (type == ShaderType.FRAGMENT) {
+            return GlslangBridge.Stage.FRAGMENT;
+        }
+        throw new IllegalArgumentException("Unsupported shader type " + type);
+    }
+
+    static boolean vanillaGlslang(final @Nullable String raw) {
+        String value = raw == null ? "" : raw.trim();
+        return !"off".equalsIgnoreCase(value) && !"false".equalsIgnoreCase(value);
     }
 
     private static String prepareShaderSource(final String source, final ShaderDefines defines) {
