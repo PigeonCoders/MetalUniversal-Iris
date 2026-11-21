@@ -65,15 +65,39 @@ perf encoders real=… clear=… blit=… reuse=… noOpen=… kind=… colorCou
 perf depth alias=on|off reason=…
 ```
 
-### 2.2 ⚠️ 数据可信度（重要）
+### 2.2 口径与单位（读数据前必看）
+
+探针的 `perf bandwidth` / `perf copies` / `perf encoders` 行都是**窗口累计值**，
+不是单帧值：行首的 `w=120` 是这次窗口的帧数，后面的数字是这 120 帧的总和。
+
+换算：
+
+```
+单帧 = 原始数字 / w
+```
+
+本文所有标注「/帧」的数字都是**已经除以 w 之后**的值；引用原始行时必须保留 `w=`。
+
+另外三点：
+
+- 代码里 `toMib()` 输出的是 **MiB**（1024²），本文表头写「MB」是沿用探针字面量，两者差约 4.8%；
+- `perf encoders` 的 `reuse/noOpen/kind/colorCount/slotHandle/depth/clear/other` 是**按 draw 调用**计数
+  （`MetalRenderPass` 每个 draw 都会取一次 encoder），不是按 pass；
+  pass 数看 `perf frame` 的 `passCreate`，encoder 数看 `perf encoders real=`；
+- `perf bandwidth pass=…` 也是窗口累计，**不是单帧**。
+
+### 2.3 ⚠️ 数据可信度（重要）
 
 **`gpuAvg` 在同一次运行内会自漂 30–88%**：同一份 40 秒 probe 里出现过
 `33.7 → 49.8 → 63.2 → 59.5 ms`，而同一时间段的字节计数误差只有 **0.05%**。
 
 因此本项目的铁律：
 
-> **对比只看字节计数与结构性计数（MB、次数、pass 归属），不看毫秒。**
-> 毫秒只用来估量级，不用来判胜负。
+> **字节/结构计数用于「归因」（哪个 pass、哪次拷贝、哪次 encoder 切换）；
+> 毫秒用于「判定」（是否真的变快），但必须同 session 配对 A/B、丢预热帧、看 p50/p95，
+> 不能跨轮比较均值。**
+> 另外：字节计数是**模型值**，稳定到 0.05% 只说明场景稳定，不代表 GPU 时间稳定，
+> 更不代表真实 DRAM 流量（tile memory / 写回压缩都可能差一个量级）。
 
 Gradle 侧的验证基线：`185 tests / 4 failed / 4 skipped`，
 4 个失败固定是 Linux 缺 macOS native（`Missing native resource: /natives/macos/libmetallum.dylib`）。
@@ -102,32 +126,53 @@ Gradle 侧的验证基线：`185 tests / 4 failed / 4 skipped`，
 
 `gpuAvg` 随 `renderScale²` 等比缩放 ⇒ **像素（片元）成本绝对主导**，不是顶点或 CPU。
 
-### 3.3 BSL 的逐 pass 字节归因（encoder 口径，423 MB/帧 级别）
+### 3.3 BSL 的逐 pass 字节归因（单帧，由窗口总量 ÷ w 换算）
+
+窗口内 Top-8 pass 合计 ≈ **991 MiB/帧**（encoder 口径，已除以 `w`）。占比按这个合计重算：
 
 | pass | 流量/帧 | 占比 |
 |---|---|---|
-| Terrain（2 颜色 + 深度，多次 encoder） | 368 MB | 40% |
-| item_cutout（只画一只手却整屏读写） | 131 MB | 14% |
-| entity_cutout | 123 MB | 13% |
-| composite7 / composite5 | 89 MB 各 | 各 10% |
-| entity_translucent / solid / glint | 63–64 MB 各 | 各 7% |
-| 显式拷贝合计 | 134 MB | — |
+| Terrain（2 颜色 + 深度，多次 encoder） | 368 MiB | 37% |
+| item_cutout（只画一只手却整屏读写） | 131 MiB | 13% |
+| entity_cutout | 123 MiB | 12% |
+| composite7 | 89 MiB | 9% |
+| composite5 | 89 MiB | 9% |
+| entity_translucent | 64 MiB | 6.5% |
+| entity_solid | 64 MiB | 6.5% |
+| entity_glint | 63 MiB | 6.4% |
+| （以上合计） | **≈ 991 MiB** | **100%** |
+| 显式拷贝（不计入上表） | 134 MiB | — |
+
+> **口径提示**：这 8 个 pass 是 `perf bandwidth pass=` 按权重排序的前 8 名，
+> 已覆盖窗口内绝大部分流量但不保证等于全量；`perf bandwidth encoder` 的**总量**
+> 来自另一个窗口（923 MiB/帧），两者不要互相除。
+>
+> **自洽性校验**：2360×1640 的一张 RGBA16F 是 29.5 MiB，一个「4 色 + 深度」pass
+> 做一次 load+store ≈ 139 MiB。`item_cutout` 实测 131 MiB/帧，与此吻合 ——
+> 这也反过来说明表里的数字确实是**单帧**值，而不是把窗口总量直接抄了下来
+> （若是窗口总量，131/120 ≈ 1.1 MiB，连一张附件都装不下）。
 
 CR 的同类数据（声明口径）：
 
 ```
-load = 1.25 GB/帧   store = 1.45 GB/帧   （这是静态模型，真实更低，见 §2.2）
+load = 1.25 GB/帧   store = 1.45 GB/帧   （这是静态模型，真实更低，见 §2.2/§2.3）
 copies = 191 MB/帧:
   history.final 44MB  history.canon 22MB  depth.depthtex0 44MB
   depth.depthtex1 11MB depth.depthtex2 11MB shadow.depth 24MB
 encoders ≈ 31 次/帧
 ```
 
-### 3.4 encoder 复用归因（BSL 稳态）
+### 3.4 encoder 复用归因（BSL 稳态，**按 draw 调用**计数）
 
 ```
-reuse ≈ 73.6/帧   noOpen 7.1   kind 7.0   colorCount 12.0   slotHandle 4.9   depth 0   clear 0
+reuse ≈ 73.6/帧   noOpen 7.1   kind 7.0   colorCount 12.0   slotHandle 4.9
+depth 0   clear 0   other 0
 ```
+
+> 分母是 draw 调用，不是 pass。`reuse=73.6/帧` 表示每帧约 74 次 draw 直接沿用了已开的 encoder；
+> pass 与 encoder 的关系看 `passCreate≈41/帧` 与 `real≈27–31/帧`。
+> `other` 是「附件动作掩码与当前 encoder 不一致」的桶（P1 load/store 消除引入的新来源），
+> 实测为 0，说明当前没有自伤。
 
 - `colorCount 12.0/帧` = **附件张数不同**（CR 的 `gbuffers_entities` 写 4 张、粒子 3 张、天空 1 张）
   → Metal 要求同一 render pass 内附件集合一致，**不改包就消不掉**，这是结构性天花板；
@@ -176,7 +221,7 @@ reuse ≈ 73.6/帧   noOpen 7.1   kind 7.0   colorCount 12.0   slotHandle 4.9   
 | 阴影深度双清 | 两份 shadow depth 直接 clear，不再"清一份再拷一份" | `shadow.depth` 拷贝 3840→1920 MB/120 帧 |
 | 深度按需捕获 | 只在真正被采样时拷贝 | BSL 上无变化（它确实声明了 depthtex0） |
 | blit 批处理 | 连续拷贝共用一个 blit encoder | 拷贝总量 191→175 MB/帧 |
-| 探针双口径 | declared 与 encoder 两套 | 见 §2.2 的认知修正 |
+| 探针双口径 | declared 与 encoder 两套 | 见 §2.3 的认知修正 |
 
 **结果**：改动全部生效，**但 `gpuAvg` 仍是 33.7 ms**。
 **结论**：这些字节在 GPU 时间上不到测量噪声。
@@ -200,7 +245,7 @@ reuse ≈ 73.6/帧   noOpen 7.1   kind 7.0   colorCount 12.0   slotHandle 4.9   
 **结果**：
 
 - 死存储 **恒为 0** —— 后处理链是一条链，前一个 pass 的 store 永远是后一个的 load，**结构上无存储可省**
-- 加载消除只命中 `final` 一处：**29.5 MB/帧 ≈ 0.4 ms ≈ encoder 总流量的 3.2%**
+- 加载消除只命中 `final` 一处：**29.5 MiB/帧 ≈ encoder 总量（923 MiB/帧）的 3.2%**
 
 **结论**：这两项在一个"每个 pass 都吃上一个 pass 输出"的管线里天花板极低。
 这是本项目第二个重要认知：**光影包的后处理链不是树，是一条链**。
@@ -231,8 +276,8 @@ reuse ≈ 73.6/帧   noOpen 7.1   kind 7.0   colorCount 12.0   slotHandle 4.9   
 | 方向 | 为什么排除 |
 |---|---|
 | **合并 render pass** | 已经合并过了：附件集合相同 + 无 clear 就复用 encoder。`colorCount` 那 12 次/帧是"不同 pass 写不同张附件"，不改包消不掉 |
-| **fast math / `MTLMathMode.fast`** | Apple silicon 默认就是 `relaxed`（= fast 数学）；`.fast` 只多"不假设 Inf/NaN"，收益 0–5% 且可能让 tone mapping 出花屏 |
-| **FP16 半精度** | M1/M2 上 FP16 FMA 吞吐与 FP32 **完全相同**（256/core-cycle），不是 2× |
+| **fast math / `MTLMathMode.fast`** | 我们的 `makeLibrary(source:options:)` 传的是 `nil`，**没有显式设过 math mode**；社区数据说 Apple silicon 默认接近 `relaxed`，`.fast` 只多"不假设 Inf/NaN"（0–5%，可能让 tone mapping 出花屏）。**未在 M3 上自测，属于「低优先但可 A/B」，不算定论** |
+| **FP16 半精度** | 公开微基准显示 M1/M2 的 FP16 FMA 吞吐与 FP32 相同（256/core-cycle），**不等于** M3 也如此；且这是精度/画质折衷。**未自测，保留为待评估** |
 | **function constants 特化** | Iris 本身已经用 `#ifdef` 做编译期变体，没有额外特化空间 |
 | **argument buffers** | 只降低 CPU 提交开销，而我们 CPU 只占 3–4 ms |
 | **`--msl-swizzle-texture-samples`** | Apple 文档明确警告 "massive impact on performance" |
@@ -250,10 +295,15 @@ reuse ≈ 73.6/帧   noOpen 7.1   kind 7.0   colorCount 12.0   slotHandle 4.9   
 
 ### 6.1 高嫌疑
 
-1. **`item_cutout` 画一只手，整屏读写 131 MB/帧**
+1. **`item_cutout` 画一只手，整屏读写 131 MiB/帧**
    —— 手持物品只覆盖屏幕很小一块，但 pass 仍然 load/store 4 张颜色 + 深度。
-   如果能在 scissor/load-store 层面收窄到实际覆盖区域，这是最大的一块"结构性浪费"。
-   （难点：手持可能被 TAA/后处理读到整屏，需要证明收窄安全。）
+
+   ⚠️ **更正**：Metal 的 `loadAction`/`storeAction` 作用在**整张 attachment** 上，
+   `scissor`/render area 只影响片元覆盖，**不会**减少 load/store 字节。所以"收窄 scissor"这条路不成立。
+
+   唯一可行的形态是「手部单独小 target + composite 回主缓冲」：
+   把整屏 load/store 换成小 target 的局部读写，再在最终合成时贴回。
+   代价是多一个 pass，且必须证明手部结果不会被 TAA/后处理整屏读取（顺序安全）。
 
 2. **Terrain 368 MB/帧、被拆成多次 encoder**
    —— 地形在 BSL 里分 solid/cutout/translucent 多段，每段整套附件重读。
@@ -276,6 +326,26 @@ reuse ≈ 73.6/帧   noOpen 7.1   kind 7.0   colorCount 12.0   slotHandle 4.9   
 
 7. **`colorCount` 12 次/帧** —— 结构性，但能否通过"补一张空的附件"把相邻 pass 对齐到同一附件集合，
    从而复用 encoder？代价是多写一张全屏附件，可能得不偿失。
+
+### 6.2b 审计新增、文档原先未列的方向
+
+11. **`untracked` 资源 + 全局 fence 是否在串行化 encoder**
+    —— 我们的纹理/缓冲区都用 `hazardTrackingMode = .untracked`，靠每对 encoder 的 `waitForFence`/`updateFence` 保正确性。
+    保守但可能把本可重叠的 encoder 串起来。做法：加 `tracked` vs `untracked+fence` 的 A/B 开关，默认保留旧路径。
+
+12. **`perf encoders ... other=` 与 `loadElision=off` 的 A/B**
+    —— load/store 掩码不同会导致重开 encoder（`other` 桶）。实测 `other=0`，但应在改动 P1 时持续盯这个桶。
+
+13. **`[[early_fragment_tests]]` 注入**
+    —— 对「不写深度、不用 discard」的 opaque pass，MSL 的 early fragment tests 可能改善 TBDR 的 HSR/带宽。
+    需要在 SPIRV-Cross 产物上按 pass 判定后注入，并做画面验证。
+
+14. **显式 `MTLMathMode` + M3 上的 FP16 微基准**
+    —— 目前 `makeLibrary(options: nil)`；先显式设一次并 A/B，再决定要不要碰精度。
+
+15. **shader 翻译层自身的开销**
+    —— 生成的 MSL 里可能有额外 ALU：uniform 物化、sampler index 重映射、Y 翻转、深度重映射、`float↔half` 转换。
+    需要对产物做指令/寄存器审计，而不是只看包源码。
 
 ### 6.3 低嫌疑
 
