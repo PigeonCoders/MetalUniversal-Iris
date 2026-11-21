@@ -2331,7 +2331,10 @@ public func metallum_MTLDevice_makeRenderPipelineState(
 // interpolation (MTLFXFrameInterpolator) framework. Availability:
 //   * MTLFXSpatialScaler     — macOS 13.0+ (Apple Silicon M1+), iOS 16.0+
 //   * MTLFXTemporalScaler    — macOS 13.0+ (Apple Silicon M1+), iOS 16.0+
-//   * MTLFXFrameInterpolator — macOS 14.0+ (Apple Silicon M3+), iOS 17.0+
+//   * MTLFXFrameInterpolator — API declared in macOS 14.0 / iOS 17.0, but
+//                              Apple gates the hardware path to macOS 26.0 /
+//                              iOS 26.0; the #available check below matches
+//                              the SDK annotation (see the comment there)
 //
 // On platforms/SDKs without MetalFX, all entry points are no-ops returning
 // null/0 so the JVM-side bridge can gracefully fall back to the normal

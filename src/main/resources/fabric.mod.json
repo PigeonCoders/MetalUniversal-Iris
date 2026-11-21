@@ -10,8 +10,9 @@
     "yitenchen123"
   ],
   "contact": {
-    "homepage": "https://github.com/EternityQwQ/metallum",
-    "sources": "https://github.com/EternityQwQ/metallum"
+    "homepage": "https://github.com/PigeonCoders/MetalUniversal-Iris",
+    "sources": "https://github.com/PigeonCoders/MetalUniversal-Iris",
+    "issues": "https://github.com/PigeonCoders/MetalUniversal-Iris/issues"
   },
   "license": "MIT",
   "accessWidener": "metallum.accesswidener",
@@ -35,9 +36,7 @@
     "fabricloader": ">=0.19.2",
     "minecraft": "~26.2-",
     "java": ">=25",
-    "sodium": ">=0.9.1"
-  },
-  "recommends": {
+    "sodium": ">=0.9.1",
     "iris": "*"
   }
 }

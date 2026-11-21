@@ -11,11 +11,11 @@ This project is still in the experimental stage (PoC); performance and stability
 
 | Layer | Implementation |
 |-------|----------------|
-| Entry point | `com.metaluniversal.MetalUniversal` (PreLaunch + ModInitializer) |
+| Entry point | `com.metallum.Metallum` (PreLaunch + ModInitializer) |
 | GPU backend | `MetalBackend` → `MetalDevice` → `MetalCommandEncoder` / `MetalRenderPass` |
 | Shader compiler | `MetalCrossShaderCompiler` (GLSL/SPIR-V → MSL, based on SPIRV-Cross) |
 | Native bridge | `MetalNativeBridge` (Java Foreign Memory API ↔ Swift C exported functions) |
-| Native implementation | `MetalUniversalNative.swift` (Metal API calls, CAMetalLayer management, inline MSL shaders) |
+| Native implementation | `src/main/native/MetallumNative.swift` (Metal API calls, CAMetalLayer management, inline MSL shaders) |
 | Mod injection | Mixin injection into Minecraft `PreferredGraphicsApi` and Sodium rendering backend selection |
 
 ## Compatibility
@@ -31,11 +31,32 @@ This project is still in the experimental stage (PoC); performance and stability
 | Minecraft | 26.2 | **必需** — 目标游戏版本 |
 | Java | >= 25 | **必需** — 运行时环境 |
 | Sodium | mc26.2-0.9.1-fabric | **必需** — 提供完整的视频设置界面适配 |
+| Iris | 1.11.2+mc26.2 | **必需** — 本模组是 Iris 渲染管线的 Metal 实现，渲染路径直接读取 Iris 的管线状态 |
 
 > ### 关于 Sodium
 >
 > 安装 Sodium 后，MetalFX 设置会作为**独立页面**自动集成到 Sodium 的视频设置界面中（与 Iris 的 "Shader Packs" 页面注册方式一致），由 Sodium 官方 `ConfigEntryPoint` API 提供稳定的 UI 集成，自动获得与 Sodium 原生选项一致的渲染、搜索索引和 tab 排序行为。
 >
+
+## Iris 光影包支持
+
+本模组把 Iris 的渲染管线搬到 Metal 上，**Iris 是硬依赖**（`fabric.mod.json` 中列在 `depends`）：后端直接读取 Iris 的管线状态（是否启用光影包、乒乓翻转、程序与采样器绑定），没有 Iris 就无法运行。
+
+兼容策略是**只写通用规则、不按包名分支**：legacy 采样器别名、uniform 缺值默认、内建函数重名改名、计算着色器链接、顶点阶段投影等，修一类对所有包生效。
+
+真机验证过的光影包：
+
+| 光影包 | 状态 |
+|---|---|
+| BSL 10.1.3 | ✅ 通过（10.1.8 在未加固的 iOS 启动器上会触发 glslang 崩溃，建议用 10.1.3） |
+| Complementary Reimagined 5.9.3 / Unbound 5.9.3 | ✅ 通过 |
+| MakeUp UltraFast 9.5f | ✅ 通过 |
+| Sildur's Vibrant 2.02 | ✅ 通过（水面网格与手持拖影两个观感问题待解） |
+| Mellow 3.4.1a | ✅ 通过 |
+| Solas 3.7b | 默认档通过；HIGH 档的计算着色器已支持 |
+| Bliss 2.1.2 | 已修四类编译期问题，待复测 |
+
+已知不支持：Photon（需要 custom images、SSBO 光栅化体素等尚未实现的特性）。
 
 ## MetalFX 超分辨率与帧插值
 
@@ -45,8 +66,8 @@ This project is still in the experimental stage (PoC); performance and stability
 
 | 功能 | 说明 |
 |------|------|
-| **空间超分（Spatial Scaler）** | 在低分辨率渲染游戏画面，再用 MetalFX 专用硬件放大到原生分辨率，降低 GPU 着色负担，提升帧率。提供 Quality / Balanced / Performance / Ultra Performance 四档预设（分别对应 77% / 67% / 56% / 33% 内部渲染分辨率） |
-| **帧插值（Frame Interpolator）** | 利用硬件光流估计在两帧之间合成中间帧，将有效帧率翻倍，大幅改善快速移动场景的流畅度 |
+| **空间超分（Spatial Scaler）** | 在低分辨率渲染游戏画面，再用 MetalFX 专用硬件放大到原生分辨率，降低 GPU 着色负担，提升帧率。提供 High / Quality / Balanced / Performance / Ultra Performance 五档预设（分别对应 85% / 77% / 67% / 56% / 33% 内部渲染分辨率） |
+| **帧插值（Frame Interpolator）** | 利用硬件光流估计在两帧之间合成中间帧，**替换当前呈现帧**以改善时域平滑度。注意：当前实现每个渲染帧只 present 一次，因此不会让显示刷新率翻倍，并会引入约一帧延迟。硬件路径需要 macOS 26 / iOS 26 |
 
 ### 适配的系统与芯片
 
@@ -140,6 +161,11 @@ git submodule update --init --recursive
 
 # Compile iOS libspvc only (SPIRV-Cross MSL backend, requires Xcode + iOS SDK)
 ./gradlew buildIOSSpvc
+
+# Vendored GLSL compiler (built from vendor/glslang, shipped inside the jar)
+./gradlew buildMacGlslang
+./gradlew buildIOSGlslang
+./gradlew buildMacSpvc
 ```
 
 Build artifacts:

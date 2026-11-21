@@ -128,11 +128,13 @@ final class MetalSurface implements GpuSurfaceBackend {
         // (the 4:3 / window-not-ready crash). Fall back to the configuration
         // dimensions, which were already validated > 0 above.
         if (realWidth <= 0 || realHeight <= 0) {
-            realWidth = config.width();
-            realHeight = config.height();
+            // Log the raw values: overwriting them first would print the
+            // fallback twice and hide what GLFW actually returned.
             Metallum.LOGGER.warn(
                     "[MetalFX] glfwGetFramebufferSize returned {}x{}; falling back to config {}x{}",
                     realWidth, realHeight, config.width(), config.height());
+            realWidth = config.width();
+            realHeight = config.height();
         }
         this.displayWidth = realWidth;
         this.displayHeight = realHeight;

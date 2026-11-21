@@ -11,17 +11,33 @@ MetalUniversal 是一个基于 Apple Metal API 的 Minecraft 渲染后端模组�
 
 | 层级 | 实现 |
 |------|------|
-| 入口点 | `com.metaluniversal.MetalUniversal`（PreLaunch + ModInitializer） |
+| 入口点 | `com.metallum.Metallum`（PreLaunch + ModInitializer） |
 | GPU 后端 | `MetalBackend` → `MetalDevice` → `MetalCommandEncoder` / `MetalRenderPass` |
 | 着色器编译器 | `MetalCrossShaderCompiler`（GLSL/SPIR-V → MSL，基于 SPIRV-Cross） |
 | 原生桥接 | `MetalNativeBridge`（Java Foreign Memory API ↔ Swift C 导出函数） |
-| 原生实现 | `MetalUniversalNative.swift`（Metal API 调用、CAMetalLayer 管理、MSL 内联着色器） |
+| 原生实现 | `src/main/native/MetallumNative.swift`（Metal API 调用、CAMetalLayer 管理、MSL 内联着色器） |
 | 模组注入 | Mixin 注入 Minecraft `PreferredGraphicsApi` 和 Sodium 渲染后端选择 |
 
 ## 兼容性
 
 - **macOS**：Apple Silicon（M1 或更新），通过 Native Bridge 直接加载 `libmetallum.dylib`
 - **iOS**：iOS 14.0 或更高版本，预编译 `libmetallum.dylib`（arm64）和 `libspvc.dylib`（带 MSL 后端）内置于 jar 中
+
+## 运行依赖
+
+| 依赖 | 版本 | 说明 |
+|------|------|------|
+| Fabric Loader | >= 0.19.2 | **必需** |
+| Minecraft | 26.2 | **必需** |
+| Java | >= 25 | **必需** |
+| Sodium | 0.9.1+mc26.2 | **必需** — 视频设置界面适配 |
+| Iris | 1.11.2+mc26.2 | **必需** — 本模组是 Iris 渲染管线的 Metal 实现 |
+
+## Iris 光影包
+
+Iris 是硬依赖：后端直接读取 Iris 的管线状态，没有 Iris 无法运行。兼容策略只写通用规则、不按包名分支。
+
+真机验证通过：BSL 10.1.3、Complementary Reimagined 5.9.3、Complementary Unbound 5.9.3、MakeUp UltraFast 9.5f、Sildur's Vibrant 2.02、Mellow 3.4.1a；Solas 3.7b 默认档通过、HIGH 档计算着色器已支持；Bliss 2.1.2 待复测。Photon 尚未支持。
 
 ## 构建
 
@@ -46,6 +62,11 @@ MetalUniversal 是一个基于 Apple Metal API 的 Minecraft 渲染后端模组�
 
 # 仅编译 iOS libspvc（SPIRV-Cross MSL 后端，需要 Xcode + iOS SDK）
 ./gradlew buildIOSSpvc
+
+# 内置 GLSL 编译器（vendor/glslang，打包进 jar）
+./gradlew buildMacGlslang
+./gradlew buildIOSGlslang
+./gradlew buildMacSpvc
 ```
 
 构建产物：

@@ -1,7 +1,8 @@
-# AI-monitorable dev CI. Trigger via workflow_dispatch or push to feat/* branches.
+# AI-monitorable dev CI. Triggers on workflow_dispatch, any feat/* or feature/*
+# push, and pull requests targeting the active default branch.
 # Monitor with:
-#   gh run watch --repo EternityQwQ/MetalUniversal
-#   gh run list --workflow=dev-ci.yml --repo EternityQwQ/MetalUniversal
+#   gh run watch --repo PigeonCoders/MetalUniversal-Iris
+#   gh run list --workflow=dev-ci.yml --repo PigeonCoders/MetalUniversal-Iris
 
 name: dev-ci
 on:
@@ -10,9 +11,12 @@ on:
     branches:
       - 'feat/iris-26.2-msl-pipeline'
       - 'feat/*'
+      - 'feature/*'
+      - 'iris-26.2-preview'
   pull_request:
     branches:
-      - master
+      - 'iris-26.2-preview'
+      - 'master'
 
 permissions:
   contents: read

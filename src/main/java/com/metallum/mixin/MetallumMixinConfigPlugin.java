@@ -47,7 +47,11 @@ public final class MetallumMixinConfigPlugin implements IMixinConfigPlugin {
     @Override
     public void onLoad(String mixinPackage) {
         String osName = System.getProperty("os.name", "");
-        this.isMacOs = osName.toLowerCase(Locale.ROOT).contains("mac");
+        // The PojavLauncher family on iOS reports os.name as "Mac OS X", but a
+        // launcher that reports "iOS" or bare "Darwin" must not silently disable
+        // every mixin -- that would turn the whole backend into a no-op.
+        String lowerOs = osName.toLowerCase(Locale.ROOT);
+        this.isMacOs = lowerOs.contains("mac") || lowerOs.contains("darwin") || lowerOs.contains("ios");
         this.isDefaultGraphicsApi = isDefaultGraphicsApiSelected();
         if (this.isMacOs && !this.isDefaultGraphicsApi) {
             // Without this the game silently starts on the OpenGL/Vulkan

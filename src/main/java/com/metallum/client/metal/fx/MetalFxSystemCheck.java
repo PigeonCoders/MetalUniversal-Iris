@@ -1,6 +1,9 @@
 package com.metallum.client.metal.fx;
 
 import com.metallum.Metallum;
+import com.metallum.client.metal.render.bridge.MetalNativeBridge;
+
+import java.util.Locale;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 
@@ -43,7 +46,12 @@ final class MetalFxSystemCheck {
         String osArch = System.getProperty("os.arch", "unknown");
         String deviceName = cfg.deviceName();
 
-        boolean isMacOS = osName.toLowerCase().contains("mac");
+        // ios reports os.name as "Mac OS X" on the PojavLauncher family, so the
+        // Apple-family check stays broad and the label is resolved separately.
+        String lower = osName.toLowerCase(Locale.ROOT);
+        boolean isAppleFamily = lower.contains("mac") || lower.contains("darwin") || lower.contains("ios");
+        boolean isIOS = MetalNativeBridge.isIOS();
+        String platformLabel = isIOS ? "iPadOS/iOS" : "macOS";
         int macosMajor = parseMacOSMajor(osVersion);
 
         Metallum.LOGGER.info("[MetalFX] ===== 系统环境检测 =====");
@@ -55,18 +63,18 @@ final class MetalFxSystemCheck {
                 cfg.interpolationSupported(), cfg.blendSupported());
 
         // --- 操作系统版本校验 ---
-        if (isMacOS) {
+        if (isAppleFamily) {
             if (macosMajor > 0 && macosMajor < MACOS_SPATIAL_MIN_MAJOR) {
-                Metallum.LOGGER.warn("[MetalFX] macOS {} 低于 MetalFX 最低要求 ({}.0+)，空间/时间超分不可用",
-                        osVersion, MACOS_SPATIAL_MIN_MAJOR);
+                Metallum.LOGGER.warn("[MetalFX] {} {} 低于 MetalFX 最低要求 ({}.0+)，空间/时间超分不可用",
+                        platformLabel, osVersion, MACOS_SPATIAL_MIN_MAJOR);
             } else if (macosMajor > 0 && macosMajor < MACOS_INTERP_MIN_MAJOR) {
-                Metallum.LOGGER.warn("[MetalFX] macOS {} 低于帧插值最低要求 ({}.0+)，帧插值不可用",
-                        osVersion, MACOS_INTERP_MIN_MAJOR);
+                Metallum.LOGGER.warn("[MetalFX] {} {} 低于帧插值最低要求 ({}.0+)，帧插值不可用",
+                        platformLabel, osVersion, MACOS_INTERP_MIN_MAJOR);
             } else if (macosMajor > 0) {
-                Metallum.LOGGER.info("[MetalFX] macOS 版本满足全部 MetalFX 要求");
+                Metallum.LOGGER.info("[MetalFX] {} 版本满足全部 MetalFX 要求", platformLabel);
             }
         } else {
-            Metallum.LOGGER.warn("[MetalFX] 当前操作系统 ({}) 不是 macOS，MetalFX 仅支持 macOS/iOS", osName);
+            Metallum.LOGGER.warn("[MetalFX] 当前操作系统 ({}) 不是 Apple 平台，MetalFX 仅支持 macOS/iOS", osName);
         }
 
         // --- 芯片架构校验（Apple Silicon） ---

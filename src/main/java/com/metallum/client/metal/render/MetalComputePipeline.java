@@ -29,7 +29,7 @@ import java.nio.ByteOrder;
  *
  * <pre>
  * GLSL compute (explicit layout(binding=N))
- *   -> shaderc (Vulkan semantics, same family as Mojang's GlslCompiler)
+ *   -> bundled glslang via {@link GlslangBridge} (Vulkan semantics)
  *   -> SPIRV-Cross MSL backend (decoration bindings preserved)
  *   -> runtime MSL compile -> MTLComputePipelineState
  * </pre>
