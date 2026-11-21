@@ -250,6 +250,22 @@ public final class MetalDebugSwitches {
     /** Effective {@code depthAlias} mode, for the switch log / probe report. */
     public static final String DEPTH_ALIAS_MODE = DEPTH_ALIAS ? "on" : "off";
     /**
+     * Scope of the depthtex0 snapshot that guards self-sampling world passes.
+     * {@code selfSample} (default) latches only when a world program that
+     * declares {@code depthtex0} is encoded into a pass whose depth attachment
+     * <em>is</em> the vanilla main depth - the only case where the sampler
+     * would read the texture being written. Composite/deferred programs also
+     * declare depthtex0 but have no depth attachment, so they keep the
+     * zero-copy alias. {@code -Dmetallum.iris.depthSnapshot=boundary} restores
+     * the previous generation-wide latch, where any declaration disabled the
+     * alias for every pass of the generation.
+     */
+    public static final boolean DEPTH_SNAPSHOT_SELF_SAMPLE = depthSnapshotSelfSample(
+            System.getProperty("metallum.iris.depthSnapshot", "selfSample")
+    );
+    /** Effective {@code depthSnapshot} mode, for the switch log / probe report. */
+    public static final String DEPTH_SNAPSHOT_MODE = DEPTH_SNAPSHOT_SELF_SAMPLE ? "selfSample" : "boundary";
+    /**
      * Render-attachment views use the whole texture ({@code full}, default)
      * instead of a level-0-only subresource view. A full view makes
      * {@code MetalGpuTextureView.nativeHandle()} return the texture itself, so
@@ -401,6 +417,11 @@ public final class MetalDebugSwitches {
         return !"copy".equalsIgnoreCase(raw == null ? "" : raw.trim());
     }
 
+    /** {@code depthSnapshot}: only {@code boundary} restores the generation-wide latch. */
+    static boolean depthSnapshotSelfSample(final @Nullable String raw) {
+        return !"boundary".equalsIgnoreCase(raw == null ? "" : raw.trim());
+    }
+
     /** {@code depthCapture}: only {@code eager} restores the unconditional once-per-frame capture. */
     static boolean depthCaptureLazy(final @Nullable String raw) {
         return !"eager".equalsIgnoreCase(raw == null ? "" : raw.trim());
@@ -522,14 +543,14 @@ public final class MetalDebugSwitches {
 
     static {
         if (PROBES_ACTIVE) {
-            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: build={} skipDeferred={} skipPost={} view={} viewGain={} skipPass={} noShadowMatrices={} zeroVl={} zeroBloom={} stageStrip={} noVanillaSky={} noVanillaClouds={} noCloudsHard={} magentaClear={} shadowPass={} noShadows={} shadowCulling={} shadowDepthFix={} blendOverrides={} sizeBuffer={} dumpBindings={} logUniforms={} flipTrace={} vertexEngineProjection={} glslangPrecision={} glslangBuiltinRename={} perf={} renderScale={} shadowResolution={} shadowSeed={} depthCapture={} depthAlias={} attachmentViews={} blitBatch={} deadStores={} loadElision={}",
+            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: build={} skipDeferred={} skipPost={} view={} viewGain={} skipPass={} noShadowMatrices={} zeroVl={} zeroBloom={} stageStrip={} noVanillaSky={} noVanillaClouds={} noCloudsHard={} magentaClear={} shadowPass={} noShadows={} shadowCulling={} shadowDepthFix={} blendOverrides={} sizeBuffer={} dumpBindings={} logUniforms={} flipTrace={} vertexEngineProjection={} glslangPrecision={} glslangBuiltinRename={} perf={} renderScale={} shadowResolution={} shadowSeed={} depthCapture={} depthAlias={} depthSnapshot={} attachmentViews={} blitBatch={} deadStores={} loadElision={}",
                     BUILD_TAG, SKIP_DEFERRED, SKIP_POST, VIEW, VIEW_GAIN, SKIP_PASS, NO_SHADOW_MATRICES, ZERO_VL, ZERO_BLOOM,
                     System.getProperty("metallum.iris.debug.stageStrip", ""),
                     NO_VANILLA_SKY, NO_VANILLA_CLOUDS, NO_CLOUDS_HARD, MAGENTA_CLEAR,
                     SHADOW_PASS, NO_SHADOWS, SHADOW_CULLING, SHADOW_DEPTH_FIX, BLEND_OVERRIDES, SIZE_BUFFER,
                     DUMP_BINDINGS, LOG_UNIFORMS, FLIP_TRACE, VERTEX_ENGINE_PROJECTION, GLSLANG_PRECISION_PREAMBLE,
                     GLSLANG_BUILTIN_RENAME, PERF, RENDER_SCALE, SHADOW_RESOLUTION,
-                    SHADOW_SEED_MODE, DEPTH_CAPTURE_MODE, DEPTH_ALIAS_MODE, ATTACHMENT_VIEWS_MODE, BLIT_BATCH ? "on" : "off",
+                    SHADOW_SEED_MODE, DEPTH_CAPTURE_MODE, DEPTH_ALIAS_MODE, DEPTH_SNAPSHOT_MODE, ATTACHMENT_VIEWS_MODE, BLIT_BATCH ? "on" : "off",
                     DEAD_STORES ? "on" : "off", LOAD_ELISION ? "on" : "off");
         }
         warnIfBackendIsNotMetal();

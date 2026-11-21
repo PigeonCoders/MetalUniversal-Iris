@@ -253,10 +253,19 @@ depth 0   clear 0   other 0
 ### 批次 7：depthtex0 零拷贝别名（`23b9ac5`）
 
 把 `depthtex0` 直接别名到原版主深度，省掉每帧 44 MB 的全屏深度拷贝。
-但加了按**包声明**的门控：只要有世界程序声明 `depthtex0`，整个 generation 禁用别名。
 
-**结果**：BSL 声明了 depthtex0（`gbuffers_weather`），**别名被禁用，零收益**；
-不读 depthtex0 的包（如 CR）可省 44 MB/帧。
+第一版的门控是「只要有世界程序声明 `depthtex0`，整个 generation 禁用别名」。
+后来发现这个门控**过宽**：`deferred` / `composite*` 这些全屏程序也声明 depthtex0，
+但它们**不挂深度附件**，采样主深度完全合法；真正会「边写边读」的只有
+「既把主深度当深度附件、又采样 depthtex0」的 pass。
+
+于是门控收窄为 **self-sample 判定**（`requiresDepthSnapshot`）：
+只有同时满足「声明 depthtex0」与「本 pass 的深度附件就是主深度」才禁用别名；
+`-Dmetallum.iris.depthSnapshot=boundary` 可退回旧的整代闩锁。
+
+**结果（待真机确认）**：BSL 的世界程序里只有 `gbuffers_weather` 声明 depthtex0，
+而它渲染到自己的深度缓冲 → 不再是 self-sample → 别名应当保持开启，
+预期 `depth.depthtex0` 拷贝从 4 次/帧降到 0，probe 出现 `depth alias=on`。
 
 **为什么加这个门控**：`gbuffers_weather` 的深度附件**就是**主深度，它又去采样 `depthtex0` ——
 在 Apple 的 tile GPU 上"读正在写的附件"是未定义行为（会看到 32×32 tile 拼贴状错色，
@@ -309,9 +318,9 @@ depth 0   clear 0   other 0
    —— 地形在 BSL 里分 solid/cutout/translucent 多段，每段整套附件重读。
    能不能靠 render pass 的 `loadAction` 差异或 render area 收窄减少重读？
 
-3. **`depthtex0` 在声明它的包上仍是 4 次拷贝/帧（约 59 MB + 4 次 encoder 重启）**
-   —— 现在被"自采样 = UB"这条安全闸门挡住了。
-   是否存在**安全的**方案（例如只在自采样 pass 前做一次快照，其余 pass 复用）？
+3. ~~**`depthtex0` 在声明它的包上仍是 4 次拷贝/帧**~~
+   —— **已处理**：把「任何声明」的整代闩锁收窄为「本 pass 既写主深度又采样」的 self-sample 判定。
+   剩下的形态（真正的 self-sample pass）仍走一次边界快照；若将来出现这类包，再做逐 pass 快照。
 
 ### 6.2 中嫌疑
 

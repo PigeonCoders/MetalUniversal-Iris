@@ -114,4 +114,49 @@ final class IrisMetalWorldBridgeDepthCaptureTest {
         assertFalse(MetalDebugSwitches.depthCaptureLazy("EAGER"));
         assertFalse(MetalDebugSwitches.depthCaptureLazy(" eager "));
     }
+
+    // --- depthtex0 snapshot scope -------------------------------------------
+
+    private static boolean snapshot(
+            final boolean declaresDepthtex0,
+            final boolean passWritesMainDepth,
+            final boolean selfSampleOnly
+    ) {
+        return IrisMetalWorldBridge.requiresDepthSnapshot(
+                declaresDepthtex0, passWritesMainDepth, selfSampleOnly
+        );
+    }
+
+    @Test
+    void selfSamplingPassNeedsTheSnapshot() {
+        assertTrue(
+                snapshot(DECLARES, true, true),
+                "a pass that samples depthtex0 while writing the main depth must not alias it"
+        );
+    }
+
+    @Test
+    void depthtex0DeclarationWithoutADepthAttachmentKeepsTheAlias() {
+        assertFalse(
+                snapshot(DECLARES, false, true),
+                "composite/deferred programs declare depthtex0 but attach no depth; aliasing is safe"
+        );
+    }
+
+    @Test
+    void legacyBoundaryModeLatchesOnAnyDeclaration() {
+        assertTrue(snapshot(DECLARES, false, false));
+        assertTrue(snapshot(DECLARES, true, false));
+        assertFalse(snapshot(NO_DECLARATION, true, false));
+        assertFalse(snapshot(NO_DECLARATION, false, true));
+    }
+
+    @Test
+    void depthSnapshotSwitchDefaultsToSelfSample() {
+        assertTrue(MetalDebugSwitches.depthSnapshotSelfSample(null));
+        assertTrue(MetalDebugSwitches.depthSnapshotSelfSample(""));
+        assertTrue(MetalDebugSwitches.depthSnapshotSelfSample("selfSample"));
+        assertFalse(MetalDebugSwitches.depthSnapshotSelfSample("boundary"));
+        assertFalse(MetalDebugSwitches.depthSnapshotSelfSample("BOUNDARY"));
+    }
 }

@@ -291,10 +291,16 @@ public final class IrisMetalWorldBridge {
         IrisMetalRenderTargets renderTargets = pipeline.resources().renderTargets();
         GpuTexture mainSceneDepth = vanillaMainDepthTexture();
         boolean declaresDepthtex0 = declaresDepthtex0(program.samplers());
-        if (declaresDepthtex0) {
-            // A world pass that samples depthtex0 cannot use the zero-copy
-            // alias: it would read the depth texture it is currently writing.
-            renderTargets.requireDepthSnapshot("draw");
+        if (requiresDepthSnapshot(
+                declaresDepthtex0,
+                passTargetsTexture(descriptor, mainSceneDepth),
+                MetalDebugSwitches.DEPTH_SNAPSHOT_SELF_SAMPLE
+        )) {
+            // Only a pass that samples depthtex0 *while writing it* is the
+            // undefined read-after-write case. Composite/deferred programs
+            // declare depthtex0 too but attach no depth, so they keep the
+            // zero-copy alias.
+            renderTargets.requireDepthSnapshot("selfsample");
         }
         if (shouldCaptureMainDepth(
                 MetalDebugSwitches.DEPTH_CAPTURE_LAZY,
@@ -925,6 +931,27 @@ public final class IrisMetalWorldBridge {
     }
 
     /** True when the pass's depth attachment is {@code texture} (null never matches). */
+    /**
+     * Whether this world draw needs depthtex0 to be a snapshot rather than the
+     * live main depth. Pure so the gate is unit-testable without a GPU.
+     *
+     * @param declaresDepthtex0  the program samples depthtex0
+     * @param passWritesMainDepth the pass binds the vanilla main depth as its
+     *                            depth attachment (the self-sampling case)
+     * @param selfSampleOnly      {@link MetalDebugSwitches#DEPTH_SNAPSHOT_SELF_SAMPLE};
+     *                            {@code false} restores the old generation-wide latch
+     */
+    static boolean requiresDepthSnapshot(
+            final boolean declaresDepthtex0,
+            final boolean passWritesMainDepth,
+            final boolean selfSampleOnly
+    ) {
+        if (!declaresDepthtex0) {
+            return false;
+        }
+        return !selfSampleOnly || passWritesMainDepth;
+    }
+
     private static boolean passTargetsTexture(
             final RenderPassDescriptor descriptor,
             final @Nullable GpuTexture texture
