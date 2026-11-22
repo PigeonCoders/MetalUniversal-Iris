@@ -38,6 +38,19 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
     private final MemorySegment[] submitSemaphores = new MemorySegment[MAX_SUBMITS_IN_FLIGHT];
     private final MetalDestructionQueue destroyQueue = new MetalDestructionQueue(MAX_SUBMITS_IN_FLIGHT);
     private final MetalTransientMemory transientMemory;
+    /**
+     * Per-pass GPU timing ({@code -Dmetallum.perf.perPassGpu}); {@code null}
+     * for the native-free test instance and for every run that does not enable
+     * the switch, which is what keeps the disabled path allocation-free.
+     */
+    private final @Nullable MetalGpuPassProfiler passGpu;
+    /**
+     * Sample buffer the command buffer being encoded owns
+     * ({@code -Dmetallum.perf.perPassGpu}); travels with its {@link InFlight}
+     * record so the resolve is paired with the exact command buffer that
+     * carried the samples.
+     */
+    private MetalGpuPassProfiler.@Nullable Sample gpuSample;
     private final Map<MetalGpuTexture, Vector4fc> pendingColorClears = new IdentityHashMap<>();
     private final Map<MetalGpuTexture, Double> pendingDepthClears = new IdentityHashMap<>();
     private final MemorySegment fence;
@@ -68,6 +81,9 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
     MetalCommandEncoder(final MetalDevice device) {
         this.device = device;
         this.transientMemory = new MetalTransientMemory(device, this);
+        this.passGpu = MetalGpuPassProfiler.ENABLED
+                ? new MetalGpuPassProfiler(device.metalDeviceHandle())
+                : null;
         fence = MetalNativeBridge.metallum_create_fence(device.metalDeviceHandle());
         if (MetalNativeBridge.isNullHandle(fence)) {
             throw new IllegalStateException("Failed to allocate MTLFence");
@@ -92,12 +108,18 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
     MetalCommandEncoder() {
         this.device = null;
         this.transientMemory = new MetalTransientMemory(null, this);
+        this.passGpu = null;
         this.fence = MemorySegment.NULL;
     }
 
     MTLCommandBuffer commandBuffer() {
         if (commandBuffer != null) {
             return commandBuffer;
+        }
+        if (passGpu != null) {
+            // The sample is owned by this command buffer until the submit ring
+            // sees it complete (see MetalGpuPassProfiler).
+            gpuSample = passGpu.beginCommandBuffer();
         }
         return commandBuffer = device.commandQueue.makeCommandBuffer(
                 device.useLabels() ? "Metallum frame " + currentSubmitIndex : null
@@ -123,9 +145,16 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
 
     MTLComputeCommandEncoder computeCommandEncoder() {
         endEncoder();
-        MTLComputeCommandEncoder encoder = commandBuffer().makeComputeCommandEncoder();
+        MTLComputeCommandEncoder encoder = passGpu != null
+                ? passGpu.makeComputeCommandEncoder(commandBuffer())
+                : commandBuffer().makeComputeCommandEncoder();
         encoder.waitForFence(fence);
         currentEncoder = encoder;
+        if (passGpu != null) {
+            // Draw/dispatch-boundary fallback only; a no-op when the profiler
+            // attached the sample to the pass descriptor instead.
+            passGpu.beginSample(MetalPerformanceProbe.GPU_KIND_COMPUTE, encoder.handle(), null);
+        }
         return encoder;
     }
 
@@ -142,6 +171,16 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
                 blitEncoder.updateFence(fence);
             } else if (currentEncoder instanceof MTLComputeCommandEncoder computeEncoder) {
                 computeEncoder.updateFence(fence);
+            }
+            if (passGpu != null) {
+                // Closes the sample pair of the encoder that is ending, right
+                // before endEncoding (draw/dispatch-boundary fallback only: a
+                // stage-boundary sample was attached at creation).
+                if (currentEncoder instanceof MTLRenderCommandEncoder) {
+                    passGpu.endSample(MetalPerformanceProbe.GPU_KIND_RENDER, currentEncoder.handle());
+                } else if (currentEncoder instanceof MTLComputeCommandEncoder) {
+                    passGpu.endSample(MetalPerformanceProbe.GPU_KIND_COMPUTE, currentEncoder.handle());
+                }
             }
             currentEncoder.endEncoding();
             currentEncoder = null;
@@ -177,11 +216,29 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
      * a pass is open is a caller error.
      */
     MetalComputePass createComputePass() {
+        return createComputePass(null);
+    }
+
+    /**
+     * Begins a mod-private compute pass. Vanilla Blaze3D 26.2 has no compute
+     * abstraction, so this API is only reachable from metallum code (Iris
+     * backend). The pass owns the underlying compute encoder until
+     * {@link MetalComputePass#close()}; interleaving other encoder work while
+     * a pass is open is a caller error.
+     *
+     * @param label pass label the per-pass GPU probe attributes this encoder
+     *              to ({@code -Dmetallum.perf.perPassGpu}); {@code null} keeps
+     *              the previous label. Purely diagnostic, never inspected.
+     */
+    MetalComputePass createComputePass(final @Nullable String label) {
         submitRenderPass();
         // Pending deferred clears materialize through transient render
         // encoders; they must all land BEFORE the compute encoder opens, since
         // flushing mid-pass would tear the pass's encoder out from under it.
         flushAllPendingClears();
+        if (passGpu != null) {
+            passGpu.setPassLabel(label);
+        }
         return new MetalComputePass(this, computeCommandEncoder());
     }
 
@@ -255,7 +312,8 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
             commandBuffer.commitWithSignal(completedSemaphore);
 
             toClose = inFlight[slot];
-            inFlight[slot] = new InFlight(currentSubmitIndex, commandBuffer, completedSemaphore);
+            inFlight[slot] = new InFlight(currentSubmitIndex, commandBuffer, completedSemaphore, gpuSample);
+            gpuSample = null;
             commandBuffer = null;
         }
         currentSubmitIndex++;
@@ -273,6 +331,12 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
                 if (gpuStart > 0.0 && gpuEnd > gpuStart) {
                     MetalPerformanceProbe.recordGpuFrame((gpuEnd - gpuStart) * 1000.0);
                 }
+            }
+            if (passGpu != null) {
+                // Same completion proof as the frame timestamps above: the
+                // sample of that command buffer is final and returns to the
+                // pool for a later command buffer.
+                passGpu.complete(toClose.gpu());
             }
             toClose.buffer.close();
         }
@@ -352,32 +416,55 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         }
 
         endEncoder();
-        MTLRenderCommandEncoder encoder = loadDontCare == null && storeDontCare == null
-                ? commandBuffer().makeRenderCommandEncoderV2(
-                        colorAttachments,
-                        depthAttachment,
-                        viewportWidth,
-                        viewportHeight,
-                        clearColorEnabled,
-                        clearColorValues,
-                        clearDepthEnabled ? 1 : 0,
-                        clearDepthValue
-                )
-                : commandBuffer().makeRenderCommandEncoderV3(
-                        colorAttachments,
-                        depthAttachment,
-                        viewportWidth,
-                        viewportHeight,
-                        clearColorEnabled,
-                        clearColorValues,
-                        clearDepthEnabled ? 1 : 0,
-                        clearDepthValue,
-                        loadDontCare,
-                        storeDontCare
-                );
+        MTLRenderCommandEncoder encoder;
+        if (passGpu != null) {
+            // The profiler picks the entry point: a stage-boundary sampled
+            // variant when the device supports only that sampling point (Apple
+            // silicon), otherwise the same v2/v3 call as below.
+            encoder = passGpu.makeRenderCommandEncoder(
+                    commandBuffer(),
+                    colorAttachments,
+                    depthAttachment,
+                    viewportWidth,
+                    viewportHeight,
+                    clearColorEnabled,
+                    clearColorValues,
+                    clearDepthEnabled ? 1 : 0,
+                    clearDepthValue,
+                    loadDontCare,
+                    storeDontCare
+            );
+        } else if (loadDontCare == null && storeDontCare == null) {
+            encoder = commandBuffer().makeRenderCommandEncoderV2(
+                    colorAttachments,
+                    depthAttachment,
+                    viewportWidth,
+                    viewportHeight,
+                    clearColorEnabled,
+                    clearColorValues,
+                    clearDepthEnabled ? 1 : 0,
+                    clearDepthValue
+            );
+        } else {
+            encoder = commandBuffer().makeRenderCommandEncoderV3(
+                    colorAttachments,
+                    depthAttachment,
+                    viewportWidth,
+                    viewportHeight,
+                    clearColorEnabled,
+                    clearColorValues,
+                    clearDepthEnabled ? 1 : 0,
+                    clearDepthValue,
+                    loadDontCare,
+                    storeDontCare
+            );
+        }
         MetalPerformanceProbe.recordRenderEncoderCreated();
         encoder.waitForFence(fence, MTLRenderStages.VertexAndFragment);
         currentEncoder = encoder;
+        if (passGpu != null) {
+            passGpu.beginSample(MetalPerformanceProbe.GPU_KIND_RENDER, encoder.handle(), null);
+        }
         renderColorAttachments = colorAttachments;
         renderDepthAttachment = depthAttachment;
         renderLoadDontCare = loadDontCare;
@@ -683,6 +770,12 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         recordPassTraffic(descriptor, colorTextureViews, clearColors, depthTexture, depthClear.isPresent(), extentTexture, renderArea);
         currentRenderPass = renderPass;
         renderPass.pushDebugGroup(descriptor.label());
+        if (passGpu != null) {
+            // The label belongs to the pass, not the encoder: every encoder
+            // this pass has to open (including a materialized clear's) is
+            // attributed to it until the next pass is created.
+            passGpu.setPassLabel(descriptor.label().get());
+        }
         MetalPerformanceProbe.recordRenderPassCreated();
         return renderPass;
     }
@@ -1311,6 +1404,9 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
     void close() {
         submitRenderPass();
         endEncoder();
+        if (passGpu != null) {
+            passGpu.close();
+        }
         for (int slot = 0; slot < inFlight.length; slot++) {
             InFlight f = inFlight[slot];
             if (f != null) {
@@ -1415,6 +1511,13 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         }
         encoder.waitForFence(fence, MTLRenderStages.VertexAndFragment);
         currentEncoder = encoder;
+        if (passGpu != null) {
+            // A materialized clear is its own transient encoder; label it so
+            // its GPU time is not charged to the pass that triggered it. This
+            // entry point has no stage-boundary variant, so the label only
+            // applies to the draw-boundary fallback.
+            passGpu.beginSample(MetalPerformanceProbe.GPU_KIND_RENDER, encoder.handle(), "clear");
+        }
         texture.recordMaterializedClear(colorClear, depthClear);
     }
 
@@ -1440,6 +1543,11 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
                 && height == depth.getHeight(0);
     }
 
-    private record InFlight(long index, MTLCommandBuffer buffer, MemorySegment completedSemaphore) {
+    private record InFlight(
+            long index,
+            MTLCommandBuffer buffer,
+            MemorySegment completedSemaphore,
+            MetalGpuPassProfiler.@Nullable Sample gpu
+    ) {
     }
 }

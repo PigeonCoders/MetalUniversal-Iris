@@ -311,6 +311,74 @@ public final class MetalNativeBridge {
             MTLCommandBufferCommitWithSignal = downcall(lookup, "metallum_MTLCommandBuffer_commitWithSignal", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
             MTLCommandBufferGpuStartTime = optionalDowncall(lookup, "metallum_MTLCommandBuffer_gpuStartTime", FunctionDescriptor.of(DOUBLE, ValueLayout.ADDRESS));
             MTLCommandBufferGpuEndTime = optionalDowncall(lookup, "metallum_MTLCommandBuffer_gpuEndTime", FunctionDescriptor.of(DOUBLE, ValueLayout.ADDRESS));
+            // Per-pass GPU timing (MTLCounterSampleBuffer + timestamp counter
+            // set). Every symbol is optional, like the command-buffer GPU
+            // times above: a dylib that predates them leaves the handles null
+            // and the profiler reports perf gpu unavailable reason=noSymbol
+            // instead of failing at load time.
+            GpuCountersSupported = optionalDowncall(
+                    lookup,
+                    "metallum_gpu_counters_supported",
+                    FunctionDescriptor.of(INT, ValueLayout.ADDRESS)
+            );
+            GpuCountersCreateBuffer = optionalDowncall(
+                    lookup,
+                    "metallum_gpu_counters_create_buffer",
+                    FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, INT)
+            );
+            GpuCountersResolve = optionalDowncall(
+                    lookup,
+                    "metallum_gpu_counters_resolve",
+                    FunctionDescriptor.of(INT, ValueLayout.ADDRESS, INT, ValueLayout.ADDRESS)
+            );
+            MTLRenderCommandEncoderGpuSample = optionalDowncall(
+                    lookup,
+                    "metallum_MTLRenderCommandEncoder_gpu_sample",
+                    FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS, INT)
+            );
+            MTLComputeCommandEncoderGpuSample = optionalDowncall(
+                    lookup,
+                    "metallum_MTLComputeCommandEncoder_gpu_sample",
+                    FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS, INT)
+            );
+            // Stage-boundary sampling variants: the Apple-silicon path. The
+            // sample buffer arrives as a pass-descriptor attachment instead of
+            // a sampleCounters call, because Apple silicon only supports
+            // MTLCommonCounterSamplingPointStage. A null sample buffer makes
+            // each entry point byte-identical to its unsampled sibling.
+            MTLCommandBufferMakeRenderCommandEncoderV4 = optionalDowncall(
+                    lookup,
+                    "metallum_MTLCommandBuffer_makeRenderCommandEncoder_v4",
+                    FunctionDescriptor.of(
+                            ValueLayout.ADDRESS,
+                            ValueLayout.ADDRESS,
+                            ValueLayout.ADDRESS,
+                            INT,
+                            ValueLayout.ADDRESS,
+                            DOUBLE,
+                            DOUBLE,
+                            ValueLayout.ADDRESS,
+                            ValueLayout.ADDRESS,
+                            INT,
+                            DOUBLE,
+                            ValueLayout.ADDRESS,
+                            ValueLayout.ADDRESS,
+                            ValueLayout.ADDRESS,
+                            INT,
+                            INT
+                    )
+            );
+            MTLCommandBufferMakeComputeCommandEncoderV2 = optionalDowncall(
+                    lookup,
+                    "metallum_MTLCommandBuffer_makeComputeCommandEncoder_v2",
+                    FunctionDescriptor.of(
+                            ValueLayout.ADDRESS,
+                            ValueLayout.ADDRESS,
+                            ValueLayout.ADDRESS,
+                            INT,
+                            INT
+                    )
+            );
             semaphoreWait = downcallWithoutCritical(lookup, "metallum_semaphore_wait", FunctionDescriptor.of(INT, ValueLayout.ADDRESS, LONG));
             MTLCommandBufferPushDebugGroup = downcall(lookup, "metallum_MTLCommandBuffer_pushDebugGroup", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
             MTLCommandBufferPopDebugGroup = downcall(lookup, "metallum_MTLCommandBuffer_popDebugGroup", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
@@ -885,6 +953,13 @@ public final class MetalNativeBridge {
     private static final MethodHandle MTLCommandBufferCommitWithSignal;
     private static final @Nullable MethodHandle MTLCommandBufferGpuStartTime;
     private static final @Nullable MethodHandle MTLCommandBufferGpuEndTime;
+    private static final @Nullable MethodHandle GpuCountersSupported;
+    private static final @Nullable MethodHandle GpuCountersCreateBuffer;
+    private static final @Nullable MethodHandle GpuCountersResolve;
+    private static final @Nullable MethodHandle MTLRenderCommandEncoderGpuSample;
+    private static final @Nullable MethodHandle MTLComputeCommandEncoderGpuSample;
+    private static final @Nullable MethodHandle MTLCommandBufferMakeRenderCommandEncoderV4;
+    private static final @Nullable MethodHandle MTLCommandBufferMakeComputeCommandEncoderV2;
     private static final MethodHandle semaphoreWait;
     private static final MethodHandle MTLCommandBufferPushDebugGroup;
     private static final MethodHandle MTLCommandBufferPopDebugGroup;
@@ -1180,6 +1255,136 @@ public final class MetalNativeBridge {
             return (double) MTLCommandBufferGpuEndTime.invokeExact(segment(commandBuffer));
         } catch (Throwable throwable) {
             throw bridgeFailure("metallum_MTLCommandBuffer_gpuEndTime", throwable);
+        }
+    }
+
+    /**
+     * True when the loaded dylib exports the counter entry points shared by
+     * both sampling modes (query, buffer creation, resolve)
+     * ({@code -Dmetallum.perf.perPassGpu}). A missing symbol is not an error:
+     * the profiler then reports {@code perf gpu unavailable reason=noSymbol}
+     * and the encoder path stays byte-identical to the pre-probe one.
+     */
+    public static boolean metallum_gpu_counters_available() {
+        return GpuCountersSupported != null
+                && GpuCountersCreateBuffer != null
+                && GpuCountersResolve != null;
+    }
+
+    /**
+     * True when the stage-boundary entry points exist: the encoder-creation
+     * variants that carry a {@code sampleBufferAttachments[0]} sample buffer.
+     * This is the only sampling Apple silicon supports, so it is the primary
+     * path.
+     */
+    public static boolean metallum_gpu_stage_sampling_available() {
+        return MTLCommandBufferMakeRenderCommandEncoderV4 != null
+                && MTLCommandBufferMakeComputeCommandEncoderV2 != null;
+    }
+
+    /** True when the draw/dispatch-boundary {@code sampleCounters} entry points exist (fallback path). */
+    public static boolean metallum_gpu_encoder_sampling_available() {
+        return MTLRenderCommandEncoderGpuSample != null
+                && MTLComputeCommandEncoderGpuSample != null;
+    }
+
+    /**
+     * Counter availability for one device, from
+     * {@code metallum_gpu_counters_supported}: a positive sampling-point mask
+     * (bit 0 = render/draw boundary, bit 1 = compute/dispatch boundary,
+     * bit 2 = stage boundary), {@code 0} when the device supports no counter
+     * sampling, {@code -1} when it has no {@code MTLCommonCounterSetTimestamp}
+     * counter set and {@code -2} when none of those sampling points is
+     * supported. {@link Integer#MIN_VALUE} means the symbol itself is missing.
+     */
+    public static int metallum_gpu_counters_supported(final MemorySegment device) {
+        if (GpuCountersSupported == null) {
+            return Integer.MIN_VALUE;
+        }
+        try {
+            return (int) GpuCountersSupported.invokeExact(segment(device));
+        } catch (Throwable throwable) {
+            throw bridgeFailure("metallum_gpu_counters_supported", throwable);
+        }
+    }
+
+    /**
+     * Creates a retained {@code MTLCounterSampleBuffer} with
+     * {@code sampleCount} timestamp slots, or {@code NULL} when the device
+     * refuses it. The caller owns the handle and releases it with
+     * {@link #metallum_release_object}.
+     */
+    public static MemorySegment metallum_gpu_counters_create_buffer(
+            final MemorySegment device,
+            final int sampleCount
+    ) {
+        if (GpuCountersCreateBuffer == null) {
+            return MemorySegment.NULL;
+        }
+        try {
+            return (MemorySegment) GpuCountersCreateBuffer.invokeExact(segment(device), sampleCount);
+        } catch (Throwable throwable) {
+            throw bridgeFailure("metallum_gpu_counters_create_buffer", throwable);
+        }
+    }
+
+    /**
+     * Resolves {@code sampleCount} timestamps of {@code sampleBuffer} into
+     * {@code outNanos} (one {@code uint64} nanoseconds value per slot, in
+     * sample order) and returns 0 on success. The buffer must already be free
+     * of GPU writes — the caller only resolves a command buffer it observed
+     * completing.
+     */
+    public static int metallum_gpu_counters_resolve(
+            final MemorySegment sampleBuffer,
+            final int sampleCount,
+            final MemorySegment outNanos
+    ) {
+        if (GpuCountersResolve == null) {
+            return 1;
+        }
+        try {
+            return (int) GpuCountersResolve.invokeExact(
+                    segment(sampleBuffer), sampleCount, segment(outNanos)
+            );
+        } catch (Throwable throwable) {
+            throw bridgeFailure("metallum_gpu_counters_resolve", throwable);
+        }
+    }
+
+    /** Inserts one timestamp sample at {@code sampleIndex} of an open render encoder. */
+    public static void metallum_MTLRenderCommandEncoder_gpu_sample(
+            final MemorySegment encoder,
+            final MemorySegment sampleBuffer,
+            final int sampleIndex
+    ) {
+        if (MTLRenderCommandEncoderGpuSample == null) {
+            return;
+        }
+        try {
+            MTLRenderCommandEncoderGpuSample.invokeExact(
+                    segment(encoder), segment(sampleBuffer), sampleIndex
+            );
+        } catch (Throwable throwable) {
+            throw bridgeFailure("metallum_MTLRenderCommandEncoder_gpu_sample", throwable);
+        }
+    }
+
+    /** Inserts one timestamp sample at {@code sampleIndex} of an open compute encoder. */
+    public static void metallum_MTLComputeCommandEncoder_gpu_sample(
+            final MemorySegment encoder,
+            final MemorySegment sampleBuffer,
+            final int sampleIndex
+    ) {
+        if (MTLComputeCommandEncoderGpuSample == null) {
+            return;
+        }
+        try {
+            MTLComputeCommandEncoderGpuSample.invokeExact(
+                    segment(encoder), segment(sampleBuffer), sampleIndex
+            );
+        } catch (Throwable throwable) {
+            throw bridgeFailure("metallum_MTLComputeCommandEncoder_gpu_sample", throwable);
         }
     }
 
@@ -1718,6 +1923,141 @@ public final class MetalNativeBridge {
             } catch (Throwable throwable) {
                 throw bridgeFailure("metallum_MTLCommandBuffer_makeRenderCommandEncoder_v3", throwable);
             }
+        }
+    }
+
+    /**
+     * Stage-boundary sampling variant of
+     * {@link #MTLCommandBuffer_makeRenderCommandEncoderV3}: the same descriptor
+     * plus a {@code sampleBufferAttachments[0]} pair the GPU samples at the
+     * pass's stage boundaries. This is the only sampling mode Apple silicon
+     * supports ({@code MTLCommonCounterSamplingPointStage}), and it yields the
+     * whole encoder's start/end timestamps without a {@code sampleCounters}
+     * call, so it does not insert a barrier into the measured stream.
+     *
+     * <p>A {@code NULL} {@code sampleBuffer} reproduces v3 exactly. The probe
+     * never relies on that: it only calls this entry point while
+     * {@code -Dmetallum.perf.perPassGpu} is on.</p>
+     */
+    public static MemorySegment MTLCommandBuffer_makeRenderCommandEncoderV4(
+            final MemorySegment commandBuffer,
+            final MemorySegment[] colorTextures,
+            final MemorySegment depthTexture,
+            final double viewportWidth,
+            final double viewportHeight,
+            final int[] clearColorEnabled,
+            final float[] clearColors,
+            final int clearDepthEnabled,
+            final double clearDepth,
+            final int @Nullable [] loadDontCareMask,
+            final int @Nullable [] storeDontCareMask,
+            final MemorySegment sampleBuffer,
+            final int startSampleIndex,
+            final int endSampleIndex
+    ) {
+        if (colorTextures == null || clearColorEnabled == null || clearColors == null
+                || clearColorEnabled.length != colorTextures.length
+                || clearColors.length != colorTextures.length * 4) {
+            throw new IllegalArgumentException("MRT texture, clear flag and clear color arrays must have matching lengths");
+        }
+        if ((loadDontCareMask != null && loadDontCareMask.length != colorTextures.length)
+                || (storeDontCareMask != null && storeDontCareMask.length != colorTextures.length)) {
+            throw new IllegalArgumentException("Attachment dontCare masks must match the color slot count");
+        }
+
+        if (MTLCommandBufferMakeRenderCommandEncoderV4 == null) {
+            // No stage-boundary entry point in this dylib: keep the frame alive
+            // by opening the plain encoder, just without samples.
+            return MTLCommandBuffer_makeRenderCommandEncoderV3(
+                    commandBuffer, colorTextures, depthTexture,
+                    viewportWidth, viewportHeight,
+                    clearColorEnabled, clearColors,
+                    clearDepthEnabled, clearDepth,
+                    loadDontCareMask, storeDontCareMask
+            );
+        }
+
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment textureArray = colorTextures.length == 0
+                    ? MemorySegment.NULL
+                    : arena.allocate(ValueLayout.ADDRESS, colorTextures.length);
+            MemorySegment clearFlagArray = colorTextures.length == 0
+                    ? MemorySegment.NULL
+                    : arena.allocate(INT, clearColorEnabled.length);
+            MemorySegment clearColorArray = colorTextures.length == 0
+                    ? MemorySegment.NULL
+                    : arena.allocate(FLOAT, clearColors.length);
+            MemorySegment loadFlagArray = loadDontCareMask == null
+                    ? MemorySegment.NULL
+                    : arena.allocate(INT, loadDontCareMask.length);
+            MemorySegment storeFlagArray = storeDontCareMask == null
+                    ? MemorySegment.NULL
+                    : arena.allocate(INT, storeDontCareMask.length);
+
+            for (int index = 0; index < colorTextures.length; index++) {
+                textureArray.setAtIndex(ValueLayout.ADDRESS, index, segment(colorTextures[index]));
+                clearFlagArray.setAtIndex(INT, index, clearColorEnabled[index]);
+                if (loadDontCareMask != null) {
+                    loadFlagArray.setAtIndex(INT, index, loadDontCareMask[index]);
+                }
+                if (storeDontCareMask != null) {
+                    storeFlagArray.setAtIndex(INT, index, storeDontCareMask[index]);
+                }
+            }
+            for (int index = 0; index < clearColors.length; index++) {
+                clearColorArray.setAtIndex(FLOAT, index, clearColors[index]);
+            }
+
+            try {
+                return (MemorySegment) MTLCommandBufferMakeRenderCommandEncoderV4.invokeExact(
+                        segment(commandBuffer),
+                        textureArray,
+                        colorTextures.length,
+                        segment(depthTexture),
+                        viewportWidth,
+                        viewportHeight,
+                        clearColorArray,
+                        clearFlagArray,
+                        clearDepthEnabled,
+                        clearDepth,
+                        loadFlagArray,
+                        storeFlagArray,
+                        segment(sampleBuffer),
+                        startSampleIndex,
+                        endSampleIndex
+                );
+            } catch (Throwable throwable) {
+                throw bridgeFailure("metallum_MTLCommandBuffer_makeRenderCommandEncoder_v4", throwable);
+            }
+        }
+    }
+
+    /**
+     * Stage-boundary sampling variant of
+     * {@link #MTLCommandBuffer_makeComputeCommandEncoder}: a compute pass
+     * descriptor whose {@code sampleBufferAttachments[0]} covers the whole
+     * encoder ({@code startOfEncoderSampleIndex} / {@code
+     * endOfEncoderSampleIndex}). A {@code NULL} sample buffer reproduces the
+     * plain entry point exactly.
+     */
+    public static MemorySegment MTLCommandBuffer_makeComputeCommandEncoderV2(
+            final MemorySegment commandBuffer,
+            final MemorySegment sampleBuffer,
+            final int startSampleIndex,
+            final int endSampleIndex
+    ) {
+        if (MTLCommandBufferMakeComputeCommandEncoderV2 == null) {
+            return MTLCommandBuffer_makeComputeCommandEncoder(commandBuffer);
+        }
+        try {
+            return (MemorySegment) MTLCommandBufferMakeComputeCommandEncoderV2.invokeExact(
+                    segment(commandBuffer),
+                    segment(sampleBuffer),
+                    startSampleIndex,
+                    endSampleIndex
+            );
+        } catch (Throwable throwable) {
+            throw bridgeFailure("metallum_MTLCommandBuffer_makeComputeCommandEncoder_v2", throwable);
         }
     }
 

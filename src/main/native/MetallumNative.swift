@@ -688,6 +688,188 @@ public func metallum_MTLCommandBuffer_gpuEndTime(_ commandBuffer: MTLCommandBuff
     return commandBuffer.gpuEndTime
 }
 
+// MARK: - Per-pass GPU timing (MTLCounterSampleBuffer)
+//
+// One timestamp sample pair per native render / compute encoder. The Java side
+// (`MetalGpuPassProfiler`) owns the sample indices, the pass labels and the
+// resolve schedule; this side only creates the buffers, inserts the samples and
+// hands back the resolved nanoseconds. Nothing here inspects a label or a
+// shader pack name.
+
+/// The device's `MTLCommonCounterSetTimestamp` counter set, or nil when the
+/// device exposes no timestamp counters at all.
+private func timestampCounterSet(for device: MTLDevice) -> MTLCounterSet? {
+    guard let counterSets = device.counterSets else {
+        return nil
+    }
+    for counterSet in counterSets where counterSet.name == MTLCommonCounterSetTimestamp {
+        return counterSet
+    }
+    return nil
+}
+
+/// Availability of the per-pass GPU counter path for `device`.
+///
+/// * positive: bit mask of the sampling points this profiler can use
+///   (bit 0 = render encoder at the draw boundary,
+///   bit 1 = compute encoder at the dispatch boundary,
+///   bit 2 = stage boundary via a pass descriptor's sample buffer attachment).
+/// * `0`: the OS/device has no counter sampling at all (`counterSets` is nil).
+/// * `-1`: the device has counter sets but no `MTLCommonCounterSetTimestamp`.
+/// * `-2`: the timestamp set exists but none of those sampling points is
+///   supported.
+///
+/// Bit 2 is the one that matters on Apple silicon: it "processes fragments
+/// after processing every primitive for a render pass", so Apple GPUs only
+/// support sampling at stage boundaries, never between draws or dispatches.
+/// The draw/dispatch bits are the fallback for immediate-mode GPUs.
+///
+/// The Java side turns the negative codes into the `reason=` token of its one
+/// `perf gpu unavailable` line.
+@_cdecl("metallum_gpu_counters_supported")
+public func metallum_gpu_counters_supported(_ device: MTLDevice) -> Int32 {
+    return autoreleasepool {
+        guard device.counterSets != nil else {
+            return 0
+        }
+        guard timestampCounterSet(for: device) != nil else {
+            return -1
+        }
+        var mask: Int32 = 0
+        if device.supportsCounterSampling(.atDrawBoundary) {
+            mask |= 1
+        }
+        if device.supportsCounterSampling(.atDispatchBoundary) {
+            mask |= 2
+        }
+        if device.supportsCounterSampling(.atStageBoundary) {
+            mask |= 4
+        }
+        return mask == 0 ? -2 : mask
+    }
+}
+
+/// Creates a retained `MTLCounterSampleBuffer` with `sampleCount` timestamp
+/// slots, or nil when the device rejects the descriptor. The caller owns the
+/// handle (release it with `metallum_release_object`).
+///
+/// Storage is `.shared` on purpose. Apple's `storageMode` documentation: "To
+/// access a counter sample buffer with the CPU, set this property to
+/// MTLStorageMode.shared", and `resolveCounterRange(_:)` "can only be called on
+/// a counter sample buffer that you create with MTLStorageMode.shared". A
+/// `.private` buffer would need a `resolveCounters` blit pass and a destination
+/// `MTLBuffer` per command buffer, i.e. an extra GPU pass inside the frame we
+/// are measuring. The storage mode is independent of the sampling point — the
+/// pass-descriptor attachment only requires the counter set to be a timestamp
+/// set.
+@_cdecl("metallum_gpu_counters_create_buffer")
+public func metallum_gpu_counters_create_buffer(
+    _ device: MTLDevice,
+    _ sampleCount: Int32
+) -> UnsafeMutableRawPointer? {
+    return autoreleasepool {
+        guard sampleCount > 0, let counterSet = timestampCounterSet(for: device) else {
+            return nil
+        }
+        let descriptor = MTLCounterSampleBufferDescriptor()
+        descriptor.counterSet = counterSet
+        descriptor.label = "metallum.perf.pass"
+        descriptor.storageMode = .shared
+        descriptor.sampleCount = Int(sampleCount)
+        do {
+            return retainedPointer(try device.makeCounterSampleBuffer(descriptor: descriptor))
+        } catch {
+            return nil
+        }
+    }
+}
+
+/// Inserts one timestamp sample into an open render encoder.
+///
+/// Fallback path only (immediate-mode GPUs with
+/// `MTLCommonCounterSamplingPointDraw`). `barrier: false` keeps the sample from
+/// serializing the encoder against its own draws: a render encoder's commands
+/// are already ordered, and a barrier here would make the measurement perturb
+/// the work it measures. Apple silicon never takes this path — it only supports
+/// stage-boundary sampling, which rides on the pass descriptor instead.
+@_cdecl("metallum_MTLRenderCommandEncoder_gpu_sample")
+public func metallum_MTLRenderCommandEncoder_gpu_sample(
+    _ encoder: MTLRenderCommandEncoder,
+    _ sampleBuffer: MTLCounterSampleBuffer,
+    _ sampleIndex: Int32
+) {
+    guard sampleIndex >= 0, Int(sampleIndex) < sampleBuffer.sampleCount else {
+        return
+    }
+    encoder.sampleCounters(
+        sampleBuffer: sampleBuffer,
+        sampleIndex: Int(sampleIndex),
+        barrier: false
+    )
+}
+
+/// Inserts one timestamp sample into an open compute encoder.
+///
+/// Fallback path only (`MTLCommonCounterSamplingPointDispatch`). Compute has no
+/// implicit ordering against the surrounding encoders in this backend beyond
+/// the global fence, so the sample is taken with `barrier: true`: the end
+/// timestamp then covers the dispatches themselves instead of racing the next
+/// encoder.
+@_cdecl("metallum_MTLComputeCommandEncoder_gpu_sample")
+public func metallum_MTLComputeCommandEncoder_gpu_sample(
+    _ encoder: MTLComputeCommandEncoder,
+    _ sampleBuffer: MTLCounterSampleBuffer,
+    _ sampleIndex: Int32
+) {
+    guard sampleIndex >= 0, Int(sampleIndex) < sampleBuffer.sampleCount else {
+        return
+    }
+    encoder.sampleCounters(
+        sampleBuffer: sampleBuffer,
+        sampleIndex: Int(sampleIndex),
+        barrier: true
+    )
+}
+
+/// Resolves the first `sampleCount` timestamps of `sampleBuffer` into
+/// `outNanos` (one `uint64` nanoseconds value per slot, in sample order).
+///
+/// Returns 0 on success, 1 for a bad argument, 2 when the buffer cannot be
+/// resolved and 3 when the resolved payload is shorter than expected. The
+/// timestamp counter set produces exactly one `MTLCounterResultTimestamp`
+/// (`uint64_t` nanoseconds) per sample.
+///
+/// `resolveCounterRange(_:)` is only legal on a `.shared` sample buffer (see
+/// `metallum_gpu_counters_create_buffer`); the range form is the SDK's Swift
+/// signature (`Range<Int>`), and it throws rather than only returning nil.
+@_cdecl("metallum_gpu_counters_resolve")
+public func metallum_gpu_counters_resolve(
+    _ sampleBuffer: MTLCounterSampleBuffer,
+    _ sampleCount: Int32,
+    _ outNanos: UnsafeMutablePointer<UInt64>?
+) -> Int32 {
+    return autoreleasepool {
+        guard let outNanos, sampleCount > 0, Int(sampleCount) <= sampleBuffer.sampleCount else {
+            return 1
+        }
+        guard let data = try? sampleBuffer.resolveCounterRange(0..<Int(sampleCount)) else {
+            return 2
+        }
+        let byteCount = Int(sampleCount) * MemoryLayout<UInt64>.stride
+        guard data.count >= byteCount else {
+            return 3
+        }
+        // One `MTLCounterResultTimestamp` (`uint64_t` nanoseconds) per sample.
+        data.withUnsafeBytes { rawBuffer in
+            guard let base = rawBuffer.baseAddress else {
+                return
+            }
+            outNanos.update(from: base.assumingMemoryBound(to: UInt64.self), count: Int(sampleCount))
+        }
+        return 0
+    }
+}
+
 @_cdecl("metallum_MTLCommandBuffer_commitWithSignal")
 public func metallum_MTLCommandBuffer_commitWithSignal(_ commandBuffer: MTLCommandBuffer, _ semaphore: DispatchSemaphore) {
     while semaphore.wait(timeout: .now()) == .success {}
@@ -1375,6 +1557,157 @@ public func metallum_MTLCommandBuffer_makeRenderCommandEncoder_v3(
             zfar: 1.0
         ))
         return retainedPointer(encoder)
+    }
+}
+
+/// Stage-boundary sampling variant of
+/// `metallum_MTLCommandBuffer_makeRenderCommandEncoder_v3`.
+///
+/// The descriptor is v3's, plus a `sampleBufferAttachments[0]` pair: the GPU
+/// records the render pass's start at the vertex-stage boundary and its end at
+/// the fragment-stage boundary, so one attachment yields the whole encoder's
+/// GPU time without inserting anything into the command stream. This is the only
+/// sampling point Apple silicon supports
+/// (`MTLCommonCounterSamplingPointStage`); the draw-boundary `sampleCounters`
+/// path exists only for immediate-mode GPUs.
+///
+/// The two unused indexes are set to `MTLCounterDontSample` explicitly rather
+/// than relying on the descriptor defaults. A null `sampleBuffer` makes this
+/// entry point behave exactly like v3 — the Java side nevertheless never passes
+/// null: it calls this entry point only while
+/// `-Dmetallum.perf.perPassGpu` is on.
+@_cdecl("metallum_MTLCommandBuffer_makeRenderCommandEncoder_v4")
+public func metallum_MTLCommandBuffer_makeRenderCommandEncoder_v4(
+    _ commandBuffer: MTLCommandBuffer,
+    _ colorTexturePointers: UnsafePointer<UnsafeMutableRawPointer?>?,
+    _ colorCount: Int32,
+    _ depthTexture: MTLTexture?,
+    _ viewportWidth: Double,
+    _ viewportHeight: Double,
+    _ clearColors: UnsafePointer<Float>?,
+    _ clearColorEnabled: UnsafePointer<Int32>?,
+    _ clearDepthEnabled: Int32,
+    _ clearDepth: Double,
+    _ loadDontCare: UnsafePointer<Int32>?,
+    _ storeDontCare: UnsafePointer<Int32>?,
+    _ sampleBuffer: MTLCounterSampleBuffer?,
+    _ startSampleIndex: Int32,
+    _ endSampleIndex: Int32
+) -> UnsafeMutableRawPointer? {
+    return autoreleasepool { () -> UnsafeMutableRawPointer? in
+        let count = Int(colorCount)
+        guard count >= 0 && count <= 8 else {
+            NSLog("[Metallum] rejected render pass with %d color slots", colorCount)
+            return nil
+        }
+        guard count == 0 || colorTexturePointers != nil else {
+            NSLog("[Metallum] render pass color slot count is non-zero but the texture array is null")
+            return nil
+        }
+        guard count == 0 || (clearColors != nil && clearColorEnabled != nil) else {
+            NSLog("[Metallum] render pass color slot count is non-zero but clear arrays are null")
+            return nil
+        }
+        guard count > 0 || depthTexture != nil else {
+            NSLog("[Metallum] rejected render pass with no color or depth attachment")
+            return nil
+        }
+
+        let depthFormat = depthTexture?.pixelFormat ?? .invalid
+        let stencilFormat = stencilPixelFormat(for: depthFormat)
+        let renderPass = MTLRenderPassDescriptor()
+
+        for index in 0..<count {
+            let rawTexture = colorTexturePointers?[index]
+            guard let attachment = renderPass.colorAttachments[index] else {
+                NSLog("[Metallum] color attachment descriptor %d is unavailable", index)
+                return nil
+            }
+            guard let texture = textureFromUnretainedPointer(rawTexture) else {
+                attachment.loadAction = .dontCare
+                attachment.storeAction = .dontCare
+                continue
+            }
+
+            attachment.texture = texture
+            if clearColorEnabled?[index] ?? 0 != 0 {
+                let base = index * 4
+                let colors = clearColors!
+                attachment.loadAction = .clear
+                attachment.clearColor = makeClearColor(
+                    red: colors[base],
+                    green: colors[base + 1],
+                    blue: colors[base + 2],
+                    alpha: colors[base + 3]
+                )
+            } else if (loadDontCare?[index] ?? 0) != 0 {
+                attachment.loadAction = .dontCare
+            } else {
+                attachment.loadAction = .load
+            }
+            attachment.storeAction = (storeDontCare?[index] ?? 0) != 0 ? .dontCare : .store
+        }
+
+        if let depthTexture {
+            if depthFormat != .stencil8 {
+                renderPass.depthAttachment.texture = depthTexture
+                renderPass.depthAttachment.loadAction = clearDepthEnabled != 0 ? .clear : .load
+                renderPass.depthAttachment.clearDepth = clearDepth
+                renderPass.depthAttachment.storeAction = .store
+            }
+            if stencilFormat != .invalid || depthFormat == .stencil8 {
+                renderPass.stencilAttachment.texture = depthTexture
+                renderPass.stencilAttachment.loadAction = .dontCare
+                renderPass.stencilAttachment.storeAction = .store
+            }
+        }
+
+        if let sampleBuffer, let sampleAttachment = renderPass.sampleBufferAttachments[0] {
+            sampleAttachment.sampleBuffer = sampleBuffer
+            sampleAttachment.startOfVertexSampleIndex = Int(startSampleIndex)
+            sampleAttachment.endOfVertexSampleIndex = MTLCounterDontSample
+            sampleAttachment.startOfFragmentSampleIndex = MTLCounterDontSample
+            sampleAttachment.endOfFragmentSampleIndex = Int(endSampleIndex)
+        }
+
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPass) else {
+            return nil
+        }
+        encoder.setViewport(MTLViewport(
+            originX: 0.0,
+            originY: 0.0,
+            width: viewportWidth,
+            height: viewportHeight,
+            znear: 0.0,
+            zfar: 1.0
+        ))
+        return retainedPointer(encoder)
+    }
+}
+
+/// Stage-boundary sampling variant of
+/// `metallum_MTLCommandBuffer_makeComputeCommandEncoder`: a
+/// `MTLComputePassDescriptor` whose `sampleBufferAttachments[0]` covers the
+/// whole encoder (`startOfEncoderSampleIndex` .. `endOfEncoderSampleIndex`).
+/// A null `sampleBuffer` reproduces the plain entry point exactly.
+@_cdecl("metallum_MTLCommandBuffer_makeComputeCommandEncoder_v2")
+public func metallum_MTLCommandBuffer_makeComputeCommandEncoder_v2(
+    _ commandBuffer: MTLCommandBuffer,
+    _ sampleBuffer: MTLCounterSampleBuffer?,
+    _ startSampleIndex: Int32,
+    _ endSampleIndex: Int32
+) -> UnsafeMutableRawPointer? {
+    return autoreleasepool {
+        guard let sampleBuffer else {
+            return retainedPointer(commandBuffer.makeComputeCommandEncoder())
+        }
+        let descriptor = MTLComputePassDescriptor.computePassDescriptor()
+        if let sampleAttachment = descriptor.sampleBufferAttachments[0] {
+            sampleAttachment.sampleBuffer = sampleBuffer
+            sampleAttachment.startOfEncoderSampleIndex = Int(startSampleIndex)
+            sampleAttachment.endOfEncoderSampleIndex = Int(endSampleIndex)
+        }
+        return retainedPointer(commandBuffer.makeComputeCommandEncoder(descriptor: descriptor))
     }
 }
 

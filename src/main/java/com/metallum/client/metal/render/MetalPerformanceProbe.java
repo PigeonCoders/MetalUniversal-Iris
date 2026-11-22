@@ -25,7 +25,7 @@ import java.util.Map;
 @Environment(EnvType.CLIENT)
 final class MetalPerformanceProbe {
     /** Master switch: {@code -Dmetallum.perf}. */
-    static final boolean ENABLED = MetalDebugSwitches.PERF;
+    static final boolean ENABLED = MetalDebugSwitches.PERF || MetalDebugSwitches.PER_PASS_GPU;
 
     static final int REPORT_INTERVAL = 120;
     private static final int SAMPLE_CAPACITY = 128;
@@ -113,6 +113,47 @@ final class MetalPerformanceProbe {
     private static int gpuNext;
     private static int gpuCount;
     private static double gpuSum;
+
+    /** Distinct pass labels the per-pass GPU tally tracks in one window. */
+    static final int GPU_PASS_LIMIT = 256;
+    /**
+     * Probe label budget: a pass label longer than this is truncated so a
+     * shaderpack-injected suffix (or a pack name with a version string) cannot
+     * push a {@code perf gpu pass=} line past a terminal width. 48 leaves room
+     * for the statistics that follow on the same line.
+     */
+    static final int GPU_LABEL_LIMIT = 48;
+    /** Per-pass GPU timing is only collected with its own switch on. */
+    static final boolean GPU_PASSES = MetalDebugSwitches.PER_PASS_GPU;
+    /** Availability code the bridge returns when the dylib has no counter symbols. */
+    static final int GPU_NO_SYMBOL = Integer.MIN_VALUE;
+    /**
+     * Sampling-point mask bit for render encoders at the draw boundary
+     * ({@code MTLCommonCounterSamplingPointDraw}): only immediate-mode GPUs
+     * support it, so it is the fallback path, not the primary one.
+     */
+    static final int GPU_KIND_RENDER = 1;
+    /** Sampling-point mask bit for compute encoders at the dispatch boundary. */
+    static final int GPU_KIND_COMPUTE = 2;
+    /**
+     * Sampling-point mask bit for stage-boundary sampling
+     * ({@code MTLCommonCounterSamplingPointStage}). Apple silicon's only
+     * supported sampling point: it is fed through a pass descriptor's
+     * {@code sampleBufferAttachments[0]}, which yields the whole encoder's
+     * start/end timestamps in one shot.
+     */
+    static final int GPU_MODE_STAGE_BOUNDARY = 4;
+    /** Distinct labels printed per window; heavier totals first. */
+    private static final int GPU_PASS_TOP = 16;
+    static final int GPU_PASS_COUNT = 0;
+    static final int GPU_PASS_SUM = 1;
+    static final int GPU_PASS_MAX = 2;
+    static final int GPU_PASS_FIELDS = 3;
+    /** label &rarr; {occurrences, summed nanos, max nanos}. Only allocated on demand. */
+    private static final HashMap<String, long[]> GPU_PASS_TALLY =
+            ENABLED && GPU_PASSES ? new HashMap<>() : null;
+    /** Command buffers in the window that hit the per-command-buffer sample cap. */
+    private static long gpuTruncatedBuffers;
 
     private static long drawCalls;
     private static long renderPassesCreated;
@@ -703,14 +744,11 @@ final class MetalPerformanceProbe {
     /**
      * One completed command-buffer GPU duration in milliseconds.
      *
-     * <p>Per-pass GPU time is deliberately not sampled: it needs an
-     * {@code MTLCounterSampleBuffer} built from {@code
-     * MTLCommonCounterSetTimestamp}, a sample attachment on every encoder and a
-     * resolve/readback path, none of which this repository's FFM bridge
-     * exposes (only {@code MTLCommandBuffer.gpuStartTime/gpuEndTime}). That is
-     * a native (Swift {@code @_cdecl}) change which cannot be built or
-     * validated on the Linux development host, so
-     * {@code -Dmetallum.perf.perPassGpu} is not wired.</p>
+     * <p>This is the whole-frame number only. The per-pass split is
+     * {@link #recordGpuPass}: the native side samples each render / compute
+     * encoder's start and end with {@code MTLCounterSampleBuffer} built from
+     * {@code MTLCommonCounterSetTimestamp} and resolves the pairs once the
+     * carrying command buffer completes.</p>
      */
     static void recordGpuFrame(final double milliseconds) {
         if (!ENABLED || !Double.isFinite(milliseconds) || milliseconds < 0.0) {
@@ -722,6 +760,250 @@ final class MetalPerformanceProbe {
             gpuCount++;
         }
         gpuNext = (gpuNext + 1) % SAMPLE_CAPACITY;
+    }
+
+    /**
+     * Folds one sampled pass into the window. One sample pair is one native
+     * render or compute encoder's GPU lifetime, attributed to the label of the
+     * pass that opened that encoder (a pass that reused an already-open encoder
+     * pays no second encoder and therefore no second pair).
+     *
+     * @param label        pass label the renderer already builds; sanitized and
+     *                     truncated by {@link #gpuPassLabel} before it is keyed
+     * @param milliseconds resolved {@code end - start} of the sample pair
+     */
+    static void recordGpuPass(final String label, final double milliseconds) {
+        if (GPU_PASS_TALLY == null || !Double.isFinite(milliseconds) || milliseconds < 0.0) {
+            return;
+        }
+        foldGpuPass(GPU_PASS_TALLY, label, Math.round(milliseconds * 1_000_000.0));
+    }
+
+    /**
+     * Pure tally fold: adds one sampled encoder to {@code tally} (label &rarr;
+     * {@code {occurrences, summed nanos, max nanos}}), sanitizing the label and
+     * merging overflow labels into {@code (other)} so a label that embeds a
+     * frame counter cannot grow the map without bound.
+     *
+     * @return the slot the sample was folded into
+     */
+    static long[] foldGpuPass(final HashMap<String, long[]> tally, final String label, final long nanos) {
+        String key = gpuPassLabel(label);
+        long[] slot = tally.get(key);
+        if (slot == null && tally.size() >= GPU_PASS_LIMIT) {
+            key = TRAFFIC_OTHER;
+            slot = tally.get(key);
+        }
+        if (slot == null) {
+            slot = new long[GPU_PASS_FIELDS];
+            tally.put(key, slot);
+        }
+        slot[GPU_PASS_COUNT]++;
+        slot[GPU_PASS_SUM] += Math.max(0L, nanos);
+        slot[GPU_PASS_MAX] = Math.max(slot[GPU_PASS_MAX], Math.max(0L, nanos));
+        return slot;
+    }
+
+    /**
+     * One command buffer hit {@link GpuSampleLedger#MAX_SAMPLES} and stopped
+     * sampling. Folded into the window and reported once, so a pathologically
+     * long command buffer cannot flood the probe.
+     */
+    static void recordGpuPassTruncated() {
+        if (ENABLED && GPU_PASSES) {
+            gpuTruncatedBuffers++;
+        }
+    }
+
+    /**
+     * The per-pass GPU timing path is inert for this run; emitted once, by the
+     * profiler that discovered it. {@code reason} is one of
+     * {@link #gpuUnavailableReason}'s tokens.
+     */
+    static void recordGpuUnavailable(final String reason) {
+        if (ENABLED) {
+            MetalProbeReport.record("perf gpu unavailable reason=" + reason);
+        }
+    }
+
+    /**
+     * The probe's single-token pass label: every whitespace character becomes
+     * {@code '_'} so a {@code perf gpu pass=} line stays one token per field,
+     * then the result is capped at {@link #GPU_LABEL_LIMIT} characters.
+     * {@code null} and the empty string map to {@code unnamed} (pure).
+     */
+    static String gpuPassLabel(final String label) {
+        String base = label == null || label.isEmpty() ? "unnamed" : label;
+        char[] chars = null;
+        int limit = Math.min(base.length(), GPU_LABEL_LIMIT);
+        for (int index = 0; index < limit; index++) {
+            char value = base.charAt(index);
+            if (Character.isWhitespace(value)) {
+                if (chars == null) {
+                    chars = base.toCharArray();
+                }
+                chars[index] = '_';
+            }
+        }
+        String sanitized = chars == null ? base : new String(chars, 0, base.length());
+        return sanitized.length() <= GPU_LABEL_LIMIT
+                ? sanitized
+                : sanitized.substring(0, GPU_LABEL_LIMIT);
+    }
+
+    /**
+     * One {@code perf gpu pass=…} line: the window average in {@code ms=} (the
+     * required field), then the number of sampled encoders and the slowest
+     * single encoder of the window (pure).
+     */
+    static String gpuPassLine(
+            final String label,
+            final long count,
+            final long sumNanos,
+            final long maxNanos
+    ) {
+        double averageMillis = count <= 0L ? 0.0 : sumNanos / (double) count / 1_000_000.0;
+        return String.format(Locale.ROOT, "perf gpu pass=%s ms=%.2f n=%d max=%.2f",
+                gpuPassLabel(label), averageMillis, count, maxNanos / 1_000_000.0);
+    }
+
+    /**
+     * The native availability code &rarr; the encoder kinds this run can
+     * sample (pure). Stage-boundary sampling rides on the pass descriptor and
+     * therefore covers both encoder kinds at once; the draw/dispatch-boundary
+     * fallback covers one kind per supported sampling point.
+     */
+    static int gpuSupportedKinds(final int mask) {
+        if ((mask & GPU_MODE_STAGE_BOUNDARY) != 0) {
+            return GPU_KIND_RENDER | GPU_KIND_COMPUTE;
+        }
+        int kinds = 0;
+        if ((mask & GPU_KIND_RENDER) != 0) {
+            kinds |= GPU_KIND_RENDER;
+        }
+        if ((mask & GPU_KIND_COMPUTE) != 0) {
+            kinds |= GPU_KIND_COMPUTE;
+        }
+        return kinds;
+    }
+
+    /**
+     * Native availability code &rarr; the {@code reason=} token of
+     * {@code perf gpu unavailable}. The native probe returns a positive
+     * sampling-point mask when sampling works, {@code 0} when the OS has no
+     * counter sampling at all, {@code -1} when no counter set named
+     * {@code MTLCommonCounterSetTimestamp} exists and {@code -2} when it exists
+     * but no sampling point this profiler uses is supported;
+     * {@link #GPU_NO_SYMBOL} means the loaded dylib predates the entry points
+     * (pure).
+     */
+    static String gpuUnavailableReason(final int code) {
+        if (code == GPU_NO_SYMBOL) {
+            return "noSymbol";
+        }
+        if (code == -1) {
+            return "counterSet";
+        }
+        if (code == -2) {
+            return "samplingPoint";
+        }
+        return "unsupported";
+    }
+
+    /**
+     * Sample-index accounting for one command buffer: every native encoder that
+     * opens reserves two consecutive indices (start, end), so pair {@code k}
+     * always lives at {@code 2k} / {@code 2k+1}. Pure — the native side only
+     * ever sees the indices, the labels stay on this side. The cap is checked
+     * before a pair is reserved, so a truncated command buffer leaves complete
+     * pairs behind and never reads an unwritten index.
+     */
+    static final class GpuSampleLedger {
+        /** Hard cap on timestamp samples per command buffer (128 encoder pairs). */
+        static final int MAX_SAMPLES = 256;
+        private static final int MAX_PAIRS = MAX_SAMPLES / 2;
+        private final String[] labels = new String[MAX_PAIRS];
+        private int samples;
+        private int pairs;
+        private boolean open;
+        private boolean truncated;
+
+        void reset() {
+            samples = 0;
+            pairs = 0;
+            open = false;
+            truncated = false;
+            Arrays.fill(labels, null);
+        }
+
+        /**
+         * Reserves the start index of one encoder.
+         *
+         * @return the sample index to hand to the native sample call, or
+         *         {@code -1} when the cap is reached (the caller then leaves
+         *         this encoder unsampled and {@link #end()} pairs nothing)
+         */
+        int start(final String label) {
+            if (open) {
+                return -1;
+            }
+            if (samples + 2 > MAX_SAMPLES) {
+                truncated = true;
+                return -1;
+            }
+            labels[pairs] = label;
+            open = true;
+            return samples++;
+        }
+
+        /**
+         * Reserves a whole pair at once: the stage-boundary path hands both
+         * indices to the pass descriptor before the encoder exists, so there is
+         * no later {@link #end()} call.
+         *
+         * @return the pair's start index (its end index is {@code start + 1}),
+         *         or {@code -1} when the cap is reached
+         */
+        int reservePair(final String label) {
+            if (open) {
+                return -1;
+            }
+            if (samples + 2 > MAX_SAMPLES) {
+                truncated = true;
+                return -1;
+            }
+            labels[pairs] = label;
+            pairs++;
+            int start = samples;
+            samples += 2;
+            return start;
+        }
+
+        /** Reserves the end index of the open pair; {@code -1} when nothing is open. */
+        int end() {
+            if (!open) {
+                return -1;
+            }
+            open = false;
+            pairs++;
+            return samples++;
+        }
+
+        int sampleCount() {
+            return samples;
+        }
+
+        int pairCount() {
+            return pairs;
+        }
+
+        String labelAt(final int pair) {
+            return pair >= 0 && pair < labels.length ? labels[pair] : null;
+        }
+
+        boolean truncated() {
+            return truncated;
+        }
     }
 
     private static void report() {
@@ -763,8 +1045,57 @@ final class MetalPerformanceProbe {
 
         reportBandwidth();
         reportCopies();
+        reportGpuPasses();
 
         resetWindow();
+    }
+
+    /**
+     * The per-pass GPU timing block ({@code -Dmetallum.perf.perPassGpu} only):
+     * one {@code perf gpu pass=<label> ms=<avg> n=<count> max=<max>} line per
+     * distinct pass label, heaviest accumulated GPU time first. A window that
+     * resolved no samples prints nothing here — the profiler already emitted
+     * its one {@code perf gpu unavailable reason=…} line if sampling never
+     * started. Samples trail the frame by up to the submit ring depth (a
+     * command buffer's pairs are only final once its completion is observed),
+     * so the last few frames of a window land in the next one.
+     */
+    private static void reportGpuPasses() {
+        if (GPU_PASS_TALLY == null) {
+            return;
+        }
+        if (gpuTruncatedBuffers > 0L) {
+            MetalProbeReport.record("perf gpu truncated buffers=" + gpuTruncatedBuffers
+                    + " cap=" + GpuSampleLedger.MAX_SAMPLES);
+        }
+        if (GPU_PASS_TALLY.isEmpty()) {
+            return;
+        }
+        int emitted = 0;
+        for (Map.Entry<String, long[]> entry : rankGpuPasses(GPU_PASS_TALLY)) {
+            if (emitted >= GPU_PASS_TOP) {
+                break;
+            }
+            long[] slot = entry.getValue();
+            MetalProbeReport.record(gpuPassLine(
+                    entry.getKey(), slot[GPU_PASS_COUNT], slot[GPU_PASS_SUM], slot[GPU_PASS_MAX]
+            ));
+            emitted++;
+        }
+    }
+
+    /**
+     * Pure ranking of the per-pass GPU tally: heaviest accumulated GPU time
+     * first (that is where a frame actually spends its time), ties broken by
+     * the label so the line order is deterministic.
+     */
+    static List<Map.Entry<String, long[]>> rankGpuPasses(final Map<String, long[]> tally) {
+        List<Map.Entry<String, long[]>> ranked = new ArrayList<>(tally.entrySet());
+        ranked.sort((left, right) -> {
+            int byTime = Long.compare(right.getValue()[GPU_PASS_SUM], left.getValue()[GPU_PASS_SUM]);
+            return byTime != 0 ? byTime : left.getKey().compareTo(right.getKey());
+        });
+        return ranked;
     }
 
     /**
@@ -904,6 +1235,10 @@ final class MetalPerformanceProbe {
         if (COPY_TRAFFIC != null) {
             COPY_TRAFFIC.clear();
         }
+        if (GPU_PASS_TALLY != null) {
+            GPU_PASS_TALLY.clear();
+        }
+        gpuTruncatedBuffers = 0L;
         windowFrames = 0;
     }
 

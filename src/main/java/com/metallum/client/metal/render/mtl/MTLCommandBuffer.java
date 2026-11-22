@@ -34,6 +34,26 @@ public final class MTLCommandBuffer {
         return new MTLComputeCommandEncoder(encoder);
     }
 
+    /**
+     * Compute encoder whose pass descriptor samples the stage boundary into
+     * {@code sampleBuffer} at {@code startSampleIndex} /
+     * {@code endSampleIndex} ({@code -Dmetallum.perf.perPassGpu} only). A null
+     * handle reproduces {@link #makeComputeCommandEncoder()} exactly.
+     */
+    public MTLComputeCommandEncoder makeComputeCommandEncoderSampled(
+            final MemorySegment sampleBuffer,
+            final int startSampleIndex,
+            final int endSampleIndex
+    ) {
+        MemorySegment encoder = MetalNativeBridge.MTLCommandBuffer_makeComputeCommandEncoderV2(
+                handle(), sampleBuffer, startSampleIndex, endSampleIndex
+        );
+        if (MetalNativeBridge.isNullHandle(encoder)) {
+            throw new IllegalStateException("Failed to create sampled MTLComputeCommandEncoder");
+        }
+        return new MTLComputeCommandEncoder(encoder);
+    }
+
     public MTLRenderCommandEncoder makeRenderCommandEncoder(
             final MemorySegment colorTexture,
             final MemorySegment depthTexture,
@@ -130,6 +150,50 @@ public final class MTLCommandBuffer {
         );
         if (MetalNativeBridge.isNullHandle(encoder)) {
             throw new IllegalStateException("Failed to create action-masked MTLRenderCommandEncoder");
+        }
+        return new MTLRenderCommandEncoder(encoder);
+    }
+
+    /**
+     * Indexed render encoder with per-slot attachment actions
+     * ({@code -Dmetallum.perf.perPassGpu} only): identical to
+     * {@link #makeRenderCommandEncoderV3} plus a stage-boundary sample pair
+     * attached to the pass descriptor. A null {@code sampleBuffer} reproduces
+     * v3 exactly.
+     */
+    public MTLRenderCommandEncoder makeRenderCommandEncoderSampled(
+            final MemorySegment[] colorTextures,
+            final MemorySegment depthTexture,
+            final double viewportWidth,
+            final double viewportHeight,
+            final int[] clearColorEnabled,
+            final float[] clearColors,
+            final int clearDepthEnabled,
+            final double clearDepth,
+            final int[] loadDontCareMask,
+            final int[] storeDontCareMask,
+            final MemorySegment sampleBuffer,
+            final int startSampleIndex,
+            final int endSampleIndex
+    ) {
+        MemorySegment encoder = MetalNativeBridge.MTLCommandBuffer_makeRenderCommandEncoderV4(
+                handle(),
+                colorTextures,
+                depthTexture,
+                viewportWidth,
+                viewportHeight,
+                clearColorEnabled,
+                clearColors,
+                clearDepthEnabled,
+                clearDepth,
+                loadDontCareMask,
+                storeDontCareMask,
+                sampleBuffer,
+                startSampleIndex,
+                endSampleIndex
+        );
+        if (MetalNativeBridge.isNullHandle(encoder)) {
+            throw new IllegalStateException("Failed to create sampled MTLRenderCommandEncoder");
         }
         return new MTLRenderCommandEncoder(encoder);
     }

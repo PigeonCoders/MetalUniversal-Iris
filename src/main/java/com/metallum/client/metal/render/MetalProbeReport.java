@@ -120,6 +120,7 @@ public final class MetalProbeReport {
         content.append("  deadStores=").append(MetalDebugSwitches.DEAD_STORES ? "on" : "off").append(System.lineSeparator());
         content.append("  loadElision=").append(MetalDebugSwitches.LOAD_ELISION ? "on" : "off").append(System.lineSeparator());
         content.append("  perf=").append(MetalDebugSwitches.PERF).append(System.lineSeparator());
+        content.append("  perPassGpu=").append(MetalDebugSwitches.PER_PASS_GPU).append(System.lineSeparator());
         content.append("  renderScale=").append(MetalDebugSwitches.RENDER_SCALE).append(System.lineSeparator());
         content.append("  shadowResolution=").append(MetalDebugSwitches.SHADOW_RESOLUTION).append(System.lineSeparator());
         content.append("  stageStrip=").append(System.getProperty("metallum.iris.debug.stageStrip", ""))
@@ -185,6 +186,7 @@ public final class MetalProbeReport {
         addIf(active, "deadStores=off", !MetalDebugSwitches.DEAD_STORES);
         addIf(active, "loadElision=off", !MetalDebugSwitches.LOAD_ELISION);
         addIf(active, "perf", MetalDebugSwitches.PERF);
+        addIf(active, "perPassGpu", MetalDebugSwitches.PER_PASS_GPU);
         if (MetalDebugSwitches.RENDER_SCALE != 1.0f) {
             active.add("renderScale=" + MetalDebugSwitches.RENDER_SCALE);
         }

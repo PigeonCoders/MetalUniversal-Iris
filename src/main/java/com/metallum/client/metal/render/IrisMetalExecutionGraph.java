@@ -1631,7 +1631,7 @@ final class IrisMetalExecutionGraph implements AutoCloseable {
                     "Iris compute plan has no compiled pipeline: " + plan.source().getName()
             );
         }
-        try (MetalComputePass pass = activeEncoder().createComputePass()) {
+        try (MetalComputePass pass = activeEncoder().createComputePass(plan.source().getName())) {
             pass.setPipeline(pipeline);
             bindCompute(pass, plan, resources, readsFromAlt);
             dispatchCompute(pass, plan, extentWidth, extentHeight);

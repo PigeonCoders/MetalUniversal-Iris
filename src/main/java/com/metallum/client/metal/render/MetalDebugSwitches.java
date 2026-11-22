@@ -52,6 +52,18 @@ public final class MetalDebugSwitches {
      */
     public static final boolean PERF = enabledFlag("metallum.perf");
     /**
+     * Opt-in per-pass GPU timing ({@code -Dmetallum.perf.perPassGpu}): one
+     * {@code MTLCounterSampleBuffer} sample pair per native render / compute
+     * encoder, resolved when the command buffer that carried them completes and
+     * reported as {@code perf gpu pass=<label> ms=<avg>} lines. Off by default
+     * and inert at every call site otherwise; enabling it also turns on the
+     * {@code -Dmetallum.perf} window it reports into
+     * ({@link MetalPerformanceProbe#ENABLED}). Devices whose counters or
+     * sampling points are unavailable, and dylibs that predate the entry
+     * points, degrade to one {@code perf gpu unavailable reason=…} line.
+     */
+    public static final boolean PER_PASS_GPU = enabledFlag("metallum.perf.perPassGpu");
+    /**
      * Opt-in whole-frame render-scale factor ({@code
      * -Dmetallum.iris.renderScale=<0.5..1.0>}, default 1.0). The Iris Metal
      * pipeline resizes the vanilla main render target to {@code window *
@@ -350,7 +362,7 @@ public final class MetalDebugSwitches {
             || !SHADOW_CULLING.isEmpty() || !SHADOW_DEPTH_FIX || BLEND_OVERRIDES
             || !SIZE_BUFFER || DUMP_BINDINGS || LOG_UNIFORMS || FLIP_TRACE
             || !VERTEX_ENGINE_PROJECTION || !GLSLANG_PRECISION_PREAMBLE
-            || !GLSLANG_BUILTIN_RENAME || PERF
+            || !GLSLANG_BUILTIN_RENAME || PERF || PER_PASS_GPU
             || !SHADOW_SEED_CLEAR || !DEPTH_CAPTURE_LAZY || !DEPTH_ALIAS
             || !ATTACHMENT_VIEWS_FULL || !BLIT_BATCH
             || !DEAD_STORES || !LOAD_ELISION
@@ -543,13 +555,13 @@ public final class MetalDebugSwitches {
 
     static {
         if (PROBES_ACTIVE) {
-            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: build={} skipDeferred={} skipPost={} view={} viewGain={} skipPass={} noShadowMatrices={} zeroVl={} zeroBloom={} stageStrip={} noVanillaSky={} noVanillaClouds={} noCloudsHard={} magentaClear={} shadowPass={} noShadows={} shadowCulling={} shadowDepthFix={} blendOverrides={} sizeBuffer={} dumpBindings={} logUniforms={} flipTrace={} vertexEngineProjection={} glslangPrecision={} glslangBuiltinRename={} perf={} renderScale={} shadowResolution={} shadowSeed={} depthCapture={} depthAlias={} depthSnapshot={} attachmentViews={} blitBatch={} deadStores={} loadElision={}",
+            Metallum.LOGGER.warn("[metallum-iris][debug] switches active: build={} skipDeferred={} skipPost={} view={} viewGain={} skipPass={} noShadowMatrices={} zeroVl={} zeroBloom={} stageStrip={} noVanillaSky={} noVanillaClouds={} noCloudsHard={} magentaClear={} shadowPass={} noShadows={} shadowCulling={} shadowDepthFix={} blendOverrides={} sizeBuffer={} dumpBindings={} logUniforms={} flipTrace={} vertexEngineProjection={} glslangPrecision={} glslangBuiltinRename={} perf={} perPassGpu={} renderScale={} shadowResolution={} shadowSeed={} depthCapture={} depthAlias={} depthSnapshot={} attachmentViews={} blitBatch={} deadStores={} loadElision={}",
                     BUILD_TAG, SKIP_DEFERRED, SKIP_POST, VIEW, VIEW_GAIN, SKIP_PASS, NO_SHADOW_MATRICES, ZERO_VL, ZERO_BLOOM,
                     System.getProperty("metallum.iris.debug.stageStrip", ""),
                     NO_VANILLA_SKY, NO_VANILLA_CLOUDS, NO_CLOUDS_HARD, MAGENTA_CLEAR,
                     SHADOW_PASS, NO_SHADOWS, SHADOW_CULLING, SHADOW_DEPTH_FIX, BLEND_OVERRIDES, SIZE_BUFFER,
                     DUMP_BINDINGS, LOG_UNIFORMS, FLIP_TRACE, VERTEX_ENGINE_PROJECTION, GLSLANG_PRECISION_PREAMBLE,
-                    GLSLANG_BUILTIN_RENAME, PERF, RENDER_SCALE, SHADOW_RESOLUTION,
+                    GLSLANG_BUILTIN_RENAME, PERF, PER_PASS_GPU, RENDER_SCALE, SHADOW_RESOLUTION,
                     SHADOW_SEED_MODE, DEPTH_CAPTURE_MODE, DEPTH_ALIAS_MODE, DEPTH_SNAPSHOT_MODE, ATTACHMENT_VIEWS_MODE, BLIT_BATCH ? "on" : "off",
                     DEAD_STORES ? "on" : "off", LOAD_ELISION ? "on" : "off");
         }
