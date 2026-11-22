@@ -702,7 +702,7 @@ private func timestampCounterSet(for device: MTLDevice) -> MTLCounterSet? {
     guard let counterSets = device.counterSets else {
         return nil
     }
-    for counterSet in counterSets where counterSet.name == MTLCommonCounterSetTimestamp {
+    for counterSet in counterSets where counterSet.name == MTLCommonCounterSetTimestamp.rawValue {
         return counterSet
     }
     return nil
@@ -1701,7 +1701,7 @@ public func metallum_MTLCommandBuffer_makeComputeCommandEncoder_v2(
         guard let sampleBuffer else {
             return retainedPointer(commandBuffer.makeComputeCommandEncoder())
         }
-        let descriptor = MTLComputePassDescriptor.computePassDescriptor()
+        let descriptor = MTLComputePassDescriptor()
         if let sampleAttachment = descriptor.sampleBufferAttachments[0] {
             sampleAttachment.sampleBuffer = sampleBuffer
             sampleAttachment.startOfEncoderSampleIndex = Int(startSampleIndex)
