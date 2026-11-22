@@ -104,6 +104,27 @@ Gradle 侧的验证基线：`185 tests / 4 failed / 4 skipped`，
 
 ---
 
+### 2.4 配对 A/B 协议（判定任何优化的唯一方法）
+
+跨轮比较均值会被热漂移吃掉（§2.3），所以判定必须**同 session 配对**：
+
+```text
+A 10s → B 10s → A 10s → B 10s → A 10s → B 10s     （顺序可随机，至少 3 轮）
+每段丢弃前 60 帧（shader/PSO 编译、first-use 路径都在前几帧）
+段间冷却 30s；记录电量、低电量模式、thermalState（开始/结束）
+比较同一轮内 A/B 的配对差值中位数，而不是跨轮均值
+指标用 p50/p95，不用 avg
+```
+
+必记环境：实际 backend 必须确认是 Metal（`Using graphics backend Metal`），
+若是 MobileGlues/GL 回退则整份数据作废；同时记录包名+版本、pack options、
+render distance、所有 `-Dmetallum.*` 开关。
+
+**归因用字节/结构计数，判定用配对后的时间**——两者分工，不互相替代。
+
+---
+
+
 ## 3. 基线数据
 
 ### 3.1 两个代表包
@@ -294,11 +315,20 @@ depth 0   clear 0   other 0
 | **`memoryless` 附件** | 要求后续不再被采样；我们的 G-buffer 全都要被后处理读，用不上 |
 | **RGBA16F → RG11B10F** | 画质折损未评估，且这是"改渲染参数"，不在目标内 |
 | **按 load/store 差异拆/并 pass** | Apple 官方："render passes don't need to be split when only load and store actions change" |
-| **per-pass GPU 计时** | 需要 native 侧 `MTLCounterSampleBuffer`，Linux 上无法编译验证，暂缺（这是唯一想补但没补的测量能力） |
+| **per-pass GPU 计时** | 曾经搁置（需要 native `MTLCounterSampleBuffer`，Linux 上无法编译验证）。**2026-11-22 审计后改为补上**：这是当前最大的测量缺口，见 §6.0 与开关 `-Dmetallum.perf.perPassGpu` |
 
 ---
 
 ## 6. 仍然可疑的浪费（按嫌疑排序）
+
+### 6.0 测量缺口（P0，优先于所有优化）
+
+16. **逐 pass GPU 时间**
+    —— 现在只有 `MTLCommandBuffer.gpuStartTime/gpuEndTime`（整帧），所有"哪个 pass 贵"的判断
+    都来自 §3.3 的模型字节。需要 `MTLCounterSampleBuffer` + `MTLCommonCounterSetTimestamp`，
+    在 encoder 开始/结束插采样点、resolve 后写进 probe（`perf gpu pass=<label> ms=<x>`）。
+    开关 `-Dmetallum.perf.perPassGpu`，默认关；设备不支持时降级为不打这行。
+
 
 这些是**尚未做**或**做了但收益不明**的项，也是希望外部审计重点看的地方：
 
@@ -386,6 +416,31 @@ depth 0   clear 0   other 0
 5. §6.2 第 6 条（部分 pass 降分辨率）在**不改变光影包源码**的前提下是否可行？如果可行，怎么界定"视觉上不可见"？
 6. 我们的 `renderScale` 与 MetalFX Spatial 已经把"像素成本"这条路走到了 0.77×。在不降分辨率的前提下，BSL 的 24 ms 还有多少空间？给出你的量级估计和依据。
 7. 有没有一类优化是**光影管线移植特有的**（即 GL→Metal 的语义差异导致的额外工作），我们上面完全没提到？
+
+---
+
+### 8.1 本轮审计（2026-11-22）核查结论
+
+审计基于 `e7ce0a3` / 1.1.10，当前已到 1.1.15，逐条对照：
+
+| 审计条目 | 现状 |
+|---|---|
+| D1 `perf bandwidth` 是窗口总量 | 成立，已写入 §2.2（单帧 = 原始值 / w） |
+| D2 423 与 991 矛盾 | 成立（旧稿残留），已删 423，统一按 991 MiB/帧 |
+| D3 百分比合计 108% | 成立（旧稿），已按 991 重算到 100% |
+| D4 `reuse/colorCount` 按 draw、漏 `other` | 成立，§3.4 已写明分母；`other` 实测 0 |
+| D5 毫秒漂移却仍给倍率 | 成立，已改为「归因/判定」双轨 + §2.4 配对协议 |
+| D6 0.05% 字节 ≠ 时间可信 | 成立，已注明字节是模型值 |
+| item_cutout 的 scissor 前提错误 | 成立，已改为「手部小 target + composite」 |
+| depthtex0 per-pass 快照（P1） | **已实装**（`981e79c` / 1.1.11），审计不知情 |
+| 逐 pass GPU 计时必须补（P0） | 采纳，本轮开工（§6.0） |
+| `untracked` + 全局 fence 的 A/B | 已列入 §6.2b 第 11 条 |
+| `[[early_fragment_tests]]` 注入 | 已列入 §6.2b 第 13 条 |
+| `MTLMathMode` / FP16 不该写成定论 | 采纳，§5 已改为「未自测、可 A/B」 |
+| 原生分辨率现实空间 10–20% | 采纳，与我们自己的量级一致 |
+
+仍未做、且审计说得对的两项：**history 指针交换**（省 44+22 MiB/帧与一次 encoder 重启，
+改 flip/identity 需 frame-flow 测试）与**shader 翻译层指令审计**。
 
 ---
 
