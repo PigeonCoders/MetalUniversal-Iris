@@ -696,13 +696,13 @@ public func metallum_MTLCommandBuffer_gpuEndTime(_ commandBuffer: MTLCommandBuff
 // hands back the resolved nanoseconds. Nothing here inspects a label or a
 // shader pack name.
 
-/// The device's `MTLCommonCounterSetTimestamp` counter set, or nil when the
+/// The device's `MTLCommonCounterSet.timestamp` counter set, or nil when the
 /// device exposes no timestamp counters at all.
 private func timestampCounterSet(for device: MTLDevice) -> MTLCounterSet? {
     guard let counterSets = device.counterSets else {
         return nil
     }
-    for counterSet in counterSets where counterSet.name == MTLCommonCounterSetTimestamp.rawValue {
+    for counterSet in counterSets where counterSet.name == MTLCommonCounterSet.timestamp.rawValue {
         return counterSet
     }
     return nil
@@ -715,7 +715,7 @@ private func timestampCounterSet(for device: MTLDevice) -> MTLCounterSet? {
 ///   bit 1 = compute encoder at the dispatch boundary,
 ///   bit 2 = stage boundary via a pass descriptor's sample buffer attachment).
 /// * `0`: the OS/device has no counter sampling at all (`counterSets` is nil).
-/// * `-1`: the device has counter sets but no `MTLCommonCounterSetTimestamp`.
+/// * `-1`: the device has counter sets but no `MTLCommonCounterSet.timestamp`.
 /// * `-2`: the timestamp set exists but none of those sampling points is
 ///   supported.
 ///
